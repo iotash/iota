@@ -74,7 +74,7 @@ _poll_until 30 _vis_lacks 'no match' || miss "Esc did not end the search"
 
 # Following the tail, `/` is the slash command's.
 type_ '/'
-if _poll_until 20 eval '[ "$(composer_row)" != "" ] && cap | grep -qE "^❯ /$"'; then
+if _poll_until 20 eval '[ "$(composer_line 1)" = "/" ]'; then
     ok "following the tail, / is typed into the composer"
 else
     bad "/ did not reach the composer"

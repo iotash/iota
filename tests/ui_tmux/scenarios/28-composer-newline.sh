@@ -9,7 +9,7 @@
 # terminal sends it.
 #
 # For each key: the draft grows to two composer rows and nothing is submitted, then Enter sends
-# ONE message carrying both lines — the user block echoes them as one `❯` block, the model's
+# ONE message carrying both lines — the user block echoes them as one `▌` block, the model's
 # echo starts with the first, and no second message echoes the second line on its own (a key
 # that submitted would leave exactly that). Then the queue: a two-line item queued mid-turn is
 # ONE frame row with ` ⏎ ` for the break, and ESC folds it back as a two-row draft.
@@ -27,21 +27,20 @@ newline_turn() {
     type_ "$one"
     key "$@"
     type_ "$two"
-    wait_vis "  $two" || miss "$label: the second line never rendered"
+    wait_draft "$two" || miss "$label: the second line never rendered"
     settle || miss "$label: composer never settled"
     # Nothing was submitted: no reply, and line one exists only as the composer's own row.
     check "$label: nothing reached the model" "$(count_all "echo: $one")" 0
-    check "$label: line one is only the draft" "$(count_all "❯ $one")" 1
-    check "$label: two composer rows" "$(composer_block | wc -l | tr -d ' ')" 2
-    check "$label: row 1 is the prompt" "$(count_composer "❯ $one")" 1
-    check "$label: row 2 is a continuation" "$(count_composer "  $two")" 1
-    check "$label: one prompt" "$(count_composer '❯')" 1
+    check "$label: line one is only the draft" "$(count_all "$one")" 1
+    check "$label: two composer rows" "$(composer_rows)" 2
+    check "$label: row 1 is line one, at column 0" "$(composer_line 1)" "$one"
+    check "$label: row 2 is line two, at column 0 too" "$(composer_line 2)" "$two"
 
     key Enter
     wait_all "echo: $one" || miss "$label: the message never reached the model"
     settle || miss "$label: frame never settled after the submit"
-    check_once "$label: echo row 1" "❯ $one"
-    check "$label: echo row 2 is a continuation, not a second prompt" "$(count_all "❯ $two")" 0
+    check_once "$label: echo row 1" "▌ $one"
+    check "$label: echo row 2 is a continuation, not a second block" "$(count_all "▌ $two")" 0
     check "$label: no second message for line two" "$(count_all "echo: $two")" 0
     # The user block and the model's echo both carry line two; counted after the reply landed,
     # so the composer's own row is gone.
@@ -75,7 +74,7 @@ key Escape
 wait_all 'Interrupted.' || miss "ESC never reached the loop"
 settle || miss "frame never settled after the interrupt"
 check "the queue row is gone (folded)" "$(count_vis '» q one')" 0
-check "fold row 1" "$(count_composer '❯ q one')" 1
-check "fold row 2" "$(count_composer '  q two')" 1
+check "fold row 1" "$(composer_line 1)" "q one"
+check "fold row 2" "$(composer_line 2)" "q two"
 
 finish

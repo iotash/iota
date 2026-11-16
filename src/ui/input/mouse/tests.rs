@@ -102,27 +102,30 @@ fn laid_out(m: &mut Model) {
     m.view_h = 24 - u16::try_from(view.rows.len()).unwrap();
 }
 
-/// A click on the composer puts the cursor under the pointer — on a wide glyph, the glyph.
+/// A click on the composer puts the cursor under the pointer — the text starts at column 0, no
+/// prompt glyph before it; on a wide glyph, the glyph.
 #[test]
 fn a_click_on_the_composer_places_its_cursor() {
     let mut m = test_model();
     type_text(&mut m, "hello 中文 world");
     laid_out(&mut m);
     let row = m.view_h + u16::try_from(m.frame_map.composer).unwrap();
-    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 2 + 3, row));
-    assert_eq!(m.composer.cursor_pos(80), (5, 0), "before the second `l`");
-    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 2 + 9, row));
+    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 0, row));
     assert_eq!(
         m.composer.cursor_pos(80),
-        (10, 0),
+        (0, 0),
+        "column 0 is the text's first"
+    );
+    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 3, row));
+    assert_eq!(m.composer.cursor_pos(80), (3, 0), "before the second `l`");
+    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 9, row));
+    assert_eq!(
+        m.composer.cursor_pos(80),
+        (8, 0),
         "on `文`, its first column"
     );
     m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 70, row));
-    assert_eq!(
-        m.composer.cursor_pos(80),
-        (2 + 16, 0),
-        "past the end: the end"
-    );
+    assert_eq!(m.composer.cursor_pos(80), (16, 0), "past the end: the end");
     assert!(m.view_ops.is_empty(), "nothing for the conversation");
 }
 

@@ -168,7 +168,7 @@ pub(crate) async fn tool_loop(
         }
 
         // Round boundary: anything the user typed while the round ran joins the
-        // conversation NOW, so the next request carries it. `drain` already echoed the ❯
+        // conversation NOW, so the next request carries it. `drain` already echoed the ▌
         // block (which settled the activity group) and booked the meter.
         let drained = steer.drain(ctxm).await;
         // A job's notice taken mid-turn no longer holds the host busy on its own (`host` module doc).

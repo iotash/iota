@@ -88,7 +88,7 @@ key Enter
 wait_all "$RECEIPT" || miss "the receipt row never landed"
 wait_all 'ran: Still running after 2s as background job b1 (pid' || miss "the model never got the receipt"
 settle || miss "frame never settled after the yield"
-check_once "the call is echoed once" "❯ runfg:$CMD"
+check_once "the call is echoed once" "▌ runfg:$CMD"
 check_once "the call's header is committed once" "[shell $CMD]"
 sgr="$(label_sgr shell)"
 bracket_sgr="${sgr%%|*}"
@@ -128,7 +128,7 @@ type_ '/j'
 _poll_until 30 has_jobs_candidate || miss "/j did not complete to /jobs while the job runs"
 check "the completion list offers /jobs" "$(count_list jobs)" 1
 key C-u
-wait_gone '❯ /j' || miss "Ctrl+U did not clear the composer"
+wait_draft_gone '/j' || miss "Ctrl+U did not clear the composer"
 type_ '/jobs'
 key Enter
 wait_vis '1 job running' || miss "the Jobs list never opened"
@@ -150,7 +150,7 @@ check "the list is back with the job's row" "$(cap | grep -cE "b1 +[0-9]+s +$CMD
 key Escape
 wait_gone '1 job running' || miss "ESC did not close the list"
 settle || miss "frame never settled after the list"
-check "/jobs opened a list, not a turn" "$(count_all '❯ /jobs')" 0
+check "/jobs opened a list, not a turn" "$(count_all '▌ /jobs')" 0
 check_frame_intact "after the list" 100
 
 # ------------------------------------------------------------------ 8.7, live: a second job, the clock walks, the Kill tab
@@ -199,7 +199,7 @@ check "b1's row is still there" "$(cap | grep -cE "b1 +[0-9]+s +$CMD")" 1
 key Escape
 wait_gone '1 job running' || miss "ESC did not close the reopened list"
 settle || miss "frame never settled after the reopened list"
-check "no /jobs went to the model, and the kill printed nothing of its own" "$(count_all '❯ /jobs')" 0
+check "no /jobs went to the model, and the kill printed nothing of its own" "$(count_all '▌ /jobs')" 0
 check_frame_intact "after the kill" 100
 check "the killed job's notice turn ended with b1 still running: still busy (OSC 9;4;3)" "$(last_progress)" 3
 check_raw "…and never cleared on the way (no OSC 9;4;0)" ']9;4;0' no

@@ -85,7 +85,7 @@ wait_vis 'Ctrl+End' || miss "PgUp no longer scrolls"
 key C-End
 wait_gone 'Ctrl+End' || miss "Ctrl+End no longer follows"
 type_ 'still here'
-check "…and the keyboard still does everything" "$(wait_composer '❯ still here' 1)" 1
+check "…and the keyboard still does everything" "$(wait_composer 'still here' 1)" 1
 for _ in $(seq 10); do key BSpace; done
 
 # --- C. the off switch ----------------------------------------------------------------------------

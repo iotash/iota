@@ -26,7 +26,7 @@ settle || miss "frame never settled after the stream"
 check "history contiguous: 20 distinct lines" "$(uniq_all 'l#[0-9][0-9]')" 20
 dup="$(dupes_all 'l#[0-9][0-9] line')"
 check "no line duplicated by the insert path" "$dup" ""
-check_once "user echo committed once" '❯ stream 20'
+check_once "user echo committed once" '▌ stream 20'
 check_frame_intact "after the plain stream" 80
 
 if _vis_lacks 'ι> iota'; then

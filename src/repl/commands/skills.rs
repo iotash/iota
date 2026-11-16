@@ -6,7 +6,7 @@
 //! **Running a skill is an input EXPANSION, not a dispatch.** The skill's instructions BECOME the
 //! message being sent, so the turn below carries them like any other typed line (mid-turn steering
 //! included) and the model side needs no new concept. The transcript still echoes what the user
-//! typed: a whole `SKILL.md` in the `❯` block would bury the screen. That split — echo shows
+//! typed: a whole `SKILL.md` in the `▌` block would bury the screen. That split — echo shows
 //! `input.display`, history and the compact offer carry the expansion — is why the run loop keeps a
 //! `content` distinct from the line ([`crate::repl::run`]'s dispatch chain).
 //!

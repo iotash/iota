@@ -50,7 +50,7 @@ tm send-keys -t s C-l
 : >"$RAW"
 type_ "$(iota_cmd openai fake); echo \"r\"\"c=\$?\""
 key Enter
-_poll_until 100 _vis_has '❯' || miss "the next iota never came up"
+_poll_until 100 _frame_up || miss "the next iota never came up"
 check_raw "the next iota entered the alternate screen" "$ALT_ON" yes
 key C-d
 _poll_until 50 _vis_has 'rc=' || miss "the next iota did not exit"

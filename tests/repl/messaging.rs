@@ -169,7 +169,7 @@ fn pick(first: bool) -> Reply {
 }
 
 /// ④ end to end: a message reaches the model as a NOTICE — a user-role message flagged as one, its headline
-/// the fixed shape, its body saying it is not the user and no approval — never as a typed turn: no `❯` block,
+/// the fixed shape, its body saying it is not the user and no approval — never as a typed turn: no `▌` block,
 /// and its `/new` is text, not the command (the turn ran on the same session). It is persisted as a notice.
 /// ⑦: once the chat is gone, the socket and the bundle's link to it are too.
 #[tokio::test]

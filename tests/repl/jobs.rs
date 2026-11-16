@@ -98,7 +98,7 @@ fn opts(command: &str) -> Options {
 }
 
 // New (phase C): a notice answering `read_input` is the IDLE WAKE-UP — the loop treats it as a message
-// (one turn runs) but never as something the user typed (no `❯` block), and it persists flagged.
+// (one turn runs) but never as something the user typed (no `▌` block), and it persists flagged.
 #[tokio::test]
 async fn an_idle_notice_runs_a_turn_without_the_user_echo() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -277,7 +277,7 @@ async fn a_running_job_puts_jobs_in_the_table_and_the_panel_lists_it() {
     );
 
     // The command opened the list, then the first job's page, then the list again — not the model: no
-    // `❯` block, no answer.
+    // `▌` block, no answer.
     let panels: Vec<iota::testing::TabbedSummary> = ui
         .events()
         .into_iter()

@@ -29,7 +29,7 @@ pipe_raw
 
 type_ "$(iota_cmd openai fake)"
 key Enter
-wait_vis '❯' || {
+wait_frame || {
     miss "the binary never came up in the shell pane"
     finish
 }

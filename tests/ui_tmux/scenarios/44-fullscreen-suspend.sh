@@ -59,7 +59,7 @@ start_shell 80 24 || finish
 pipe_raw
 type_ "$(iota_cmd openai fake); echo \"r\"\"c=\$?\""
 key Enter
-wait_vis '❯' || miss "the composer never came up"
+wait_frame || miss "the composer never came up"
 _poll_until 50 eval 'pid="$(iota_pid)"; [ -n "$pid" ]' || miss "no iota under the shell"
 type_ 'before the stop'
 key Enter

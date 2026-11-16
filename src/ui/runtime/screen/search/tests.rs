@@ -26,11 +26,11 @@ fn frame() -> FrameView {
     FrameView {
         rows: vec![
             "─".repeat(40),
-            "❯ ".to_owned(),
+            String::new(),
             "─".repeat(40),
             "status".to_owned(),
         ],
-        cursor: Some((2, 1)),
+        cursor: Some((0, 1)),
         map: crate::ui::render::frame::FrameMap::default(),
     }
 }

@@ -32,7 +32,7 @@ launch() {
     : >"$RAW"
     type_ "$2 $(iota_cmd openai fake) ${3:-}; echo \"r\"\"c=\$?\"; stty -a | tr ' ' '\\n' | grep -xE -- '-?icanon' | sed 's/^/t''ty=/'"
     key Enter
-    wait_vis '❯' || miss "$1: the composer never came up"
+    wait_frame || miss "$1: the composer never came up"
     _poll_until 50 eval 'pid="$(iota_pid)"; [ -n "$pid" ]' || miss "$1: no iota under the shell"
     type_ 'before the end'
     key Enter

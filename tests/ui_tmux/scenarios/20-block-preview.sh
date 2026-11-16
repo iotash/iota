@@ -45,7 +45,8 @@ if _vis_lacks 'BLOCKSSTART'; then
 else
     bad "the 40-line answer never scrolled — the stress shape did not happen"
 fi
-check "no ghost frame rows in the history" "$(count_all '❯ blocks')" 1
+check "the user's block is in the history once" "$(count_all '▌ blocks')" 1
+check "no ghost composer rows in the history" "$(capall | grep -cE '^blocks *$' | tr -d ' ')" 0
 check_frame_intact "after the long document" 80
 
 # Still usable, and the frame walks down onto the next turn.

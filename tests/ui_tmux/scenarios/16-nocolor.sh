@@ -76,7 +76,7 @@ iota_running() {
 _iota_gone() { ! iota_running; }
 
 # launch <label> <command> — starts the binary from the shell and waits for THIS run's banner: one
-# more `ι> iota` than the scrollback held before it. Not `wait_vis '❯'`: the composer row the run
+# more `ι> iota` than the scrollback held before it. Not `wait_frame`: the frame the run
 # before left on screen satisfies that at once, and a message typed before the new binary owns the
 # terminal is lost — the control run's `md` was, under load, and its document never came.
 launch() {
@@ -157,7 +157,7 @@ wait_vis 'Enter select' || miss "NO_COLOR: the /model combo never opened"
 settle || miss "NO_COLOR: the combo never settled"
 check "NO_COLOR: the surface keeps its ▸ cursor marker" "$(count_vis '▸ fake [m] (current)')" 1
 check "NO_COLOR: the combo field keeps its placeholder" "$(count_vis 'model name (e.g. gpt-4o)')" 1
-check "NO_COLOR: …behind a ❯ edge of its own (the composer's and the field's)" "$(cap | grep -c '^❯' | tr -d ' ')" 2
+check "NO_COLOR: …behind a ❯ edge of its own (the field's alone: the composer has no glyph)" "$(cap | grep -c '^❯' | tr -d ' ')" 1
 if raw_has_color; then
     bad "NO_COLOR: the surface painted a color"
 else

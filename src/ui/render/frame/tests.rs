@@ -59,10 +59,10 @@ impl Default for Case {
     }
 }
 
-/// Builds the frame for a case with the EMPTY composer (prompt row only, cursor at
-/// column 2 — never any composer content in this file).
+/// Builds the frame for a case with a one-row composer holding `draft` (no prompt glyph: the
+/// text at column 0, the cursor right after it at column 5).
 fn view(c: &Case) -> FrameView {
-    let composer_rows = vec![format!("{CYAN}❯ {RESET}")];
+    let composer_rows = vec!["draft".to_owned()];
     let bottom = if let Some(s) = &c.surface {
         BottomZone::Surface(s)
     } else {
@@ -79,7 +79,7 @@ fn view(c: &Case) -> FrameView {
         composer_cursor: if c.surface.is_some() {
             None
         } else {
-            Some((2, 0))
+            Some((5, 0))
         },
         list: &c.list,
         bottom,
@@ -169,7 +169,7 @@ fn frame_order_with_empty_composer_and_slot_swap() {
     let seps = separator_indices(&rows);
     assert_eq!(seps.len(), 2, "want exactly 2 separators:\n{rows:#?}");
     let queue = find(&rows, |r| r.contains("» queued")).expect("queue row");
-    let composer = find(&rows, |r| r.contains('❯')).expect("composer row");
+    let composer = find(&rows, |r| r == "draft").expect("composer row");
     let status = find(&rows, |r| r.contains("gpt-4o · ")).expect("status row");
     assert!(
         queue < seps[0] && seps[0] < composer && composer < seps[1] && seps[1] < status,
@@ -186,11 +186,11 @@ fn frame_order_with_empty_composer_and_slot_swap() {
         "",
         "no blank spacer above the queue"
     );
-    // The real cursor: prompt column 2, offset by every row above the composer.
+    // The real cursor: the text's column (no prompt gutter), offset by every row above the composer.
     assert_eq!(
         v.cursor,
-        Some((2, u16::try_from(composer).unwrap())),
-        "cursor must sit at prompt col 2 on the composer row"
+        Some((5, u16::try_from(composer).unwrap())),
+        "cursor must sit at the text column on the composer row"
     );
     // The idle frame carries no spinner glyph (T-03's surviving half).
     let joined = rows.join("\n");
@@ -202,7 +202,7 @@ fn frame_order_with_empty_composer_and_slot_swap() {
     // The TestBackend cell grid agrees on the order.
     let h = u16::try_from(v.rows.len()).unwrap();
     let grid = render_plain(&v.rows, 80, h);
-    let g_composer = find(&grid, |r| r.contains('❯')).expect("composer in grid");
+    let g_composer = find(&grid, |r| r == "draft").expect("composer in grid");
     let g_status = find(&grid, |r| r.contains("gpt-4o")).expect("status in grid");
     assert!(g_composer < g_status, "grid order wrong:\n{grid:#?}");
 
@@ -218,7 +218,7 @@ fn frame_order_with_empty_composer_and_slot_swap() {
         !rows.iter().any(|r| r.contains("gpt-4o · ")),
         "status visible while a surface is open:\n{rows:#?}"
     );
-    let composer = find(&rows, |r| r.contains('❯')).expect("composer row");
+    let composer = find(&rows, |r| r == "draft").expect("composer row");
     let surface = find(&rows, |r| r.contains("/model")).expect("surface row");
     assert!(composer < surface, "surface not below the composer");
     assert_eq!(
@@ -232,7 +232,7 @@ fn frame_order_with_empty_composer_and_slot_swap() {
     let case = Case {
         surface: None,
         list: vec![
-            format!(" {CYAN}› model{RESET}"),
+            format!("{CYAN}› model{RESET}"),
             format!("         {FAINT}Pick a model{RESET}"),
         ],
         ..case
@@ -243,7 +243,7 @@ fn frame_order_with_empty_composer_and_slot_swap() {
     assert_eq!(seps.len(), 2);
     let item = find(&rows, |r| r.contains("› model")).expect("list row");
     let desc = find(&rows, |r| r.contains("Pick a model")).expect("desc row");
-    let composer = find(&rows, |r| r.contains('❯')).expect("composer row");
+    let composer = find(&rows, |r| r == "draft").expect("composer row");
     let status = find(&rows, |r| r.contains("gpt-4o · ")).expect("status row");
     assert!(
         item + 1 == desc
@@ -1076,8 +1076,8 @@ fn the_separators_are_a_faint_solid_rule_the_width_of_the_frame() {
         );
         assert_eq!(
             rows[top + 1],
-            "❯ ",
-            "{w}: the prompt between the separators"
+            "draft",
+            "{w}: the composer between the separators"
         );
         assert_eq!(bot, top + 2, "{w}: one composer row");
         assert_eq!(

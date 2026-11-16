@@ -189,7 +189,7 @@ fn reachable(p: &mut vt100::Parser) -> Vec<String> {
 fn idle_wake_renders_mailbox_message_within_deadline() {
     let h = start_loop();
     assert!(
-        h.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')),
+        h.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')),
         "initial frame never painted:\n{}",
         h.contents()
     );
@@ -216,7 +216,7 @@ fn idle_wake_renders_mailbox_message_within_deadline() {
 #[test]
 fn quit_at_idle_terminates_the_loop() {
     let h = start_loop();
-    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
     thread::sleep(Duration::from_millis(150)); // fully idle
     h.quit_and_join(Duration::from_secs(1));
 }
@@ -230,7 +230,7 @@ fn quit_at_idle_terminates_the_loop() {
 fn the_exit_writes_the_conversation_out_once_and_no_frame() {
     use crate::ui::runtime::screen::TRANSCRIPT_MARK;
     let h = start_loop();
-    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
     h.region
         .lock()
         .unwrap()
@@ -255,7 +255,7 @@ fn the_exit_writes_the_conversation_out_once_and_no_frame() {
         "{dump}"
     );
     assert!(
-        !all.iter().any(|r| r.contains('❯')),
+        !all.iter().any(|r| r.contains('─')),
         "a frame row left behind:\n{dump}"
     );
     let row_of = |needle: &str| all.iter().position(|l| l.contains(needle));
@@ -269,10 +269,10 @@ fn the_exit_writes_the_conversation_out_once_and_no_frame() {
 #[test]
 fn snapshot_implies_draw_and_cursor_restored() {
     let h = start_loop();
-    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
     assert!(
-        h.wait_until(Duration::from_secs(1), |h| h.cursor().1 == 2),
-        "composer cursor never settled at prompt col 2: {:?}",
+        h.wait_until(Duration::from_secs(1), |h| h.cursor().1 == 0),
+        "composer cursor never settled at column 0 (no prompt glyph): {:?}",
         h.cursor()
     );
     let pos0 = h.cursor();
@@ -301,11 +301,11 @@ fn composer(draft: &str) -> crate::ui::render::frame::FrameView {
     crate::ui::render::frame::FrameView {
         rows: vec![
             "─".repeat(80),
-            format!("❯ {draft}"),
+            draft.to_owned(),
             "─".repeat(80),
             "status".to_owned(),
         ],
-        cursor: Some((2 + u16::try_from(draft.len()).unwrap(), 1)),
+        cursor: Some((u16::try_from(draft.len()).unwrap(), 1)),
         map: crate::ui::render::frame::FrameMap::default(),
     }
 }
@@ -490,7 +490,7 @@ fn a_frame_that_shrinks_leaves_no_ghost() {
     assert_eq!(rows.get(19), Some(&"after-one"), "{contents}");
     assert_eq!(
         p.screen().cursor_position(),
-        (21, 2),
+        (21, 0),
         "the composer on the bottom"
     );
 }
@@ -504,14 +504,14 @@ fn wide_runes_show_intact() {
     let (mut t, buf) = direct_term();
     // The user-echo shape: a padded, styled row (the padding is what makes the row's trailing
     // cells non-blank, which is where a fallback path would desync).
-    let row = format!("\x1b[7m❯ 中文一行{}\x1b[0m", " ".repeat(80 - 2 - 8));
+    let row = format!("\x1b[7m▌ 中文一行{}\x1b[0m", " ".repeat(80 - 2 - 8));
     t.push(Block::rows([row.clone()]));
     // The unpadded markdown shape must stay intact too.
     t.push(rows_of(&["中文一行 tail".to_owned()]));
     t.draw_frame(&composer(""), None).unwrap();
     let screen = parse(&buf).screen().contents();
     assert!(
-        screen.contains("❯ 中文一行"),
+        screen.contains("▌ 中文一行"),
         "wide runes split:\n{screen:?}"
     );
     assert!(
@@ -777,7 +777,7 @@ fn text(buf: &SharedBuf) -> String {
 #[test]
 fn progress_states_reach_the_wire_as_osc_9_4_on_change() {
     let h = start_loop();
-    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
     assert!(
         text(&h.buf).contains("\x1b[?1004h"),
         "focus reporting is off — Notify gating would never see blur"
@@ -878,7 +878,7 @@ fn a_notification_rings_only_while_blurred() {
 #[test]
 fn exit_clears_the_progress_bar_and_focus_mode() {
     let h = start_loop();
-    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
     h.tx.send(UiMsg::Progress(ProgressState::Busy)).unwrap();
     assert!(h.wait_until(Duration::from_secs(1), |h| {
         text(&h.buf).contains("\x1b]9;4;3\x07")
@@ -901,7 +901,7 @@ fn exit_clears_the_progress_bar_and_focus_mode() {
 #[test]
 fn exit_without_a_bar_emits_no_reset() {
     let h = start_loop();
-    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
     let buf = h.buf.clone();
     h.quit_and_join(Duration::from_secs(2));
     let out = text(&buf);
@@ -928,8 +928,9 @@ fn a_term_that_never_enabled_focus_reporting_writes_no_disable() {
 // W5 resize: iota re-anchors; ratatui's resize (row 0 + ESC[2J) never runs
 // ---------------------------------------------------------------------------
 
-/// Sends `keys` to the loop one by one and returns the composer row (the screen row that
-/// starts with `❯`) once it reads `want`, or the last one seen.
+/// Sends `keys` to the loop one by one and returns the composer row (the screen row under the
+/// upper separator — the composer has no glyph of its own) once it reads `want`, or the last one
+/// seen.
 fn composer_after(lh: &LoopHarness, keys: &[Event], want: &str) -> (String, usize) {
     let mark = lh.buf.bytes().len();
     for k in keys {
@@ -941,7 +942,8 @@ fn composer_after(lh: &LoopHarness, keys: &[Event], want: &str) -> (String, usiz
         let cols = p.screen().size().1;
         p.screen()
             .rows(0, cols)
-            .find(|r| r.starts_with('❯'))
+            .skip_while(|r| !r.starts_with('─'))
+            .nth(1)
             .unwrap_or_default()
             .trim_end()
             .to_owned()
@@ -1003,15 +1005,15 @@ fn assert_erases_on_boundaries(lh: &LoopHarness, mark: usize, row: &str) {
 #[test]
 fn backspace_after_a_wide_grapheme_keeps_the_row_whole() {
     let lh = start_loop();
-    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
-    let (row, _) = composer_after(&lh, &typed("中文测试"), "❯ 中文测试");
-    assert_eq!(row, "❯ 中文测试");
+    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
+    let (row, _) = composer_after(&lh, &typed("中文测试"), "中文测试");
+    assert_eq!(row, "中文测试");
     let bs = key(crossterm::event::KeyCode::Backspace);
-    let (row, mark) = composer_after(&lh, std::slice::from_ref(&bs), "❯ 中文测");
-    assert_eq!(row, "❯ 中文测", "one Backspace must remove exactly 试");
+    let (row, mark) = composer_after(&lh, std::slice::from_ref(&bs), "中文测");
+    assert_eq!(row, "中文测", "one Backspace must remove exactly 试");
     assert_erases_on_boundaries(&lh, mark, &row);
-    let (row, _) = composer_after(&lh, &[bs.clone(), bs], "❯ 中");
-    assert_eq!(row, "❯ 中");
+    let (row, _) = composer_after(&lh, &[bs.clone(), bs], "中");
+    assert_eq!(row, "中");
     lh.quit_and_join(Duration::from_secs(2));
 }
 
@@ -1019,8 +1021,8 @@ fn backspace_after_a_wide_grapheme_keeps_the_row_whole() {
 fn deleting_inside_a_wide_row_keeps_the_rest_whole() {
     use crossterm::event::KeyCode;
     let lh = start_loop();
-    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
-    composer_after(&lh, &typed("中文测试"), "❯ 中文测试");
+    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
+    composer_after(&lh, &typed("中文测试"), "中文测试");
     let (row, _) = composer_after(
         &lh,
         &[
@@ -1028,11 +1030,11 @@ fn deleting_inside_a_wide_row_keeps_the_rest_whole() {
             key(KeyCode::Left),
             key(KeyCode::Backspace),
         ],
-        "❯ 中测试",
+        "中测试",
     );
-    assert_eq!(row, "❯ 中测试", "← ← Backspace removes 文 only");
-    let (row, _) = composer_after(&lh, &[key(KeyCode::Home), key(KeyCode::Delete)], "❯ 测试");
-    assert_eq!(row, "❯ 测试", "Home Delete removes 中 only");
+    assert_eq!(row, "中测试", "← ← Backspace removes 文 only");
+    let (row, _) = composer_after(&lh, &[key(KeyCode::Home), key(KeyCode::Delete)], "测试");
+    assert_eq!(row, "测试", "Home Delete removes 中 only");
     lh.quit_and_join(Duration::from_secs(2));
 }
 
@@ -1043,11 +1045,11 @@ fn deleting_inside_a_wide_row_keeps_the_rest_whole() {
 fn backspace_after_a_wide_emoji_keeps_it_whole() {
     use crossterm::event::KeyCode;
     let lh = start_loop();
-    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
-    let (row, _) = composer_after(&lh, &typed("a👍x"), "❯ a👍x");
-    assert_eq!(row, "❯ a👍x");
-    let (row, mark) = composer_after(&lh, &[key(KeyCode::Backspace)], "❯ a👍");
-    assert_eq!(row, "❯ a👍", "Backspace removes x only");
+    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
+    let (row, _) = composer_after(&lh, &typed("a👍x"), "a👍x");
+    assert_eq!(row, "a👍x");
+    let (row, mark) = composer_after(&lh, &[key(KeyCode::Backspace)], "a👍");
+    assert_eq!(row, "a👍", "Backspace removes x only");
     assert_erases_on_boundaries(&lh, mark, &row);
     lh.quit_and_join(Duration::from_secs(2));
 }
@@ -1059,15 +1061,15 @@ fn backspace_after_a_wide_emoji_keeps_it_whole() {
 fn a_wide_grapheme_after_a_paste_tag_stays_whole() {
     use crossterm::event::KeyCode;
     let lh = start_loop();
-    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
     lh.etx
         .send(Event::Paste("文字\n第二行".to_owned()))
         .unwrap();
     assert!(lh.wait_until(Duration::from_secs(1), |h| h.contents().contains("[#1")));
     let tag = "[#1 文字… 2 lines]";
-    composer_after(&lh, &typed("中文"), &format!("❯ {tag}中文"));
-    let (row, mark) = composer_after(&lh, &[key(KeyCode::Backspace)], &format!("❯ {tag}中"));
-    assert_eq!(row, format!("❯ {tag}中"), "Backspace removes 文 only");
+    composer_after(&lh, &typed("中文"), &format!("{tag}中文"));
+    let (row, mark) = composer_after(&lh, &[key(KeyCode::Backspace)], &format!("{tag}中"));
+    assert_eq!(row, format!("{tag}中"), "Backspace removes 文 only");
     assert_erases_on_boundaries(&lh, mark, &row);
     lh.quit_and_join(Duration::from_secs(2));
 }
@@ -1080,7 +1082,7 @@ fn a_wide_grapheme_after_a_paste_tag_stays_whole() {
 fn a_queued_multi_line_draft_keeps_one_frame_row() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let lh = start_loop();
-    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
     let mut evs = typed("a");
     evs.push(Event::Key(KeyEvent::new(
         KeyCode::Char('j'),
@@ -1118,9 +1120,10 @@ fn a_queued_multi_line_draft_keeps_one_frame_row() {
         2,
         "want both separators whole:\n{screen}"
     );
-    assert!(
-        rows[q + 2].starts_with('❯'),
-        "the composer follows the separator:\n{screen}"
+    assert_eq!(
+        (rows[q + 2], rows[q + 3]),
+        ("", sep.as_str()),
+        "the empty composer row sits between the separators:\n{screen}"
     );
     lh.quit_and_join(Duration::from_secs(2));
 }
@@ -1132,7 +1135,7 @@ fn a_queued_multi_line_draft_keeps_one_frame_row() {
 /// The loop with twelve committed lines at idle (all of them in the conversation).
 fn idle_loop() -> LoopHarness {
     let lh = start_loop();
-    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
     lh.region
         .lock()
         .unwrap()
@@ -1161,7 +1164,7 @@ fn a_resize_repaints_every_cell_at_the_new_size() {
     let lh = idle_loop();
     let p = parse(&lh.buf);
     let g = grid(&p);
-    let composer_from_bottom = g.len() - g.iter().position(|r| r.starts_with('❯')).unwrap();
+    let composer_from_bottom = g.len() - g.iter().position(|r| r.starts_with('─')).unwrap();
     for (w, h) in [(60, 20), (100, 30)] {
         lh.resize(w, h);
         assert_eq!(
@@ -1173,16 +1176,11 @@ fn a_resize_repaints_every_cell_at_the_new_size() {
         let g = grid(&p);
         let dump = g.join("\n");
         assert_eq!(g.len(), usize::from(h));
-        let composer = g.iter().position(|r| r.starts_with('❯')).unwrap();
+        let frame = g.iter().position(|r| r.starts_with('─')).unwrap();
         assert_eq!(
-            g.len() - composer,
+            g.len() - frame,
             composer_from_bottom,
             "{w}x{h}: the frame left the bottom:\n{dump}"
-        );
-        assert_eq!(
-            g.iter().filter(|r| r.starts_with('❯')).count(),
-            1,
-            "{w}x{h}:\n{dump}"
         );
         for i in 0..12 {
             let name = format!("line-{i:02}");
@@ -1216,10 +1214,15 @@ fn a_resize_with_a_surface_open_leaves_one_whole_frame() {
     let history: Vec<String> = (0..6).map(|i| format!("hist-{i}")).collect();
     t.push(rows_of(&history));
     let view = |w: usize| crate::ui::render::frame::FrameView {
-        rows: [String::new(), "─".repeat(w), "❯ ".to_owned(), "─".repeat(w)]
-            .into_iter()
-            .chain((0..4).map(|i| format!("model-{i} {}", "·".repeat(w - 12))))
-            .collect(),
+        rows: [
+            String::new(),
+            "─".repeat(w),
+            "draft".to_owned(),
+            "─".repeat(w),
+        ]
+        .into_iter()
+        .chain((0..4).map(|i| format!("model-{i} {}", "·".repeat(w - 12))))
+        .collect(),
         cursor: None,
         map: crate::ui::render::frame::FrameMap::default(),
     };
@@ -1229,7 +1232,7 @@ fn a_resize_with_a_surface_open_leaves_one_whole_frame() {
     let p = parse_sized(&buf, 60, 24);
     let g = grid(&p);
     let dump = g.join("\n");
-    assert_eq!(g.iter().filter(|r| r.contains('❯')).count(), 1, "{dump}");
+    assert_eq!(g.iter().filter(|r| *r == "draft").count(), 1, "{dump}");
     assert_eq!(g.iter().filter(|r| r.contains('─')).count(), 2, "{dump}");
     for h in &history {
         let n = g.iter().filter(|r| r.contains(h.as_str())).count();
@@ -1536,7 +1539,7 @@ fn order(rows: &[String]) -> Order {
         .expect("separator");
     let composer = rows
         .iter()
-        .position(|r| r.starts_with('❯'))
+        .position(|r| r.starts_with("/skills"))
         .expect("composer");
     let status = rows
         .iter()
@@ -1545,7 +1548,7 @@ fn order(rows: &[String]) -> Order {
     let conv = rows.iter().position(|r| r == CONV_LAST);
     let first = rows[..sep]
         .iter()
-        .position(|r| r.starts_with(" › ") || r.starts_with("   "))
+        .position(|r| r.starts_with("› ") || r.starts_with("  "))
         .expect("list row");
     Order {
         conv,
@@ -1577,7 +1580,7 @@ fn skills_model(typed: &str) -> Model {
 /// The completion list as a terminal shows it, at 80 and 160 columns, ABOVE the composer: the
 /// conversation's last line, the frame's one spacer row, the list, the upper separator, the
 /// composer, the lower separator, the status row — in that order. Two columns: the labels at
-/// column 3 and — two past the longest label — the descriptions, at the same column on every
+/// column 2 (the marker at 0, under the composer's text) and — two past the longest label — the descriptions, at the same column on every
 /// row; at 160 columns a description still wraps at the 72-column measure, and is cut with `…`
 /// after two lines; an item with no description is its label alone. Run with `--nocapture` to
 /// see the screens.
@@ -1587,8 +1590,8 @@ fn the_completion_list_on_screen_at_80_and_160_columns() {
     let mut m = skills_model("/skills ");
     crate::ui::input::suggest::tab_complete(&mut m.composer, &m.commands);
     crate::ui::input::suggest::tab_complete(&mut m.composer, &m.commands);
-    // `code-review` and `investigate` are the longest labels: 11 columns, after the 3 of indent.
-    let at = 3 + 11 + 2;
+    // `code-review` and `investigate` are the longest labels: 11 columns, after the 2 of indent.
+    let at = 2 + 11 + 2;
     for w in [80u16, 160] {
         let rows = shown(&mut m, w, 24);
         let dump = rows.join("\n");
@@ -1608,20 +1611,17 @@ fn the_completion_list_on_screen_at_80_and_160_columns() {
         );
         assert_eq!(rows[13], "", "{w}: only the spacer between:\n{dump}");
         let list = &rows[*o.list.start()..=*o.list.end()];
-        assert!(list[0].starts_with("   brain-page   Read"), "{w}:\n{dump}");
-        assert!(
-            list[1].starts_with(" › code-review  Review"),
-            "{w}:\n{dump}"
-        );
+        assert!(list[0].starts_with("  brain-page   Read"), "{w}:\n{dump}");
+        assert!(list[1].starts_with("› code-review  Review"), "{w}:\n{dump}");
         assert_eq!(
-            list[3], "   release",
+            list[3], "  release",
             "{w}: no description, one row:\n{dump}"
         );
         assert!(
-            list[4].starts_with("   investigate  Systematic"),
+            list[4].starts_with("  investigate  Systematic"),
             "{w}:\n{dump}"
         );
-        for r in list.iter().filter(|r| r.as_str() != "   release") {
+        for r in list.iter().filter(|r| r.as_str() != "  release") {
             let cs: Vec<char> = r.chars().collect();
             assert!(
                 cs[at - 2] == ' ' && cs[at - 1] == ' ' && cs[at] != ' ',
@@ -1681,9 +1681,9 @@ fn a_short_terminal_keeps_the_composer_and_the_highlighted_item() {
     for _ in 0..4 {
         crate::ui::input::suggest::tab_complete(&mut m.composer, &m.commands);
     }
-    let label = " › investigate  Systematic debugging with root cause investigation: reproduce,";
-    let desc = "                analyze, hypothesize, then fix";
-    let composer = "❯ /skills investigate";
+    let label = "› investigate  Systematic debugging with root cause investigation: reproduce,";
+    let desc = "               analyze, hypothesize, then fix";
+    let composer = "/skills investigate";
     let status = "  claude-opus-5-5";
     let sep = "─".repeat(80);
     let screens: [(u16, Vec<&str>); 5] = [
@@ -1867,7 +1867,7 @@ fn the_completion_list_takes_the_interaction_cap() {
     println!("--- /c 80x40 ---\n{}", rows.join("\n"));
     let list = |rows: &[String]| {
         rows.iter()
-            .filter(|r| r.starts_with("   c") || r.starts_with(" › c"))
+            .filter(|r| r.starts_with("  c") || r.starts_with("› c"))
             .count()
     };
     assert_eq!(list(&rows), 15, "{}", rows.join("\n"));
@@ -1883,7 +1883,7 @@ fn the_completion_list_takes_the_interaction_cap() {
     println!("--- /c 80x40, ↑ ---\n{}", rows.join("\n"));
     assert_eq!(list(&rows), 15);
     assert_eq!(m.list_items, (25..40).collect::<Vec<_>>());
-    assert!(rows.iter().any(|r| r == " › c39"), "{}", rows.join("\n"));
+    assert!(rows.iter().any(|r| r == "› c39"), "{}", rows.join("\n"));
     // ↓ wraps to the first, and walking down 39 more reaches the last again.
     for _ in 0..40 {
         m.handle_key(KeyEvent::from(KeyCode::Down));

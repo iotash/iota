@@ -79,7 +79,7 @@ fn open_surface(m: &mut Model) -> oneshot::Receiver<TabbedResult> {
     rx
 }
 
-/// The composer's cursor as (column including the 2-col prompt, visible row) at 80 columns.
+/// The composer's cursor as (the text's column — no prompt gutter, visible row) at 80 columns.
 fn cursor(m: &Model) -> (u16, u16) {
     m.composer.cursor_pos(80)
 }
@@ -475,14 +475,14 @@ fn row_6_up_recalls_only_from_the_top_row_of_a_two_line_draft() {
     let mut m = test_model();
     history(&mut m, &["one", "two"]);
     m.composer.set_value("a\nb");
-    assert_eq!(cursor(&m), (3, 1));
+    assert_eq!(cursor(&m), (1, 1));
     up(&mut m);
     assert_eq!(
         m.composer.value(),
         "a\nb",
         "the bottom row's ↑ is a row move"
     );
-    assert_eq!(cursor(&m), (3, 0), "holding its column");
+    assert_eq!(cursor(&m), (1, 0), "holding its column");
     up(&mut m);
     assert_eq!(m.composer.value(), "two", "the top row's ↑ recalls");
     up(&mut m);
@@ -491,14 +491,14 @@ fn row_6_up_recalls_only_from_the_top_row_of_a_two_line_draft() {
     assert_eq!(m.composer.value(), "two");
     down(&mut m);
     assert_eq!(m.composer.value(), "a\nb", "↓ restores the draft");
-    assert_eq!(cursor(&m), (3, 1));
+    assert_eq!(cursor(&m), (1, 1));
     down(&mut m);
     assert_eq!(
         m.composer.value(),
         "a\nb",
         "nothing further forward: the edit set, a no-op on the bottom row"
     );
-    assert_eq!(cursor(&m), (3, 1));
+    assert_eq!(cursor(&m), (1, 1));
 }
 
 /// Row 6, three lines: on the middle row both arrows move the cursor, and that holds with a
@@ -509,9 +509,9 @@ fn row_6_arrows_move_the_cursor_between_the_edges() {
     history(&mut m, &["one"]);
     m.composer.set_value("a\nb\nc");
     up(&mut m);
-    assert_eq!(cursor(&m), (3, 1), "bottom → middle");
+    assert_eq!(cursor(&m), (1, 1), "bottom → middle");
     up(&mut m);
-    assert_eq!(cursor(&m), (3, 0), "middle → top");
+    assert_eq!(cursor(&m), (1, 0), "middle → top");
     assert_eq!(m.composer.value(), "a\nb\nc");
 
     let mut m = test_model();
@@ -521,11 +521,11 @@ fn row_6_arrows_move_the_cursor_between_the_edges() {
     up(&mut m);
     assert_eq!(m.composer.value(), "a\nb\nc");
     up(&mut m);
-    assert_eq!(cursor(&m), (3, 1), "on the recalled entry's middle row");
+    assert_eq!(cursor(&m), (1, 1), "on the recalled entry's middle row");
     down(&mut m);
     assert_eq!(
         cursor(&m),
-        (3, 2),
+        (1, 2),
         "the middle row's ↓ moves, though a walk is on"
     );
     assert_eq!(m.composer.value(), "a\nb\nc");
@@ -557,9 +557,9 @@ fn row_6_empty_lines_are_rows() {
     let mut m = test_model();
     history(&mut m, &["one"]);
     m.composer.set_value("\n");
-    assert_eq!(cursor(&m), (2, 1));
+    assert_eq!(cursor(&m), (0, 1));
     up(&mut m);
-    assert_eq!(cursor(&m), (2, 0), "the empty bottom row's ↑ moves");
+    assert_eq!(cursor(&m), (0, 0), "the empty bottom row's ↑ moves");
     assert_eq!(m.composer.value(), "\n");
     up(&mut m);
     assert_eq!(m.composer.value(), "one");
@@ -579,9 +579,9 @@ fn row_6_a_multi_line_entry_does_not_trap_the_walk() {
     assert_eq!(m.composer.value(), "new");
     up(&mut m);
     assert_eq!(m.composer.value(), "a\nb");
-    assert_eq!(cursor(&m), (3, 1), "a recall lands at the entry's end");
+    assert_eq!(cursor(&m), (1, 1), "a recall lands at the entry's end");
     up(&mut m);
-    assert_eq!(cursor(&m), (3, 0), "a row move inside the entry");
+    assert_eq!(cursor(&m), (1, 0), "a row move inside the entry");
     up(&mut m);
     assert_eq!(m.composer.value(), "old", "the walk goes on past the entry");
     down(&mut m);
@@ -682,7 +682,7 @@ fn row_7a_inserts_at_the_cursor_and_submit_trims_the_edges() {
     m.handle_key(key(KeyCode::Left));
     m.handle_key(ctrl('j'));
     assert_eq!(m.composer.value(), "a\nbc");
-    assert_eq!(cursor(&m), (2, 1), "the cursor follows onto the new row");
+    assert_eq!(cursor(&m), (0, 1), "the cursor follows onto the new row");
 
     m.composer.reset();
     let mut reader = park(&mut m, 1);
@@ -759,9 +759,9 @@ fn row_7a_is_not_eaten_and_ends_the_cycle() {
         "two\nb",
         "↑ on a two-line draft's bottom row is a row move, not a history step"
     );
-    assert_eq!(cursor(&m), (3, 0), "↑ moved the cursor to the first row");
+    assert_eq!(cursor(&m), (1, 0), "↑ moved the cursor to the first row");
     down(&mut m);
-    assert_eq!(cursor(&m), (3, 1), "↓ moved it back down");
+    assert_eq!(cursor(&m), (1, 1), "↓ moved it back down");
     assert_eq!(m.composer.value(), "two\nb");
 
     let mut m = test_model();
@@ -883,10 +883,10 @@ fn row_8_left_and_right_and_their_control_twins_step_by_grapheme() {
 
     m.handle_key(key(KeyCode::Home));
     m.handle_key(key(KeyCode::Left));
-    assert_eq!(cursor(&m), (2, 0), "← at the start stays");
+    assert_eq!(cursor(&m), (0, 0), "← at the start stays");
     m.handle_key(key(KeyCode::End));
     m.handle_key(key(KeyCode::Right));
-    assert_eq!(cursor(&m).0, 2 + 9, "→ at the end stays");
+    assert_eq!(cursor(&m).0, 9, "→ at the end stays");
 }
 
 /// Ctrl+K kills to the end of the LINE (never the newline), Ctrl+U to its start.
@@ -986,7 +986,7 @@ fn row_9_text_insert_takes_plain_shifted_alt_and_non_ascii_chars() {
     assert_eq!(m.composer.value(), "aA中😀e\u{301}b");
     assert_eq!(
         cursor(&m),
-        (2 + 1 + 1 + 2 + 2 + 1 + 1, 0),
+        (1 + 1 + 2 + 2 + 1 + 1, 0),
         "the cursor follows by width"
     );
 }
@@ -1016,7 +1016,7 @@ fn unbound_keys_are_no_ops() {
     ] {
         m.handle_key(k);
         assert_eq!(m.composer.value(), "ab", "{k:?} changed the draft");
-        assert_eq!(cursor(&m), (2, 0), "{k:?} moved the cursor");
+        assert_eq!(cursor(&m), (0, 0), "{k:?} moved the cursor");
     }
 }
 
@@ -1225,7 +1225,7 @@ fn view_keys_scroll_the_view_only() {
     assert_eq!(m.composer.value(), "draft", "the draft is untouched");
     assert_eq!(
         m.composer.cursor_pos(80).0,
-        2,
+        0,
         "bare Home moved the composer's cursor"
     );
 }
@@ -1392,7 +1392,7 @@ fn ctrl_f_is_forward_char_and_never_opens_the_search() {
     );
     assert_eq!(
         m.composer.cursor_pos(80).0,
-        3,
+        1,
         "Ctrl+F moves one character forward"
     );
     m.composer.reset();

@@ -217,7 +217,7 @@ fn a_lone_tool_call_keeps_the_classic_block() {
 }
 
 // A background job's headline drained at a round boundary (`Steerer::drain`) lands AFTER
-// the running group's rows, exactly as a steer message's `❯` block does: the group settles
+// the running group's rows, exactly as a steer message's `▌` block does: the group settles
 // first. A plain `notice` would have printed the headline above the call it interrupted.
 #[test]
 fn a_boundary_notice_settles_the_running_group_first() {
@@ -389,7 +389,7 @@ fn the_blank_latch_passes_interior_blanks_and_drops_trailing_ones() {
     let tr = transcript(&rec);
 
     tr.echo(&[
-        "❯ hi".to_owned(),
+        "▌ hi".to_owned(),
         String::new(),
         "line-1".to_owned(),
         String::new(),
@@ -401,7 +401,7 @@ fn the_blank_latch_passes_interior_blanks_and_drops_trailing_ones() {
     tr.user("next");
 
     let want = [
-        "print:❯ hi||line-1|||line-2", // interior blanks intact, trailing dropped
+        "print:▌ hi||line-1|||line-2", // interior blanks intact, trailing dropped
         "print:",
         "user:next",
     ];
@@ -664,7 +664,7 @@ fn a_settle_after_an_interleaved_error_reopens_its_block() {
 
 // A mid-turn injected user
 // message (steering) is a stronger boundary than content: the running group settles
-// first, the ❯ block lands, and the next round's activity opens a fresh group.
+// first, the ▌ block lands, and the next round's activity opens a fresh group.
 #[test]
 fn an_injected_user_message_settles_the_open_group_first() {
     let rec = Rec::default();

@@ -593,7 +593,7 @@ mod tests {
 
         fn wait_frame(&self) {
             assert!(
-                self.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')),
+                self.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')),
                 "initial frame never painted:\n{}",
                 self.contents()
             );
@@ -842,7 +842,7 @@ mod tests {
             h.contents()
         );
         let c = h.contents();
-        let composer = c.find('❯').expect("composer row");
+        let composer = c.find('─').expect("the composer's upper separator");
         let surface = c.find("/model").expect("surface title");
         assert!(
             composer < surface,
@@ -918,7 +918,7 @@ mod tests {
         // alternate screen and is never written out).
         let c = h.contents();
         assert!(
-            !c.contains('❯'),
+            !c.contains('─'),
             "a frame row left on the main screen:\n{c}"
         );
         let mark = c

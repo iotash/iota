@@ -1,5 +1,5 @@
 //! The self-built composer (`TUI_DESIGN` §5; spike G3): grapheme cursor, CJK columns via
-//! the `crate::text::width` ruler, soft wrap at width−2, 1..=5 rows with a derived
+//! the `crate::text::width` ruler, soft wrap at the full width (no prompt glyph), 1..=5 rows with a derived
 //! scroll viewport, real-cursor export, the ↑ history ring, and the completion-cycle
 //! state the suggest module reads.
 //!
@@ -14,7 +14,6 @@ use crate::text::width::{graphemes, str_width};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::editor::Editor;
-use crate::ui::render::theme::{CYAN, RESET};
 use crate::ui::runtime::event_loop::MAX_COMPOSER_ROWS;
 
 /// The composer state (model.go `ta` + the history/suggest model fields — the loop
@@ -37,9 +36,9 @@ pub(crate) struct Composer {
     pub(crate) suggestion_top: usize,
 }
 
-/// Content columns available inside the 2-column prompt gutter.
+/// Content columns: the whole width — the composer has no prompt glyph, the text starts at column 0.
 fn content_width(width: u16) -> usize {
-    usize::from(width).saturating_sub(2).max(1)
+    usize::from(width).max(1)
 }
 
 /// Hard-wraps `value` into display rows at `w` content columns: byte spans per row,
@@ -159,9 +158,8 @@ impl Composer {
         cursor_row.saturating_sub(h.saturating_sub(1))
     }
 
-    /// The styled composer rows: cyan `"❯ "` on display row 0, two-space
-    /// continuations on every other row (model.go:109-114), exactly
-    /// `effective_height` rows (short content pads with bare continuation rows).
+    /// The composer rows: the draft's display rows from column 0, no prompt glyph and no
+    /// continuation indent, exactly `effective_height` rows (short content pads with empty rows).
     pub(crate) fn rows(&self, width: u16) -> Vec<String> {
         let w = content_width(width);
         let spans = wrap_spans(self.editor.value(), w);
@@ -170,22 +168,17 @@ impl Composer {
         let offset = Self::scroll_offset(cursor_row, h);
         (0..h)
             .map(|vi| {
-                let gi = offset + vi;
-                let text = spans
-                    .get(gi)
-                    .map_or("", |&(s, e)| &self.editor.value()[s..e]);
-                if gi == 0 {
-                    format!("{CYAN}❯ {RESET}{text}")
-                } else {
-                    format!("  {text}")
-                }
+                spans
+                    .get(offset + vi)
+                    .map_or("", |&(s, e)| &self.editor.value()[s..e])
+                    .to_owned()
             })
             .collect()
     }
 
-    /// The real-cursor target within the composer block: (display column including
-    /// the 2-col prompt, visible row). CJK-aware via the ruler — the IME anchor
-    /// (spike G3: `"中文测试"` → column 10).
+    /// The real-cursor target within the composer block: (display column of the text,
+    /// visible row). CJK-aware via the ruler — the IME anchor
+    /// (spike G3: `"中文测试"` → column 8).
     pub(crate) fn cursor_pos(&self, width: u16) -> (u16, u16) {
         let w = content_width(width);
         let total = wrap_spans(self.editor.value(), w).len();
@@ -193,13 +186,13 @@ impl Composer {
         let (cursor_row, cursor_col) = self.cursor_rowcol(w);
         let offset = Self::scroll_offset(cursor_row, h);
         (
-            u16::try_from(2 + cursor_col).unwrap_or(u16::MAX),
+            u16::try_from(cursor_col).unwrap_or(u16::MAX),
             u16::try_from(cursor_row - offset).unwrap_or(u16::MAX),
         )
     }
 
     /// A click on the composer block: the cursor goes to the grapheme under display column `col`
-    /// (the prompt's two columns included) of visible row `row`, or to the end of that row when
+    /// of visible row `row`, or to the end of that row when
     /// the click is past it (a row past the draft's last: the draft's end). A wide glyph's second
     /// column is that glyph.
     pub(crate) fn click(&mut self, col: u16, row: usize, width: u16) {
@@ -212,7 +205,7 @@ impl Composer {
             self.editor.move_to_end();
             return;
         };
-        let col = usize::from(col).saturating_sub(2);
+        let col = usize::from(col);
         let mut walked = 0usize;
         let mut off = start;
         for g in graphemes(&self.editor.value()[start..end]) {
@@ -435,12 +428,13 @@ mod tests {
         }));
         type_text(&mut m, "queued");
         enter(&mut m); // no waiter → queue row above the top separator
+        type_text(&mut m, "draft"); // the composer row: no prompt glyph, the text at column 0
 
         let rows = plain(&mut m);
         let seps = separator_indices(&rows);
         assert_eq!(seps.len(), 2, "want exactly 2 separators:\n{rows:#?}");
         let queue = find(&rows, |r| r.contains("» queued")).expect("queue row");
-        let composer_row = find(&rows, |r| r.contains('❯')).expect("composer row");
+        let composer_row = find(&rows, |r| r == "draft").expect("composer row");
         let status = find(&rows, |r| r.contains("gpt-4o · ")).expect("status row");
         assert!(
             queue < seps[0] && seps[0] < composer_row && composer_row < seps[1] && seps[1] < status,
@@ -452,7 +446,7 @@ mod tests {
         let v = m.frame_view();
         let h = u16::try_from(v.rows.len()).unwrap();
         let grid = render_plain(&v.rows, 80, h);
-        let g_composer = find(&grid, |r| r.contains('❯')).expect("composer in grid");
+        let g_composer = find(&grid, |r| r == "draft").expect("composer in grid");
         let g_status = find(&grid, |r| r.contains("gpt-4o")).expect("status in grid");
         assert!(g_composer < g_status, "grid order wrong:\n{grid:#?}");
 
@@ -470,7 +464,7 @@ mod tests {
             !rows.iter().any(|r| r.contains("gpt-4o · ")),
             "status visible while a surface is open:\n{rows:#?}"
         );
-        let composer_row = find(&rows, |r| r.contains('❯')).expect("composer row");
+        let composer_row = find(&rows, |r| r == "draft").expect("composer row");
         let surface_row = find(&rows, |r| r.contains("/model")).expect("surface row");
         assert!(composer_row < surface_row, "surface not below the composer");
         m.handle_key(key(KeyCode::Esc));
@@ -488,11 +482,12 @@ mod tests {
             label: String::new(),
             desc: "Pick a model".to_owned(),
         }]));
+        m.composer.reset();
         type_text(&mut m, "/m");
         let rows = plain(&mut m);
         let seps = separator_indices(&rows);
-        let item = find(&rows, |r| r == "   model  Pick a model").expect("list item row");
-        let composer_row = find(&rows, |r| r.contains('❯')).expect("composer row");
+        let item = find(&rows, |r| r == "  model  Pick a model").expect("list item row");
+        let composer_row = find(&rows, |r| r == "/m").expect("composer row");
         let status = find(&rows, |r| r.contains("gpt-4o · ")).expect("status row");
         assert!(
             seps.len() == 2
@@ -506,7 +501,7 @@ mod tests {
         m.handle_key(key(KeyCode::Tab));
         let rows = plain(&mut m);
         assert!(
-            rows.iter().any(|r| r == " › model  Pick a model"),
+            rows.iter().any(|r| r == "› model  Pick a model"),
             "{rows:#?}"
         );
         assert!(
@@ -518,7 +513,7 @@ mod tests {
 
     /// The row boundaries: a row's end (newline byte or wrap boundary) is that row's, past a
     /// newline is the next one's, an empty line's zero-width span holds its own row. `width`
-    /// 12 is 10 content columns.
+    /// 10 is 10 content columns.
     #[test]
     fn cursor_row_owns_each_rows_end() {
         let at = |value: &str, cursor: usize, width: u16| {
@@ -527,22 +522,22 @@ mod tests {
             c.editor.set_cursor(cursor);
             c.cursor_row(width)
         };
-        assert_eq!(at("", 0, 12), (0, 1));
-        assert_eq!(at("abc", 0, 12), (0, 1));
-        assert_eq!(at("abc", 3, 12), (0, 1));
-        assert_eq!(at("a\nb", 1, 12), (0, 2), "on the newline byte");
-        assert_eq!(at("a\nb", 2, 12), (1, 2), "just after the newline");
-        assert_eq!(at("a\n\nb", 2, 12), (1, 3), "on the empty line");
-        assert_eq!(at("a\n\nb", 3, 12), (2, 3), "after the empty line");
-        assert_eq!(at("a\n", 2, 12), (1, 2), "the empty last line");
+        assert_eq!(at("", 0, 10), (0, 1));
+        assert_eq!(at("abc", 0, 10), (0, 1));
+        assert_eq!(at("abc", 3, 10), (0, 1));
+        assert_eq!(at("a\nb", 1, 10), (0, 2), "on the newline byte");
+        assert_eq!(at("a\nb", 2, 10), (1, 2), "just after the newline");
+        assert_eq!(at("a\n\nb", 2, 10), (1, 3), "on the empty line");
+        assert_eq!(at("a\n\nb", 3, 10), (2, 3), "after the empty line");
+        assert_eq!(at("a\n", 2, 10), (1, 2), "the empty last line");
         let long = "x".repeat(25);
-        assert_eq!(at(&long, 10, 12), (0, 3), "a wrap boundary ends the row");
-        assert_eq!(at(&long, 11, 12), (1, 3));
-        assert_eq!(at(&long, 20, 12), (1, 3));
-        assert_eq!(at(&long, 21, 12), (2, 3));
-        assert_eq!(at("中中中", 6, 6), (0, 2), "two wide glyphs fill 4 columns");
+        assert_eq!(at(&long, 10, 10), (0, 3), "a wrap boundary ends the row");
+        assert_eq!(at(&long, 11, 10), (1, 3));
+        assert_eq!(at(&long, 20, 10), (1, 3));
+        assert_eq!(at(&long, 21, 10), (2, 3));
+        assert_eq!(at("中中中", 6, 4), (0, 2), "two wide glyphs fill 4 columns");
         assert_eq!(
-            at("中中中", 6, 5),
+            at("中中中", 6, 3),
             (1, 3),
             "3 columns hold one, its gap unused"
         );
@@ -690,85 +685,79 @@ mod tests {
     }
 
     /// Spike G3 vectors: CJK cursor columns through the real frame — `"中文测试"` puts
-    /// the REAL cursor at column 10 (2-col prompt + 4×2 CJK cells); Backspace deletes one
+    /// the REAL cursor at column 8 (4×2 CJK cells from column 0 — no prompt glyph); Backspace deletes one
     /// grapheme, double-width aware.
     // Established by the ratatui inline spike (tag go-final: rust/spikes/ratatui-inline).
     #[test]
     fn composer_cjk_cursor_columns() {
         let mut m = test_model();
         type_text(&mut m, "中文测试");
-        assert_eq!(m.composer.cursor_pos(80), (10, 0), "CJK cursor column");
+        assert_eq!(m.composer.cursor_pos(80), (8, 0), "CJK cursor column");
         let v = m.frame_view();
         let rows: Vec<String> = v.rows.iter().map(|r| strip_sgr(r)).collect();
-        let composer_row = find(&rows, |r| r.contains("❯ 中文测试")).expect("composer row");
+        let composer_row = find(&rows, |r| r == "中文测试").expect("composer row at column 0");
         assert_eq!(
             v.cursor,
-            Some((10, u16::try_from(composer_row).unwrap())),
-            "real cursor must sit at prompt(2) + 8 CJK columns on the composer row"
+            Some((8, u16::try_from(composer_row).unwrap())),
+            "real cursor must sit right of the 8 CJK columns on the composer row"
         );
 
         m.handle_key(key(KeyCode::Backspace));
         assert_eq!(m.composer.value(), "中文测", "grapheme backspace");
-        assert_eq!(m.composer.cursor_pos(80), (8, 0));
+        assert_eq!(m.composer.cursor_pos(80), (6, 0));
     }
 
-    /// Wrap math: soft wrap at width−2 in display columns, a wide rune never split; a
+    /// Wrap math: soft wrap at the full width in display columns, a wide rune never split; a
     /// single logical line follows its wrapped height 1..=5; scrolled viewports snap back
     /// once the content fits; Enter collapse resets to one row.
     #[test]
     fn composer_wrap_growth_scroll_and_collapse() {
         let mut c = Composer::new();
 
-        // width 10 → 8 content columns: 5 CJK (10 cols) wrap 4+1, never splitting a rune.
+        // width 8 → 8 content columns: 5 CJK (10 cols) wrap 4+1, never splitting a rune; both
+        // rows start at column 0.
         c.set_value("中中中中中");
-        assert_eq!(c.rows(10).len(), 2);
-        let rows = c.rows(10);
-        assert!(strip_sgr(&rows[0]).ends_with("中中中中"), "{rows:?}");
-        assert_eq!(strip_sgr(&rows[1]), "  中", "{rows:?}");
+        assert_eq!(c.rows(8), ["中中中中", "中"]);
 
-        // width 9 → 7 content columns: only 3 CJK (6 cols) fit a row — a wide rune never
-        // straddles the boundary.
-        assert_eq!(c.rows(9).len(), 2);
-        assert!(strip_sgr(&c.rows(9)[0]).ends_with("中中中"));
+        // width 7: only 3 CJK (6 cols) fit a row — a wide rune never straddles the boundary.
+        assert_eq!(c.rows(7), ["中中中", "中中"]);
 
-        // A long ASCII line grows the composer with its wrapped height…
+        // At 80 columns the text has all 80: 80 x's are one row, the 81st wraps.
         let mut c = Composer::new();
-        c.set_value(&"x".repeat(200)); // 200 cols at 78 content cols → 3 rows
+        c.set_value(&"x".repeat(80));
+        assert_eq!(c.rows(80).len(), 1, "80 columns of text fill one row");
+        c.set_value(&"x".repeat(200)); // 200 cols at 80 → 3 rows
         assert_eq!(c.rows(80).len(), 3, "auto growth follows the wrap");
 
         // …capped at 5 rows with the viewport scrolled to keep the cursor visible.
         let mut c = Composer::new();
-        c.set_value(&"y".repeat(7 * 8)); // width 10 → 8 content cols → 7 wrapped rows
-        let rows = c.rows(10);
+        let draft: String = ('a'..='g').map(|ch| ch.to_string().repeat(8)).collect();
+        c.set_value(&draft); // width 8 → 7 wrapped rows a…g
+        let rows = c.rows(8);
         assert_eq!(rows.len(), 5, "growth cap");
-        assert!(
-            !rows[0].contains('❯'),
-            "cursor at the end must scroll the prompt row out: {rows:?}"
+        assert_eq!(
+            rows[0], "cccccccc",
+            "cursor at the end scrolls the top rows out"
         );
-        let (x, y) = c.cursor_pos(10);
-        assert_eq!((x, y), (10, 4), "cursor pinned to the last visible row");
+        let (x, y) = c.cursor_pos(8);
+        assert_eq!((x, y), (8, 4), "cursor pinned to the last visible row");
 
         // Home snaps the viewport back to the top (the derived scroll-snap law).
-        c.handle_edit_key(&key(KeyCode::Home), 10);
-        let rows = c.rows(10);
-        assert!(
-            rows[0].contains('❯'),
-            "viewport must snap back to the top: {rows:?}"
-        );
-        assert_eq!(c.cursor_pos(10), (2, 0));
+        c.handle_edit_key(&key(KeyCode::Home), 8);
+        let rows = c.rows(8);
+        assert_eq!(rows[0], "aaaaaaaa", "viewport must snap back to the top");
+        assert_eq!(c.cursor_pos(8), (0, 0));
 
-        // Enter collapse sheds the bottom rows back to one empty prompt row.
+        // Enter collapse sheds the bottom rows back to one empty row.
         c.reset();
-        let rows = c.rows(10);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(strip_sgr(&rows[0]), "❯ ");
+        assert_eq!(c.rows(8), [""]);
     }
 
     /// A multi-line draft grows by its WRAPPED rows, not its logical lines (X-65): a 200-column
     /// line plus a newline plus `b` is 3 + 1 rows at width 80 — typed, set, or folded back.
     #[test]
     fn a_multi_line_draft_grows_by_its_wrapped_rows() {
-        let long = "x".repeat(200); // 200 cols at 78 content cols → 3 rows
+        let long = "x".repeat(200); // 200 cols at 80 content cols → 3 rows
 
         let mut m = test_model();
         type_text(&mut m, &long);
@@ -776,9 +765,9 @@ mod tests {
         type_text(&mut m, "b");
         let rows = m.composer.rows(80);
         assert_eq!(rows.len(), 4, "3 wrapped rows + 1: {rows:?}");
-        assert!(rows[0].contains('❯'), "the whole draft fits: no scroll");
-        assert_eq!(strip_sgr(&rows[3]), "  b");
-        assert_eq!(m.composer.cursor_pos(80), (3, 3));
+        assert_eq!(rows[0], "x".repeat(80), "the whole draft fits: no scroll");
+        assert_eq!(rows[3], "b", "a continuation row starts at column 0 too");
+        assert_eq!(m.composer.cursor_pos(80), (1, 3));
 
         let mut c = Composer::new();
         c.set_value(&format!("{long}\nb"));
@@ -872,7 +861,7 @@ mod tests {
 
         // Grow the draft to three rows: the anchor moves down by exactly two rows, i.e.
         // it tracks the composer block instead of assuming a one-row composer.
-        m.composer.set_value(&"x".repeat(200)); // 200 cols at 78 content cols → 3 rows
+        m.composer.set_value(&"x".repeat(200)); // 200 cols at 80 content cols → 3 rows
         assert_eq!(
             m.composer.rows(80).len(),
             3,

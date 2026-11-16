@@ -24,7 +24,7 @@ type_ 'queued'
 key Enter
 wait_vis '» queued' || miss "the queued submit never rendered"
 type_ 'half'
-wait_vis '❯ half' || miss "the half-typed draft never rendered"
+wait_draft 'half' || miss "the half-typed draft never rendered"
 
 release "$HOLD"
 wait_all 'l#06 line' || miss "the released stream never moved on"
@@ -34,14 +34,13 @@ settle || miss "frame never settled after the interrupt"
 
 check_once "the interrupt notice is committed exactly once" 'Interrupted.'
 check "the queue row is gone (folded, not dropped)" "$(count_vis '» queued')" 0
-check "fold row 1: the queued submit heads the draft" "$(count_composer '❯ queued')" 1
-check "fold row 2: the half-typed draft follows it" "$(count_composer '  half')" 1
-check "the folded draft is TWO composer rows, not a submit" "$(composer_block | wc -l | tr -d ' ')" 2
-check "…and it is still ONE prompt" "$(count_composer '❯')" 1
+check "fold row 1: the queued submit heads the draft" "$(composer_line 1)" "queued"
+check "fold row 2: the half-typed draft follows it, at column 0" "$(composer_line 2)" "half"
+check "the folded draft is TWO composer rows, not a submit" "$(composer_rows)" 2
 # The real cursor follows the fold onto the SECOND composer row, at the end of the half-typed
 # text — where an IME would anchor after a multi-row draft (docs/TUI-VERIFY.md §1.4).
 comp="$(composer_row)"
-check "the real cursor sits at the end of the folded draft's last row" "$(cursor_xy)" "6 $comp"
+check "the real cursor sits at the end of the folded draft's last row" "$(cursor_xy)" "4 $comp"
 
 # The turn is really cancelled: no further inserts, and the cancel hint is gone with the
 # scope that owned it.
@@ -64,8 +63,8 @@ check "status line is back in the bottom zone" "$(status_model)" "  fake"
 key Enter
 wait_all 'echo: queued' || miss "the folded draft never reached the model"
 settle || miss "frame never settled after the resubmit"
-check "the folded draft submitted as ONE two-line message" "$(count_all '❯ queued')" 1
-check "the composer is empty again" "$(count_composer '❯ queued')" 0
+check "the folded draft submitted as ONE two-line message" "$(count_all '▌ queued')" 1
+check "the composer is empty again" "$(count_composer 'queued')" 0
 check_frame_intact "after resubmitting the folded draft" 80
 
 finish

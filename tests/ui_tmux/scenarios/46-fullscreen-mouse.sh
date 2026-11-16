@@ -59,13 +59,14 @@ check "new output shows at the bottom" "$(printf '%s' "$last_conv" | grep -c 'l#
 
 # --- B. a click on the composer -------------------------------------------------------------------
 type_ 'hello world'
-check "the draft shows" "$(wait_composer '❯ hello world' 1)" 1
+check "the draft shows" "$(wait_composer 'hello world' 1)" 1
 crow="$(composer_row)"
-# Column 6 (1-based) is the fourth glyph after the 2-column prompt: before the second `l`.
-mouse 0 6 "$crow"
-mouse 0 6 "$crow" m
+# Column 4 (1-based) is the fourth glyph — the text starts at column 0, no prompt before it:
+# before the second `l`.
+mouse 0 4 "$crow"
+mouse 0 4 "$crow" m
 type_ 'X'
-check "a click put the composer's cursor under the pointer" "$(wait_composer '❯ helXlo world' 1)" 1
+check "a click put the composer's cursor under the pointer" "$(wait_composer 'helXlo world' 1)" 1
 key End
 for _ in $(seq 12); do key BSpace; done
 check "the draft is cleared" "$(wait_composer 'hel' 0)" 0
@@ -112,7 +113,7 @@ check "the other program got every line" "$(grep -cE '^l#[0-9]+ line$' "$SCEN_TM
 key C-End
 wait_gone 'Ctrl+End' || true
 key x
-check "a key after the copy is typed" "$(wait_composer '❯ x' 1)" 1
+check "a key after the copy is typed" "$(wait_composer 'x' 1)" 1
 key BSpace
 
 # --- D. a surface takes the interaction cap -------------------------------------------------------

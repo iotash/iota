@@ -80,24 +80,24 @@ check_frame_intact "after the oversized submit" 80
 # rune's width, a delete gives the columns back. The app's half of the law, on a real terminal.
 comp="$(composer_row)"
 type_ '中文字'
-wait_vis '❯ 中文字' || miss "the CJK draft never rendered"
-check "cursor after three wide runes" "$(cursor_xy)" "8 $((comp - 1))"
+wait_draft '中文字' || miss "the CJK draft never rendered"
+check "cursor after three wide runes" "$(cursor_xy)" "6 $((comp - 1))"
 key Left
 key Left
-_poll_until 20 cursor_is "4 $((comp - 1))" || true
-check "← twice: the cursor sits after the first rune" "$(cursor_xy)" "4 $((comp - 1))"
+_poll_until 20 cursor_is "2 $((comp - 1))" || true
+check "← twice: the cursor sits after the first rune" "$(cursor_xy)" "2 $((comp - 1))"
 type_ '插'
-wait_vis '❯ 中插文字' || miss "the mid-line insert never rendered"
-check "a mid-line insert moves the cursor by the rune's two columns" "$(cursor_xy)" "6 $((comp - 1))"
+wait_draft '中插文字' || miss "the mid-line insert never rendered"
+check "a mid-line insert moves the cursor by the rune's two columns" "$(cursor_xy)" "4 $((comp - 1))"
 key BSpace
-wait_vis '❯ 中文字' || miss "the mid-line delete never rendered"
-_poll_until 20 cursor_is "4 $((comp - 1))" || true
-check "…and a delete gives them back" "$(cursor_xy)" "4 $((comp - 1))"
+wait_draft '中文字' || miss "the mid-line delete never rendered"
+_poll_until 20 cursor_is "2 $((comp - 1))" || true
+check "…and a delete gives them back" "$(cursor_xy)" "2 $((comp - 1))"
 key C-e
-_poll_until 20 cursor_is "8 $((comp - 1))" || true
-check "Ctrl+E returns to the end of the draft" "$(cursor_xy)" "8 $((comp - 1))"
+_poll_until 20 cursor_is "6 $((comp - 1))" || true
+check "Ctrl+E returns to the end of the draft" "$(cursor_xy)" "6 $((comp - 1))"
 key C-u
-wait_gone '❯ 中文字' || miss "Ctrl+U did not clear the draft"
+wait_draft_gone '中文字' || miss "Ctrl+U did not clear the draft"
 
 # ------------------------------------------------- pin 3c: the cursor on a wrapped composer row (§1.4)
 # A draft wider than the row wraps INSIDE the composer (up to MAX_COMPOSER_ROWS); the real
@@ -114,24 +114,24 @@ comp="$(composer_row)"
 row2="$(composer_block | sed -n 2p)"
 check "the cursor sits at the end of the WRAPPED row" "$(cursor_xy)" "$(printf '%s' "$row2" | wc -m | tr -d ' ') $comp"
 key C-a
-_poll_until 20 cursor_is "2 $((comp - 1))" || true
-check "Ctrl+A returns to the first row's first column" "$(cursor_xy)" "2 $((comp - 1))"
+_poll_until 20 cursor_is "0 $((comp - 1))" || true
+check "Ctrl+A returns to the first row's first column (column 0: no prompt glyph)" "$(cursor_xy)" "0 $((comp - 1))"
 key C-e
 key C-u
 _poll_until 30 composer_rows_is 1 || miss "Ctrl+U did not clear the wrapped draft"
 
-# The same with wide runes: 40 × `中` is 80 columns, one more than the first row holds.
+# The same with wide runes: 41 × `中` is 82 columns, one more than the first row's 80 hold.
 comp="$(composer_row)"
-type_ "$(printf '中%.0s' $(seq 1 40))"
-_poll_until 30 composer_rows_is 2 || miss "an 80-column CJK draft did not wrap to two composer rows"
+type_ "$(printf '中%.0s' $(seq 1 41))"
+_poll_until 30 composer_rows_is 2 || miss "an 82-column CJK draft did not wrap to two composer rows"
 settle || miss "the wrapped CJK draft never settled"
 comp="$(composer_row)"
 row1="$(composer_block | sed -n 1p)"
 row2="$(composer_block | sed -n 2p)"
 n1="$(printf '%s' "$row1" | grep -o '中' | wc -l | tr -d ' ')"
 n2="$(printf '%s' "$row2" | grep -o '中' | wc -l | tr -d ' ')"
-check "the first row holds 39 wide runes and wraps the 40th whole" "$n1/$n2" "39/1"
-check "the cursor sits after the wrapped rune" "$(cursor_xy)" "$((2 + 2 * n2)) $comp"
+check "the first row holds 40 wide runes and wraps the 41st whole" "$n1/$n2" "40/1"
+check "the cursor sits after the wrapped rune" "$(cursor_xy)" "$((2 * n2)) $comp"
 key C-u
 _poll_until 30 composer_rows_is 1 || miss "Ctrl+U did not clear the wrapped CJK draft"
 check_frame_intact "after the wrapped drafts" 80

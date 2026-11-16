@@ -953,7 +953,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         for n in &ahead {
             repl.handles.tr.notice(&n.display);
         }
-        // The ❯ echo comes FIRST, so what the user typed is on screen even if the model
+        // The ▌ echo comes FIRST, so what the user typed is on screen even if the model
         // pick below fails. A notice prints its ONE headline instead — its output belongs to the model,
         // not to the scrollback (the file is there for whoever wants all of it).
         if notice {

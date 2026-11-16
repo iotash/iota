@@ -25,7 +25,7 @@ settle || miss "composer never settled after the paste"
 # ONE event: nothing was submitted (the block's newlines never reached the key handler),
 # the tag is a single composer row, and the store holds exactly one entry (id #1).
 check "the paste arrived as ONE event — nothing submitted" "$(view_rows)" "$before_view"
-check "the tag collapses the block to one composer row" "$(count_composer '❯ [#1 paste line one… 3 lines]')" 1
+check "the tag collapses the block to one composer row" "$(count_composer '[#1 paste line one… 3 lines]')" 1
 check "still a one-row composer" "$(composer_block | wc -l | tr -d ' ')" 1
 check "the tag counts the block's lines, CR-normalised" "$(count_composer '3 lines]')" 1
 check_frame_intact "with a paste tag in the composer" 80
@@ -35,7 +35,7 @@ wait_all 'echo: paste line one' || miss "the expanded paste never reached the mo
 settle || miss "frame never settled after the submit"
 
 # The echo: the tag expands to the block, one transcript row per line, CJK intact.
-check_once "echo row 1" '❯ paste line one'
+check_once "echo row 1" '▌ paste line one'
 check_once "echo row 2" '  paste line two'
 check_once "echo row 3 (CJK survives the round trip)" '  第三行中文'
 check "the tag left the composer on submit" "$(count_composer '[#1 paste')" 0

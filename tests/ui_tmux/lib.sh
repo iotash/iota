@@ -178,7 +178,7 @@ _launch() {
     # once — has taken longer than the 12 s `wait_vis` allows (CI 35690927078, the ubuntu leg:
     # scenario 19 was the first to start and nothing else failed). Startup gets 40 s, and a
     # miss prints what the pane showed instead, so the next one is diagnosable.
-    _poll_until 400 _vis_has '❯' || {
+    _poll_until 400 _frame_up || {
         bad "startup composer never appeared"
         echo "---- pane at the miss ----"
         capall | tail -20
@@ -362,9 +362,9 @@ count_all() { capall | grep -cF -- "$1" | tr -d ' '; }
 # --- the frame window --------------------------------------------------------------
 #
 # Every frame assertion works inside the LAST pair of separator rows, never on the whole
-# pane: a committed user block opens with the same `❯` glyph the composer uses, and a
-# resize can strand a stale separator of the old width above the live frame. The pair is
-# the only unambiguous anchor.
+# pane: the composer has no glyph of its own (its text starts at column 0), so what it holds
+# is only told from the conversation by where it is, and a resize can strand a stale separator
+# of the old width above the live frame. The pair is the only unambiguous anchor.
 #
 # A helper that reads the pair AND the rows between it reads them off ONE capture (`_snap`):
 # the frame moves under a running turn — every streamed line scrolls the screen up and inserts
@@ -388,14 +388,42 @@ composer_block() {
     if [ -n "$t" ] && [ -n "$b" ] && [ "$b" -gt "$t" ]; then printf '%s\n' "$s" | sed -n "$((t + 1)),$((b - 1))p"; fi
 }
 
-# 1-based pane row of the composer's first (prompt) row.
-composer_row() {
-    local s t off
+# Whether the frame is up: a separator pair with the composer between it.
+_frame_up() {
+    local s t b
     s="$(cap)"
     t="$(frame_top "$s")"
-    off="$(composer_block "$s" | grep -n '❯' | head -1 | cut -d: -f1)"
-    if [ -n "$t" ] && [ -n "$off" ]; then echo $((t + off)); fi
+    b="$(frame_bot "$s")"
+    [ -n "$t" ] && [ -n "$b" ] && [ "$b" -gt "$t" ]
 }
+# The frame came up — what `wait_vis` on a prompt glyph was, for a composer that has none.
+wait_frame() { _poll_until 120 _frame_up; }
+
+# 1-based pane row of the composer's first row.
+composer_row() {
+    local s t b
+    s="$(cap)"
+    t="$(frame_top "$s")"
+    b="$(frame_bot "$s")"
+    if [ -n "$t" ] && [ -n "$b" ] && [ "$b" -gt $((t + 1)) ]; then echo $((t + 1)); fi
+}
+
+# composer_line <n> [capture] — the composer's <n>th row, trailing blanks dropped.
+composer_line() {
+    local n="$1"
+    shift
+    composer_block "$@" | sed -n "${n}p" | sed 's/ *$//'
+}
+
+# The composer's row count.
+composer_rows() { composer_block "$@" | wc -l | tr -d ' '; }
+
+# wait_draft <fixed string> / wait_draft_gone <fixed string> — the composer holds / no longer
+# holds the text (a `wait_vis` would also see it in the conversation).
+_draft_has() { composer_block | grep -qF -- "$1"; }
+_draft_lacks() { ! _draft_has "$1"; }
+wait_draft() { _poll_until 120 _draft_has "$1"; }
+wait_draft_gone() { _poll_until 120 _draft_lacks "$1"; }
 
 # count_composer <fixed string> [capture]
 count_composer() {
@@ -445,7 +473,7 @@ list_block() {
 count_list() {
     local f="$1"
     shift
-    list_block "$@" | grep -cE -- "^ (› |  )$f(  |\$)" | tr -d ' '
+    list_block "$@" | grep -cE -- "^(› |  )$f(  |\$)" | tr -d ' '
 }
 
 # The status row's MODEL segment alone — everything before the first " · " joiner.
@@ -683,7 +711,7 @@ _frame_holds() {
     b="$(frame_bot "$1")"
     [ -n "$t" ] && [ -n "$b" ] && [ "$b" -gt "$t" ] \
         && [ "$(row_width "$t" "$1")" = "$2" ] && [ "$(row_width "$b" "$1")" = "$2" ] \
-        && [ "$(count_composer '❯' "$1")" = 1 ] \
+        && [ "$(composer_rows "$1")" = 1 ] \
         && [ -n "$(bottom_zone "$1")" ]
 }
 
@@ -716,7 +744,7 @@ check_frame_intact() {
     fi
     check "$label: top separator spans the terminal" "$(row_width "$t" "$s")" "$width"
     check "$label: bottom separator spans the terminal" "$(row_width "$b" "$s")" "$width"
-    check "$label: exactly one composer row between them" "$(count_composer '❯' "$s")" 1
+    check "$label: exactly one composer row between them" "$(composer_rows "$s")" 1
     if [ -n "$(bottom_zone "$s")" ]; then
         ok "$label: the bottom zone is occupied (row $((b + 1)))"
     else

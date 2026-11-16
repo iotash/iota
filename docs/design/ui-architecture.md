@@ -307,7 +307,7 @@ shared turn-state races. Adopted instead:
   command stops the take so ordering survives) appends them to history as
   user messages, so the NEXT round's request carries them and the model
   reacts mid-task. The transcript settles the running activity group first
-  (a user speaking outranks content as a boundary) and echoes the ❯ block
+  (a user speaking outranks content as a boundary) and echoes the ▌ block
   in place. A failing call is retried in place (one ladder per call,
   DIVERGENCES X-73), so taken injections stay where they landed and are
   never re-landed. Streaming turns without tools

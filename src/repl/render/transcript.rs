@@ -31,7 +31,7 @@ pub enum BlockKind {
     /// Nothing committed yet (the session's first block pays no separator).
     #[default]
     None,
-    /// The `❯` user block.
+    /// The `▌` user block.
     User,
     /// An activity group (widget raise / settled summary).
     Activity,
@@ -184,7 +184,7 @@ impl Transcript {
         lock(&self.inner)
     }
 
-    /// Renders the submitted input as the `❯` block (transcript.go `user`). A mid-turn
+    /// Renders the submitted input as the `▌` block (transcript.go `user`). A mid-turn
     /// injection (steering) lands while an activity group is running — the user speaking
     /// is a stronger boundary than content, so the group settles first; at a normal turn
     /// start the group is empty and the settle is a no-op.

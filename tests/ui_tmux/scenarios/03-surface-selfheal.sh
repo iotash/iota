@@ -44,7 +44,7 @@ check "panel title row (the capability tab bar)" "$(cap | sed -n "$((panel - 1))
     " Model  │  Context  │  Effort  │  Temperature"
 check "panel offers every model the provider listed" "$(count_vis '  gemini-pro')" 1
 check "the footer is the last frame row" "$foot" "$((panel + 3))"
-check "composer still the one input row" "$(count_composer '❯')" 1
+check "composer still the one input row" "$(composer_rows)" 1
 check "the panel did not disturb the separator pair" "$(sep_width)" 80
 
 key Escape

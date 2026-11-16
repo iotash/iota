@@ -53,7 +53,7 @@ measure_world() {
     : >"$OUT"
     pipe_raw
     tmo pipe-pane -t m -o "cat >> $OUT"
-    _poll_until 50 _vis_has '❯' || miss "$world: the composer is not on screen"
+    _poll_until 50 _frame_up || miss "$world: the composer is not on screen"
     settle
     quiet
     echo "$world: pane $(tm display-message -pt s '#{pane_width}x#{pane_height}')"

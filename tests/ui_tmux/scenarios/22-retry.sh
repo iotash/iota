@@ -48,7 +48,7 @@ wait_all 'echo: steer' || miss "the queued line never reached the model"
 settle || miss "frame never settled after the recovery"
 check_once "ONE recovery notice" '⟳ Provider server error (503) — recovered after 2 attempt(s)'
 check_once "the answer landed once" 'echo: fail:503:6 hello'
-check_once "the line typed during the backoff landed once" '❯ steer'
+check_once "the line typed during the backoff landed once" '▌ steer'
 check_once "…and was answered once" 'echo: steer'
 check "no red block anywhere" "$(red_rows)" 0
 check "no ✗ row" "$(count_all '✗')" 0

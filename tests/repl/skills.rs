@@ -248,7 +248,7 @@ async fn skills_named_expands_into_the_message_path() {
         "missing the loaded notice: {:?}",
         printed(&f.ui)
     );
-    // The echo shows the typed line — a whole SKILL.md in the ❯ block would bury the screen.
+    // The echo shows the typed line — a whole SKILL.md in the ▌ block would bury the screen.
     assert_eq!(echoes(&f.ui), ["/skills brain-page do it"]);
     // The provider got the expansion, not the command.
     let sent = contents(&sent);

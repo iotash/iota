@@ -23,9 +23,9 @@ check_once "the mode row says the chat was resumed" "│ chat · resumed $SESSIO
 # The whole echo window, exactly once each — 42 body rows plus the three user echoes.
 check "every echoed body row is present" "$(uniq_all 'r(29|30|31) body line [0-9][0-9]')" 42
 check "no echoed body row is duplicated" "$(dupes_all 'r(29|30|31) body line [0-9][0-9]')" ""
-check_once "echo window round 29 header" '❯ r29 question'
-check_once "echo window round 30 header" '❯ r30 question'
-check_once "echo window round 31 header" '❯ r31 question'
+check_once "echo window round 29 header" '▌ r29 question'
+check_once "echo window round 30 header" '▌ r30 question'
+check_once "echo window round 31 header" '▌ r31 question'
 
 # …and only that window: older rounds are not in the buffer.
 check "only the three rounds are echoed" "$(uniq_all 'r[0-9][0-9] question')" 3

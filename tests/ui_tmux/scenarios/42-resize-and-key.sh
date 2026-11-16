@@ -15,7 +15,7 @@
 ROUNDS=40
 # The process's CPU time so far, in centiseconds (`ps -o time` is [[dd-]hh:]mm:ss.cc).
 cputime() { ps -o time= -p "$pid" | tr -d ' ' | awk -F'[:.]' '{ n = NF; print (($(n-2) * 60) + $(n-1)) * 100 + $n }'; }
-draft() { composer_block | head -1 | sed -E 's/^❯ ?//' | tr -d ' '; }
+draft() { composer_block | head -1 | tr -d ' '; }
 
 start 80 24 || finish
 settle || miss "startup never settled"

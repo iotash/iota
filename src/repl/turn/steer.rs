@@ -12,7 +12,7 @@ use crate::repl::context::meter::CtxMeter;
 use crate::repl::render::transcript::Transcript;
 
 /// The steering bookkeeping of one turn (Go's `steer` closure on `Run`'s
-/// stack): draining echoes the `❯` block — which SETTLES the running activity group, the
+/// stack): draining echoes the `▌` block — which SETTLES the running activity group, the
 /// user being a stronger boundary than content. A background job's
 /// completion notice arrives the same way and is echoed as a notice line instead.
 ///
@@ -74,7 +74,7 @@ impl Steerer {
             }
             // A host notice (a background job finished) rides the SAME queue and lands at the same
             // boundary, but it is not the user speaking: one dim headline, and the message says so.
-            // It settles the running group exactly as the `❯` block does — the headline goes
+            // It settles the running group exactly as the `▌` block does — the headline goes
             // under the call that was running when the job ended, not above its rows. A message from
             // another process is the same kind of thing and lands the same way.
             let m = if input.kind.is_notice() {

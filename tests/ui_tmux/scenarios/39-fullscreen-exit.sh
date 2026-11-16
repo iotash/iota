@@ -33,7 +33,7 @@ check "the main screen is back" "$(tm display-message -pt s '#{alternate_on}')" 
 all="$(capall)"
 count() { printf '%s\n' "$all" | grep -cF -- "$1" | tr -d ' '; }
 check "the banner is in the history once" "$(count 'ι> iota')" 1
-check "the user's block is in the history once" "$(count '❯ stream 50 5')" 1
+check "the user's block is in the history once" "$(count '▌ stream 50 5')" 1
 missing=0
 dupes=0
 k=0

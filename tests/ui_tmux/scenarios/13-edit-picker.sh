@@ -61,7 +61,7 @@ settle || miss "frame never settled after the generation"
 
 check_once "the saved-image caption lands exactly once" '🖼 saved: '
 # …under the user echo: the banner's wordmark above it is half blocks too.
-if capall | sed -n '/❯ a red square/,$p' | grep -qF '  ▀'; then
+if capall | sed -n '/▌ a red square/,$p' | grep -qF '  ▀'; then
     ok "the picture rendered as indented half-block rows"
 else
     bad "no half-block rows in the history"

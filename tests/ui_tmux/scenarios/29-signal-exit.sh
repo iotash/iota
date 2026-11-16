@@ -62,7 +62,7 @@ cmd="$(iota_cmd openai fake)"
 # quote pair, so the echo of the typed line itself never matches it.
 type_ "$cmd; echo \"r\"\"c=\$?\"; stty -a | tr ' ' '\\n' | grep -xE -- '-?icanon' | sed 's/^/t''ty=/'"
 key Enter
-wait_vis '❯' || miss "A: the composer never came up under the shell"
+wait_frame || miss "A: the composer never came up under the shell"
 _poll_until 50 _iota_up || miss "A: no iota process under the pane's shell"
 _poll_until 30 _paste_is on
 check "A: bracketed paste is on while iota runs" "$(paste_mode)" "on"
@@ -95,7 +95,7 @@ fi
 start_shell 80 24 || finish
 type_ "$cmd; echo \"r\"\"c=\$?\""
 key Enter
-wait_vis '❯' || miss "C: the composer never came up under the shell"
+wait_frame || miss "C: the composer never came up under the shell"
 key C-d
 if _poll_until 30 _vis_has 'rc='; then
     check "C: an idle Ctrl+D exits 0" "$(cap | grep -o 'rc=[0-9]*' | tail -1)" "rc=0"

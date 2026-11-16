@@ -302,7 +302,7 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
 }
 
 /// `/jobs` is the one row that flips at run time, and with no background job it is not in the table —
-/// so typing it is a message like any unregistered `/xyz`: no panel, a `❯` block, the model's answer.
+/// so typing it is a message like any unregistered `/xyz`: no panel, a `▌` block, the model's answer.
 /// (The other half — a running job puts the row in the table and the command opens the Jobs panel — is
 /// `tests/repl/jobs.rs`, which can start a real job.)
 #[tokio::test]
@@ -344,7 +344,7 @@ fn reads(ui: &ScriptedUi) -> usize {
 }
 
 /// `/exit` leaves the loop the way an idle Ctrl+D does: a clean return from `run`, nothing sent to the
-/// model, no `❯` block, and the loop never asks for another line (the scripted one after it stays unread).
+/// model, no `▌` block, and the loop never asks for another line (the scripted one after it stays unread).
 #[tokio::test]
 async fn exit_leaves_the_loop_like_ctrl_d() {
     let f = Fixture::new(vec![input("/exit"), input("never read")]);

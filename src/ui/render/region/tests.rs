@@ -119,7 +119,7 @@ fn region_two_round_tool_turn() {
     let mut r = region_emitting(move |over, _| c.lock().unwrap().extend(over));
 
     // round 1
-    r.commit(s(&["❯ user prompt"])); // user block
+    r.commit(s(&["▌ user prompt"])); // user block
     r.commit(s(&[""])); // openThinking separator
     r.open_call_preview("Thinking"); // thinking widget
     r.close_preview(); // settleThinking
@@ -142,7 +142,7 @@ fn region_two_round_tool_turn() {
     let stream = scroll.lock().unwrap().clone();
 
     let want = [
-        "❯ user prompt",
+        "▌ user prompt",
         "",
         "◇ thought for <1s A",
         "",

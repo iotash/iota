@@ -55,7 +55,7 @@ start_shell 80 24 || finish
 pipe_raw
 type_ "$(iota_cmd openai fake)"
 key Enter
-wait_vis '❯' || {
+wait_frame || {
     miss "the binary never came up in the shell pane"
     finish
 }
@@ -87,7 +87,7 @@ check_raw "a turn finished while UNFOCUSED writes OSC 9 with the answer's first 
 focus gained
 turn 'refocused hello'
 check_raw "a turn finished after the REFOCUS is silent again" "${ESC}]9;echo: refocused hello" no
-check "the gate did not disturb the frame" "$(count_composer '❯')" 1
+check "the gate did not disturb the frame" "$(composer_rows)" 1
 
 # ------------------------------------------------------------------ C: a quit out of a turn (§7.1)
 : >"$RAW"

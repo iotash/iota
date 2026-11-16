@@ -210,7 +210,7 @@ pub(crate) fn echo_rounds(
     let mut tool_results: u32 = 0;
     for msg in msgs {
         match msg.role() {
-            // A host notice replays as the ONE dim line it was printed as, not as a `❯` block: the
+            // A host notice replays as the ONE dim line it was printed as, not as a `▌` block: the
             // rest of its text is the job output the model read, and the log file still holds it.
             Role::User if msg.is_notice() => {
                 flush_tools(&mut w, &mut tool_results);
@@ -631,7 +631,7 @@ mod tests {
     }
 
     // Go: chat/replay_test.go:224 TestPrintUserBlockMultiline — one row per embedded line, the
-    // "❯ " gutter on row 0 and a two-space indent after, every row padded to the SAME display
+    // "▌ " gutter on row 0 and a two-space indent after, every row padded to the SAME display
     // width (that is what makes the reversed background a block).
     #[test]
     fn test_print_user_block_multiline() {
@@ -644,7 +644,7 @@ mod tests {
                 !flat.contains('\r'),
                 "row {i} carries a control char: {flat:?}"
             );
-            let want = if i == 0 { "❯ " } else { "  " };
+            let want = if i == 0 { "▌ " } else { "  " };
             assert!(
                 flat.starts_with(want),
                 "row {i} = {flat:?}, want the {want:?} gutter"

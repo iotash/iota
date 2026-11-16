@@ -115,7 +115,7 @@ typing.
 For each terminal:
 
 - [ ] **1.1 Basic composition.** Switch to a CJK input method. Type `nihao` / `にほん` /
-      `한국` without committing. The preedit underline renders at the prompt, and the
+      `한국` without committing. The preedit underline renders at the composer's text (column 0 of an empty draft: no prompt glyph), and the
       candidate window is anchored **at the cursor**, not at column 0 and not at the top of
       the screen.
 - [ ] **1.2 Commit.** Accept a candidate. The committed text replaces the preedit, the
@@ -177,7 +177,7 @@ For each terminal:
 
 > ✅ **The wide-rune defect is FIXED** (VERIFY pass). A wide grapheme OWNS the cells to its
 > right and a covered cell reads back as a space; ratatui's buffer diff drops those cells, but
-> a backend handed the WHOLE buffer prints them (`❯ 中 文 一 行`). Every write goes through
+> a backend handed the WHOLE buffer prints them (`▌ 中 文 一 行`). Every write goes through
 > ratatui's own diff, which drops them. Pinned by `vt100_tests::wide_runes_show_intact` (part of
 > `cargo test`). Still worth an eyeball here: the pin is a byte assertion, not a look.
 
@@ -352,7 +352,7 @@ to run something slow in the background (`sleep 20; echo done`).
 - [x] 自动化：scenario 19 **8.1 Idle wake-up.** With the job running, sit at the prompt and type NOTHING. When the
       job ends, one dim line must appear —
       `[background job b1 finished: exit 0 after 20s] sleep 20; echo done` — followed
-      immediately by a normal turn (the model answers it). No `❯` block, no bell of its own.
+      immediately by a normal turn (the model answers it). No `▌` block, no bell of its own.
 - [x] 自动化：scenario 19 **8.2 The draft survives.** Repeat 8.1 but leave a half-typed line in the composer while
       the job finishes. The notice must land, the turn must run, and the draft must still be
       there, cursor where you left it, when the turn ends.
@@ -505,8 +505,8 @@ that need a tool edit or an image reply.
 NO_COLOR=1 target/release/iota          # then the same session with TERM=dumb
 ```
 
-- [x] 自动化：scenario 16 **8c.1 The frame reads.** With `NO_COLOR=1`, the separators are faint, the `❯` prompt is
-      plain, the status row is plain, and a committed user block is still reverse video. Nothing
+- [x] 自动化：scenario 16 **8c.1 The frame reads.** With `NO_COLOR=1`, the separators are faint, the composer's
+      text (no prompt glyph) is plain, the status row is plain, and a committed user block is still reverse video. Nothing
       is invisible and no row is painted in a color.
 - [x] 自动化：scenario 16 **8c.2 The chat is bare.** Ask for a markdown reply with a heading, a list, a table and a
       fenced code block: every row is plain text — no bold heading, no faint bullet, no syntax

@@ -34,7 +34,7 @@ check_measured "new session id from the divider is 12 characters" "${#new}" 12
 echo "new session: $new"
 [ "$new" != "$old" ] && ok "new id differs from the old ($old → $new)" || bad "same id"
 check "divider text" "$divider" "New session $new"
-check_once "the old question is still on screen (no clear)" '❯ first question'
+check_once "the old question is still on screen (no clear)" '▌ first question'
 # Zero totals drop the ↑/↓ segment altogether: the row is the model and the occupancy alone.
 status_row="$(cap | grep -F '/ 128k' | tail -1 | sed 's/^ *//')"
 check "status row after /new: no ↑/↓, the occupancy back at zero" "$status_row" "fake · ≈0% / 128k"

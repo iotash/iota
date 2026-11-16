@@ -66,7 +66,7 @@ else
 fi
 if marker_absent; then ok "nothing of the file ran while it was asked"; else bad "the marker exists before the answer"; fi
 key Enter
-wait_vis '❯' || miss "the chat never started after not now"
+wait_frame || miss "the chat never started after not now"
 ready
 if _all_has 'Not using' && _all_has 'for this run'; then ok "not now is said in one line"; else miss "no line says the file is skipped"; fi
 check "the chat runs on the home config" "$(status_model | sed 's/^ *//')" "fake"
@@ -78,7 +78,7 @@ run_iota
 wait_vis "$QUESTION" || miss "the question never came the second time"
 type_ t
 key Enter
-wait_vis '❯' || miss "the chat never started after trust"
+wait_frame || miss "the chat never started after trust"
 ready
 if _poll_until 100 marker_present; then ok "trusted: the file's server ran"; else bad "trusted: the marker never appeared"; fi
 quit
@@ -86,7 +86,7 @@ quit
 # 36.4
 rm -f "$MARKER"
 run_iota
-wait_vis '❯' || miss "the trusted start never reached the chat"
+wait_frame || miss "the trusted start never reached the chat"
 ready
 if _vis_has "$QUESTION"; then bad "a trusted file was asked about again"; else ok "a trusted file asks nothing"; fi
 if _poll_until 100 marker_present; then ok "and its server ran"; else bad "the trusted start never ran the server"; fi

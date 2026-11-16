@@ -127,9 +127,9 @@ pub(crate) struct FrameInput<'a> {
     /// Whether ↑ has a queued entry to pop — a TYPED one; host notices are not editable, so
     /// a queue of notices alone carries no hint.
     pub(crate) queue_editable: bool,
-    /// The composer's styled rows (prompt included), 1..=5.
+    /// The composer's rows (the text from column 0 — no prompt glyph), 1..=5.
     pub(crate) composer_rows: &'a [String],
-    /// The composer cursor as (column incl. the 2-col prompt, row within the composer
+    /// The composer cursor as (the text's column, row within the composer
     /// block); `None` while a surface owns (and hides) the cursor.
     pub(crate) composer_cursor: Option<(u16, u16)>,
     /// The completion list's rows (pre-rendered by suggest; empty = none), directly above the

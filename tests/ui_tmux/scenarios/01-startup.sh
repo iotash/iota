@@ -63,10 +63,10 @@ check "status row carries the context segment" "$(bottom_zone)" "  fake · ≈0%
 tail_rows="$(cap | tail -n "+$((bot + 2))" | grep -c '[^[:space:]]' | tr -d ' ')"
 check "nothing below the status row" "$tail_rows" 0
 
-# --- the real cursor: column 2 is the 2-column "❯ " prompt gutter, row is the composer's
+# --- the real cursor: column 0 — the composer has no prompt glyph, its text starts there — row is the composer's
 #     (tmux rows are 0-based, capture-pane rows 1-based).
 xy="$(cursor_xy)"
-check "cursor at the empty draft's logical position" "$xy" "2 $((comp - 1))"
+check "cursor at the empty draft's logical position" "$xy" "0 $((comp - 1))"
 
 # …and it does not drift while the loop idles (W10: an idle loop still polls, but an idle
 # poll must not move the cursor).
@@ -82,11 +82,11 @@ check "cursor pinned across 5 idle polls" "$drift" 0
 # A keystroke moves it by exactly the glyph's display width — the IME anchor law, proved
 # here on the real terminal and nowhere else.
 type_ '中文'
-wait_vis '❯ 中文' || miss "CJK draft never rendered"
-check "cursor after two double-width runes" "$(cursor_xy)" "6 $((comp - 1))"
+wait_draft '中文' || miss "CJK draft never rendered"
+check "cursor after two double-width runes" "$(cursor_xy)" "4 $((comp - 1))"
 key BSpace
-wait_gone '❯ 中文' || miss "backspace over a wide rune failed"
-check "cursor after backspace over one wide rune" "$(cursor_xy)" "4 $((comp - 1))"
+wait_draft_gone '中文' || miss "backspace over a wide rune failed"
+check "cursor after backspace over one wide rune" "$(cursor_xy)" "2 $((comp - 1))"
 
 # --- the exit: Ctrl+D at the prompt leaves the alternate screen and writes the conversation into
 #     the main screen (X-99) — the banner's rows each ONCE, after the mark row the startup put in
@@ -100,6 +100,6 @@ check_once "the directory row is in the history once after the exit" "│ ${PWD:
 check_once "the frame's bottom edge is in the history once after the exit" '╰─'
 check_once "the mark row, already in the scrollback, is there once too" 'ι> iota'
 # The exit writes the conversation out, never the frame (tui-plan S1).
-check "the frame is not written out: no composer row after the exit" "$(count_all '❯')" 0
+check "the frame is not written out: no separator row after the exit" "$(capall | grep -c '^─' | tr -d ' ')" 0
 
 finish

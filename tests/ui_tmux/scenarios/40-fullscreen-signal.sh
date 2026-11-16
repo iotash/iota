@@ -34,7 +34,7 @@ run_under_shell() {
     cmd="$(iota_cmd openai fake)"
     type_ "$cmd; echo \"r\"\"c=\$?\"; stty -a | tr ' ' '\\n' | grep -xE -- '-?icanon' | sed 's/^/t''ty=/'"
     key Enter
-    wait_vis '❯' || miss "the composer never came up under the shell"
+    wait_frame || miss "the composer never came up under the shell"
     _poll_until 50 _iota_up || miss "no iota process under the pane's shell"
     check "$1: the alternate screen is held" "$(alt_on)" 1
     type_ 'stream 60'

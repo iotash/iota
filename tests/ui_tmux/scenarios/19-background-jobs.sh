@@ -7,7 +7,7 @@
 # `background: true`, so a scenario can start a real job (`sleep N; echo done`) and watch its
 # notice come back through `Ui::enqueue`:
 #
-#   8.1 idle wake-up      — one dim headline and a normal turn, no `❯` block;
+#   8.1 idle wake-up      — one dim headline and a normal turn, no `▌` block;
 #   8.2 the draft survives — a half-typed line is still there, cursor where it was;
 #   8.3 mid-turn arrival  — the headline lands AFTER the running call's rows and BEFORE the
 #                           model's reply, i.e. at the round boundary of a tool turn;
@@ -55,14 +55,14 @@ settle || miss "startup never settled"
 # ------------------------------------------------------------------ 8.1: idle wake-up
 start_job 1 'sleep 2; echo done'
 settle || miss "frame never settled after the call"
-check_once "the call is echoed once" '❯ run:sleep 2; echo done'
+check_once "the call is echoed once" '▌ run:sleep 2; echo done'
 check "the call's receipt is the model's whole reply" "$(count_all 'ran: Started background job b1 (pid')" 1
 
 wait_all '[background job b1 finished' || miss "the job's notice never arrived"
 wait_all 'echo: [background job b1 finished' || miss "the notice never became a turn"
 settle || miss "frame never settled after the wake-up turn"
 check "the notice is ONE dim headline" "$(headline_count 1)" 1
-check "…not a ❯ block" "$(count_all '❯ [background')" 0
+check "…not a ▌ block" "$(count_all '▌ [background')" 0
 check "…answered by a normal turn" "$(capall | grep -cE '^echo: \[background job b1 finished: exit 0 after [0-9.]+s\] sleep 2; echo done$' | tr -d ' ')" 1
 # The job's `done` reaches the model (the echo repeats it on its own row) and nothing else
 # prints it: the notice is the headline alone, the output stays in the log file.
@@ -78,21 +78,21 @@ check_frame_intact "after the idle wake-up" 80
 # wake-up of its own: the round-boundary and the queue assertions red).
 start_job 2 'until [ -e b2.go ]; do sleep 0.1; done; echo done'
 type_ 'half draft'
-wait_vis '❯ half draft' || miss "the draft never rendered"
+wait_draft 'half draft' || miss "the draft never rendered"
 comp="$(composer_row)"
-check "the cursor sits at the draft's end" "$(cursor_xy)" "12 $((comp - 1))"
+check "the cursor sits at the draft's end" "$(cursor_xy)" "10 $((comp - 1))"
 
 : >"$SCEN_TMP/b2.go"
 wait_all '[background job b2 finished' || miss "the second job's notice never arrived"
 wait_all 'echo: [background job b2 finished' || miss "the second notice never became a turn"
 settle || miss "frame never settled after the second wake-up"
 check "the notice landed" "$(headline_count 2)" 1
-check "the draft is still in the composer" "$(count_composer '❯ half draft')" 1
+check "the draft is still in the composer" "$(count_composer 'half draft')" 1
 comp="$(composer_row)"
-check "…with the cursor where it was" "$(cursor_xy)" "12 $((comp - 1))"
+check "…with the cursor where it was" "$(cursor_xy)" "10 $((comp - 1))"
 check_frame_intact "with the draft kept" 80
 key C-u
-wait_gone '❯ half draft' || miss "Ctrl+U did not clear the draft"
+wait_draft_gone 'half draft' || miss "Ctrl+U did not clear the draft"
 
 # ------------------------------------------------------------------ 8.3: mid-turn arrival
 # The call itself releases the job, then runs on for 3 s: the notice arrives while it runs.
@@ -102,8 +102,8 @@ key Enter
 wait_all 'echo: [background job b3 finished' || miss "the notice never reached the model mid-turn"
 settle || miss "frame never settled after the tool turn"
 check "the notice landed once" "$(headline_count 3)" 1
-check_once "the tool turn was echoed once" '❯ runfg:touch b3.go; sleep 3'
-user_row="$(row_all '❯ runfg:touch b3.go; sleep 3')"
+check_once "the tool turn was echoed once" '▌ runfg:touch b3.go; sleep 3'
+user_row="$(row_all '▌ runfg:touch b3.go; sleep 3')"
 call_row="$(row_all '[shell touch b3.go; sleep 3]')"
 notice_row="$(capall | grep -n '^\[background job b3 finished: exit 0' | tail -1 | cut -d: -f1)"
 reply_row="$(row_all 'echo: [background job b3 finished')"
@@ -114,7 +114,7 @@ else
     bad "the headline is not at the round boundary (user=$user_row call=$call_row notice=$notice_row reply=$reply_row)"
     capall | tail -20
 fi
-check "no ❯ block for the mid-turn notice" "$(count_all '❯ [background')" 0
+check "no ▌ block for the mid-turn notice" "$(count_all '▌ [background')" 0
 check_frame_intact "after the mid-turn arrival" 80
 
 # ------------------------------------------------------------------ 8.4: queued while typing ahead
@@ -136,13 +136,13 @@ wait_vis '» [background job b4 finished' || miss "the job's headline never queu
 check "the typed-ahead lines queue as » rows" "$(count_vis '» ahead one')" 1
 check "…both of them" "$(count_vis '» ahead two')" 1
 key Up
-wait_vis '❯ ahead two' || miss "↑ did not recall the newest typed line"
+wait_draft 'ahead two' || miss "↑ did not recall the newest typed line"
 # The stream is still running here, so the frame is being repainted under the read: polled, not
-# sampled once. CI 37025565018 and 37031410245 (macos-14) read 0 once each — '❯ ahead two'
+# sampled once. CI 37025565018 and 37031410245 (macos-14) read 0 once each — 'ahead two'
 # already visible, the pane dumped right after showed it between the separators — from a
 # capture that landed inside a repaint (lib.sh, "the frame window"). A miss prints the pane.
 f0="$FAIL"
-check "↑ recalls the user's newest line into the composer" "$(wait_composer '❯ ahead two' 1)" 1
+check "↑ recalls the user's newest line into the composer" "$(wait_composer 'ahead two' 1)" 1
 [ "$FAIL" = "$f0" ] || dump_pane
 check "…taking it off the queue" "$(count_vis '» ahead two')" 0
 check "…stepping over the job's headline" "$(count_vis '» [background job b4 finished')" 1
@@ -151,8 +151,8 @@ key Enter
 release "$HOLD"
 wait_all 'echo: ahead two' || miss "the recalled line never reached the model"
 settle || miss "frame never settled after the queue drained"
-check_once "the older line ran once" '❯ ahead one'
-check_once "the recalled line ran once" '❯ ahead two'
+check_once "the older line ran once" '▌ ahead one'
+check_once "the recalled line ran once" '▌ ahead two'
 check "the queued headline became its own turn" "$(headline_count 4)" 1
 check_once "…answered once" 'echo: [background job b4 finished'
 check_frame_intact "after the queue drained" 80

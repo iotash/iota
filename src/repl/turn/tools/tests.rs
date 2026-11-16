@@ -1187,19 +1187,19 @@ async fn steer_echo_settles_the_group_before_the_bottom_mount() {
         "a system-tools message reached the FIRST request"
     );
 
-    // The ❯ echo settles the running group first — the user is a stronger boundary than
+    // The ▌ echo settles the running group first — the user is a stronger boundary than
     // content — so the group summary is committed before the user block.
     let events = fx.events();
     let user = pos(&events, |e| matches!(e, UiEvent::UserBlock(_)));
     let settle = pos(&events, |e| matches!(e, UiEvent::ClosePreview));
     assert!(
         settle < user,
-        "the activity group must settle before the ❯ block: {events:#?}"
+        "the activity group must settle before the ▌ block: {events:#?}"
     );
 }
 
 // New (phase C): a background job that finishes MID-TURN rides the same queue a steering message does and
-// lands at the same round boundary — but as a NOTICE: one dim line instead of the `❯` block, and a
+// lands at the same round boundary — but as a NOTICE: one dim line instead of the `▌` block, and a
 // `Body::Notice` message the model sees as ordinary user text.
 #[tokio::test]
 async fn a_job_notice_lands_at_the_round_boundary_as_a_notice() {
@@ -1241,7 +1241,7 @@ async fn a_job_notice_lands_at_the_round_boundary_as_a_notice() {
         "the notice never reached the model"
     );
 
-    // On screen it is a dim one-liner, never a `❯` block.
+    // On screen it is a dim one-liner, never a `▌` block.
     let events = fx.events();
     assert!(
         !events.iter().any(|e| matches!(e, UiEvent::UserBlock(_))),
@@ -1267,7 +1267,7 @@ fn socket_message(text: &str) -> Input {
 }
 
 // A message from another process that arrives while a tool runs lands where a job's notice does: at the round
-// boundary, AFTER the round's tool results — the tool is never interrupted — as a notice, not a `❯` block.
+// boundary, AFTER the round's tool results — the tool is never interrupted — as a notice, not a `▌` block.
 #[tokio::test]
 async fn a_socket_message_lands_at_the_round_boundary_after_the_tool() {
     let dispatch = Arc::new(StaticDispatcher::new(&["read_file"]));

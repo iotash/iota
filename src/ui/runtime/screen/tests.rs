@@ -26,11 +26,11 @@ fn frame(w: usize) -> FrameView {
     FrameView {
         rows: vec![
             "─".repeat(w),
-            "❯ ".to_owned(),
+            String::new(),
             "─".repeat(w),
             "status".to_owned(),
         ],
-        cursor: Some((2, 1)),
+        cursor: Some((0, 1)),
         map: crate::ui::render::frame::FrameMap::default(),
     }
 }
@@ -67,7 +67,7 @@ fn the_conversation_sits_on_the_frame_and_the_frame_on_the_bottom() {
     assert!(g[..5].iter().all(String::is_empty), "{g:#?}");
     assert_eq!(
         p.screen().cursor_position(),
-        (9, 2),
+        (9, 0),
         "the composer's cursor"
     );
 }
@@ -186,7 +186,7 @@ fn the_exit_after_a_resume_writes_only_the_replayed_rounds() {
     let all = reachable(&mut p);
     let count = |t: &str| all.iter().filter(|r| r.trim() == t).count();
     for i in 7..10 {
-        assert_eq!(count(&format!("❯ q{i}")), 1, "round {i} once: {all:#?}");
+        assert_eq!(count(&format!("▌ q{i}")), 1, "round {i} once: {all:#?}");
         assert_eq!(count(&format!("r{i}")), 1, "reply {i} once: {all:#?}");
     }
     for i in 0..7 {
@@ -214,8 +214,8 @@ fn a_frame_larger_than_sync_min_is_one_synchronized_update_and_a_keystroke_is_ba
     assert!(first.starts_with(SYNC_BEGIN), "a full paint is one block");
     let mark = buf.bytes().len();
     let mut typed = frame(80);
-    typed.rows[1] = "❯ x".to_owned();
-    typed.cursor = Some((3, 1));
+    typed.rows[1] = "x".to_owned();
+    typed.cursor = Some((1, 1));
     s.begin_batch();
     s.draw_frame(&typed, None).unwrap();
     s.end_batch().unwrap();

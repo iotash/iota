@@ -123,9 +123,9 @@ impl Block {
     }
 }
 
-/// The user's submitted text as full-width rows with the `"❯ "` gutter (ui.go:224-243,
+/// The user's submitted text as full-width rows with the `"▌ "` gutter (ui.go:224-243,
 /// chat/replay.go:196-215 `printUserBlock`), laid out from the text at the width of the draw: a
-/// two-column gutter keeps `"❯ "` on the first row and aligns the wrapped rows under it, and every
+/// two-column gutter keeps `"▌ "` on the first row and aligns the wrapped rows under it, and every
 /// row is padded to the full width, which is what makes the reversed background a block instead of
 /// a ragged edge — at any width. The live block and the resume echo both lay out through this one.
 pub struct UserBlock {
@@ -144,7 +144,7 @@ impl Layout for UserBlock {
             .into_iter()
             .enumerate()
             .map(|(i, row)| {
-                let g = if i == 0 { "❯ " } else { "  " };
+                let g = if i == 0 { "▌ " } else { "  " };
                 let pad = (w - GUTTER).saturating_sub(crate::text::width::str_width(&row));
                 let row = format!("{g}{row}{}", " ".repeat(pad));
                 if self.reverse {
@@ -187,6 +187,35 @@ impl std::fmt::Debug for Block {
                 .field(&l.layout.lines(80))
                 .field(&l.open)
                 .finish(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Layout, UserBlock};
+    use crate::text::ansi::strip_sgr;
+    use crate::text::width::str_width;
+
+    /// The user block at 80 columns: `▌ ` opens the first row, two spaces every wrapped row — the
+    /// text aligned under itself at column 2 — and every row is reversed and padded to the full
+    /// width.
+    #[test]
+    fn the_user_block_opens_with_its_marker_and_wraps_under_its_text() {
+        // 78 columns of text beside the gutter, then 5 more: the wrap lands at column 2 too.
+        let text = format!("{}{}", "x".repeat(78), "tail.");
+        let rows = UserBlock {
+            text,
+            reverse: true,
+        }
+        .lines(80);
+        assert_eq!(rows.len(), 2, "{rows:#?}");
+        let flat: Vec<String> = rows.iter().map(|r| strip_sgr(r)).collect();
+        assert_eq!(flat[0], format!("▌ {}", "x".repeat(78)), "{flat:#?}");
+        assert_eq!(flat[1].trim_end(), "  tail.", "{flat:#?}");
+        for (row, raw) in flat.iter().zip(&rows) {
+            assert_eq!(str_width(row), 80, "full width: {row:?}");
+            assert!(raw.starts_with(super::REV_ON), "reversed: {raw:?}");
         }
     }
 }
