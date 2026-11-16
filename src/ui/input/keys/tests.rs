@@ -1368,6 +1368,7 @@ fn an_idle_ctrl_d_with_no_reader_answers_the_next_read_after_the_queue() {
 
 /// Row 0: Ctrl+Z is the job-control stop — the loop hands the terminal back before it stops
 /// (`Term::suspend`).
+#[cfg(unix)]
 #[test]
 fn ctrl_z_suspends() {
     let mut m = test_model();

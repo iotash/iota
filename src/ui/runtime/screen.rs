@@ -496,6 +496,7 @@ impl<W: Write> Screen<W> {
     /// modes go back on; the next frame enters the alternate screen again and paints every cell
     /// ([`Place::Main`]). Returns the terminal's size then (`None` for a test's screen, which does
     /// not stop).
+    #[cfg(unix)]
     pub(crate) fn suspend(&mut self, focus: bool) -> io::Result<Option<Size>> {
         let mut seq = Vec::new();
         if self.place == Place::Alt {

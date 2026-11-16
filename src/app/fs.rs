@@ -1,4 +1,4 @@
-//! The one atomic file writer — a sibling temporary file, synced, renamed over the target — and [`physical`],
+//! The one atomic file writer — a sibling temporary file, synced, renamed over the target — and `physical`,
 //! where a path that need not exist really lands. A config file the
 //! user hand-edits and a token file that must never be half-written both go through it; neither is ever seen
 //! in an intermediate state, and a crash between the write and the rename leaves the old file in place.

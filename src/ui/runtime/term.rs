@@ -119,6 +119,7 @@ impl<W: Write> Term<W> {
     /// Job control: hands the terminal back — the main screen, cooked mode, no paste or focus
     /// reporting — stops the process, and on `fg` takes it again ([`Screen::suspend`]). Returns
     /// the size the terminal has then (`None` for a headless screen, which does not stop).
+    #[cfg(unix)]
     pub(crate) fn suspend(&mut self) -> io::Result<Option<Size>> {
         self.screen.suspend(self.focus_on)
     }

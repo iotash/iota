@@ -44,9 +44,13 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
         return;
     }
     // Ctrl+Z, the job-control stop (raw mode delivers it as a key): the terminal goes back to the
-    // shell until `fg` (tui-plan S4).
+    // shell until `fg` (tui-plan S4). A Windows console has no job control — no SIGTSTP, no `fg` —
+    // so there the key is taken and does nothing.
     if key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        m.suspend = true;
+        #[cfg(unix)]
+        {
+            m.suspend = true;
+        }
         return;
     }
     if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {

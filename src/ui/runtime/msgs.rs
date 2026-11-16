@@ -108,7 +108,8 @@ pub(crate) enum UiMsg {
     /// Re-shade the composer for a background flip.
     DarkBackground(bool),
     /// Job control from outside (SIGTSTP, the full screen only): hand the terminal back and stop
-    /// until `fg` (tui-plan S4).
+    /// until `fg` (tui-plan S4). Unix only: a Windows console has no job control.
+    #[cfg(unix)]
     Suspend,
     /// Terminates the loop thread. `close()` flushes the region first, so the
     /// mailbox FIFO lands the flushed scrollback ahead of this (ui.go Close).

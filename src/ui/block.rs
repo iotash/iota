@@ -128,8 +128,8 @@ impl Block {
 /// video span (the terminal's foreground behind it, its background as the text — what sets the
 /// block apart from body text in any theme), so no cell of it shows the terminal background
 /// (X-105). Column 0 is the bar: `▌` on every row, one continuous gray column down the block, drawn
-/// in the [`USER_BAR`] gray — set as the BACKGROUND, which the reverse turns into the glyph's colour, the
-/// cell behind it staying the block's — then [`BG_DEFAULT`], the reverse kept. Column 1 is the
+/// in the `USER_BAR` gray — set as the BACKGROUND, which the reverse turns into the glyph's colour, the
+/// cell behind it staying the block's — then `BG_DEFAULT`, the reverse kept. Column 1 is the
 /// gutter space, the text from column 2, padded by display width to width − 2 so the span runs to
 /// the edge at any width, one `RESET`. Under `ColorMode::Off` it writes no escape at all — the
 /// rows are committed text that the exit writes out raw, past the frame's colour gate, so a

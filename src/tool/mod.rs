@@ -419,7 +419,7 @@ impl ToolEnv {
     }
 
     /// `self` with [`write_roots`](Self::write_roots) resolved from the config's entries, once: each one
-    /// trimmed, a leading `~` expanded ([`expand_home`]), a relative one joined to [`root`](Self::root) (`.`
+    /// trimmed, a leading `~` expanded (`expand_home`), a relative one joined to [`root`](Self::root) (`.`
     /// when that cannot be read, as `new_code_set` falls back), then cleaned — and a root that cleans to one
     /// already listed (`~/a` beside `/home/u/a`) kept once, first spelling first. The config load has
     /// already refused a blank entry and a `~` with no home to expand it to.
