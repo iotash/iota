@@ -113,7 +113,13 @@ fi
 for _ in 1 2 3; do outer 64 10 5; done
 sleep 1
 if _vis_lacks 'Ctrl+End'; then ok "the wheel is tmux's, not iota's"; else bad "iota scrolled with the mouse off"; dump_pane; fi
-check "…tmux does not enter copy mode for it" "$(tm display-message -pt s '#{pane_in_mode}')" 0
+# tmux's own WheelUpPane binding enters copy mode in the alternate screen before 3.6 ("Don't enter
+# copy mode on mouse wheel in alternate screen", issue 3705): that is tmux's, not iota's, to decide.
+if tmux_at_least 3 6; then
+    check "…tmux does not enter copy mode for it" "$(tm display-message -pt s '#{pane_in_mode}')" 0
+else
+    echo "SKIP: …tmux does not enter copy mode for it — before tmux 3.6 its WheelUpPane binding enters copy mode in the alternate screen"
+fi
 check "…and no arrow key recalls the history" "$(count_composer 'stream 60 2')" 0
 
 finish

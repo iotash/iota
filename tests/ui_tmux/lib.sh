@@ -49,6 +49,19 @@ WARTS=0
 SCEN_HOME="$SCEN_TMP/home"
 # Which tmux produced this run: a red CI leg must say which one it ran.
 echo "tmux: $("$TMUX_BIN" -V 2>&1) ($TMUX_BIN)"
+
+# tmux_at_least <major> <minor> — this tmux is that release or later (`tmux 3.4`, `tmux 3.7c`,
+# `tmux next-3.8`). An assertion about something tmux itself changed between releases is made only
+# on a tmux that has it, and says `SKIP:` with the release elsewhere (ubuntu-24.04 has 3.4).
+tmux_at_least() {
+    local v
+    v="$("$TMUX_BIN" -V 2>/dev/null | sed -nE 's/^tmux (next-)?([0-9]+)\.([0-9]+).*/\2 \3/p')"
+    [ -n "$v" ] || return 1
+    # shellcheck disable=SC2086 # two words: major minor
+    set -- "$1" "$2" $v
+    [ "$3" -gt "$1" ] || { [ "$3" -eq "$1" ] && [ "$4" -ge "$2" ]; }
+}
+
 mkdir -p "$SCEN_HOME"
 
 # ---------------------------------------------------------------- tmux plumbing
