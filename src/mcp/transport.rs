@@ -552,7 +552,7 @@ fn parse_headers(
 mod tests {
     use crate::provider::model::JsonObject;
     use rmcp::{
-        RoleServer, ServerHandler,
+        ClientLifecycleMode, ClientServiceExt as _, RoleServer, ServerHandler, ServiceExt as _,
         model::{
             CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities,
             ClientConfig, ContentBlock, CreateTaskResult, Implementation, InputRequiredResult,
@@ -564,7 +564,6 @@ mod tests {
 
     use super::{RmcpSession, Session};
     use crate::mcp::error::{MRTR_UNSUPPORTED, McpError, TASK_UNSUPPORTED};
-    use crate::mcp::testutil::serve_pair;
 
     /// A server whose `tools/call` answers by raw name: `ask` → SEP-2322 `input_required`, `task` → SEP-2663
     /// task, `error` → `isError: true`, anything else → `Complete("<name>")`.
@@ -604,13 +603,28 @@ mod tests {
     #[tokio::test]
     async fn call_tool_once_maps_input_required_and_task_to_errors() {
         // `input_required` needs a 2026-07-28 peer and a task result needs the tasks capability, so this client
-        // negotiates both (the production client keeps rmcp's defaults — D-02).
+        // negotiates both. 2026-07-28 has no `initialize` (SEP-2567), so it is reached through `server/discover`
+        // (the production client keeps rmcp's `initialize` default — D-02).
         let client = ClientConfig::new(
             ClientCapabilities::builder().enable_tasks().build(),
             Implementation::new("test-client", "1.0.0"),
-        )
-        .with_protocol_version(ProtocolVersion::V_2026_07_28);
-        let session = RmcpSession::new(serve_pair(MrtrServer, client).await);
+        );
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            if let Ok(server) = MrtrServer.serve(server_io).await {
+                let _ = server.waiting().await;
+            }
+        });
+        let running = client
+            .serve_with_lifecycle(
+                client_io,
+                ClientLifecycleMode::Discover {
+                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                },
+            )
+            .await
+            .expect("client discover");
+        let session = RmcpSession::new(running);
         let cancel = CancellationToken::new();
 
         let err = session
