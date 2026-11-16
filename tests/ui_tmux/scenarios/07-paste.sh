@@ -36,8 +36,10 @@ settle || miss "frame never settled after the submit"
 
 # The echo: the tag expands to the block, one transcript row per line, CJK intact.
 check_once "echo row 1" '▌ paste line one'
-check_once "echo row 2" '  paste line two'
-check_once "echo row 3 (CJK survives the round trip)" '  第三行中文'
+check_once "echo row 2" '▌ paste line two'
+check_once "echo row 3 (CJK survives the round trip)" '▌ 第三行中文'
+check "row 2 is the block's next row" "$(count_after '▌ paste line one' '▌ paste line two')" 1
+check "row 3 is the block's next row" "$(count_after '▌ paste line two' '▌ 第三行中文')" 1
 check "the tag left the composer on submit" "$(count_composer '[#1 paste')" 0
 
 # The model received the FULL expansion, not the tag.

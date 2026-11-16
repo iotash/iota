@@ -67,9 +67,10 @@ check_frame_intact "with an oversized paste tag" 80
 key Enter
 wait_all 'echo: pl00 payload' || miss "the oversized paste never reached the model"
 settle || miss "frame never settled after the oversized submit"
-check_once "the transcript echo stops at the 20th line" '  pl19 payload'
-check_once "…and says how many it hid" '  … +30 more lines'
-check "the transcript echo really stopped there" "$(count_all '  pl20 payload')" 0
+check_once "the transcript echo stops at the 20th line" '▌ pl19 payload'
+check_once "…and says how many it hid" '▌ … +30 more lines'
+check "…on the block's row right after the 20th" "$(count_after '▌ pl19 payload' '▌ … +30 more lines')" 1
+check "the transcript echo really stopped there" "$(count_all '▌ pl20 payload')" 0
 check_once "…while the MODEL got the whole block" 'pl49 payload'
 check_frame_intact "after the oversized submit" 80
 

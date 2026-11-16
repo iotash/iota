@@ -40,7 +40,10 @@ newline_turn() {
     wait_all "echo: $one" || miss "$label: the message never reached the model"
     settle || miss "$label: frame never settled after the submit"
     check_once "$label: echo row 1" "▌ $one"
-    check "$label: echo row 2 is a continuation, not a second block" "$(count_all "▌ $two")" 0
+    # Row two is the same block's next row (the bar runs down every row of it), not a second
+    # message: one bar row for each line, line two directly under line one.
+    check_once "$label: echo row 2" "▌ $two"
+    check "$label: echo row 2 continues row 1's block" "$(count_after "▌ $one" "▌ $two")" 1
     check "$label: no second message for line two" "$(count_all "echo: $two")" 0
     # The user block and the model's echo both carry line two; counted after the reply landed,
     # so the composer's own row is gone.

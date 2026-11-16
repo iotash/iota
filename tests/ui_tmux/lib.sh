@@ -358,6 +358,8 @@ row_of() { cap | grep -nF -- "$1" | head -1 | cut -d: -f1; }
 # Occurrences of a fixed string across the visible pane / the whole history.
 count_vis() { cap | grep -cF -- "$1" | tr -d ' '; }
 count_all() { capall | grep -cF -- "$1" | tr -d ' '; }
+# Rows of the whole history holding $2 directly under a row holding $1 (a block's next row).
+count_after() { capall | grep -A1 -F -- "$1" | grep -cF -- "$2" | tr -d ' '; }
 
 # --- the frame window --------------------------------------------------------------
 #

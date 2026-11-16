@@ -64,6 +64,8 @@ key Enter
 wait_all 'echo: queued' || miss "the folded draft never reached the model"
 settle || miss "frame never settled after the resubmit"
 check "the folded draft submitted as ONE two-line message" "$(count_all '▌ queued')" 1
+check "…its second row is the same block's" "$(count_after '▌ queued' '▌ half')" 1
+check "…not a message of its own" "$(count_all 'echo: half')" 0
 check "the composer is empty again" "$(count_composer 'queued')" 0
 check_frame_intact "after resubmitting the folded draft" 80
 
