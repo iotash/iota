@@ -1911,7 +1911,7 @@ fn the_completion_list_takes_the_interaction_cap() {
 }
 
 /// tmux's burst that ends where it began (100×30 → 60×16 → 100×30, L4 38 on 3.4): the pane's grid
-/// is cropped and regrown while the loop merges the SIGWINCHes into one size — the size of the
+/// is cropped and regrown while the loop merges the `SIGWINCH` signals into one size — the size of the
 /// last frame. That resize still repaints every cell, as one synchronized update: the emulator
 /// whose grid was cropped and regrown in between shows what a fresh one replaying every byte does.
 #[test]

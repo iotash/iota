@@ -139,8 +139,8 @@ pub(crate) struct Screen<W: Write> {
     /// A resize happened with a search on: the next draw puts the view back on its hit.
     rejump: bool,
     /// A resize was taken since the last draw: the next one clears and repaints every cell, even
-    /// at the size it last drew (tmux ends a burst that comes back where it began with SIGWINCHes
-    /// the loop merges into that size, after cropping and regrowing the pane's grid).
+    /// at the size it last drew (tmux ends a burst that comes back where it began with `SIGWINCH`
+    /// signals the loop merges into that size, after cropping and regrowing the pane's grid).
     resized: bool,
     /// Whether mouse reporting is requested while the alternate screen is shown ([`MOUSE_ON`]);
     /// `false` never writes a mouse sequence at all.
