@@ -25,9 +25,9 @@ const H: u16 = 12;
 fn frame() -> FrameView {
     FrameView {
         rows: vec![
-            "┄".repeat(40),
+            "─".repeat(40),
             "❯ ".to_owned(),
-            "┄".repeat(40),
+            "─".repeat(40),
             "status".to_owned(),
         ],
         cursor: Some((2, 1)),

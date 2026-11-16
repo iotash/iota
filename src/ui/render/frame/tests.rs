@@ -1044,3 +1044,49 @@ fn the_turn_clock_takes_the_waits_out() {
         "every wait taken out"
     );
 }
+
+/// The separators are the faint solid rule, one cell per column at every width — odd ones too,
+/// under a completion row of double-width characters (at an odd width it ends one column short
+/// of the edge, where the next wide cell would straddle it) —
+/// and the rows around them stay where they were: the list row directly above the upper
+/// separator, the prompt between the two, the status row under the lower one.
+#[test]
+fn the_separators_are_a_faint_solid_rule_the_width_of_the_frame() {
+    for w in [21u16, 40, 79, 80, 160] {
+        let wide = "你".repeat(usize::from(w) / 2 - usize::from(w % 2 == 0));
+        let case = Case {
+            width: w,
+            list: vec![wide.clone()],
+            ..Case::default()
+        };
+        let v = view(&case);
+        let rows = plain(&v);
+        let seps = separator_indices(&rows);
+        assert_eq!(seps.len(), 2, "{w}: {rows:#?}");
+        let rule = "─".repeat(usize::from(w));
+        for &i in &seps {
+            assert_eq!(v.rows[i], format!("{FAINT}{rule}{RESET}"), "{w}: row {i}");
+            assert_eq!(str_width(&rows[i]), usize::from(w), "{w}: row {i}");
+        }
+        let [top, bot] = [seps[0], seps[1]];
+        assert_eq!(
+            rows[top - 1],
+            wide,
+            "{w}: the list row sits on the upper separator"
+        );
+        assert_eq!(
+            rows[top + 1],
+            "❯ ",
+            "{w}: the prompt between the separators"
+        );
+        assert_eq!(bot, top + 2, "{w}: one composer row");
+        assert_eq!(
+            bot + 1,
+            rows.len() - 1,
+            "{w}: the status row under the lower separator"
+        );
+        let grid = render_plain(&v.rows, w, u16::try_from(rows.len()).unwrap());
+        assert_eq!(grid[top], rule, "{w}: the cell grid");
+        assert_eq!(grid[top - 1], wide, "{w}: the wide row's cells");
+    }
+}

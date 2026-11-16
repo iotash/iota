@@ -38,6 +38,8 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **The two rules around the composer are solid again.** The faint dashed
+  line (`┄`) is a faint solid one (`─`). Same hue, same width, same place.
 - **Code blocks, tables, lists, quotes and formulas appear line by line.**
   While the reply is being written, a code block shows each line as it
   arrives, a table its rows (its columns widening as longer cells come in),

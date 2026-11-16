@@ -49,7 +49,7 @@ check "the reply after it is there too" "$(count 'EXACTEND')" 1
 # 80 `x` at 60 columns: one row of 60 and one of 20.
 check "the 80-column row wrapped at the exit width" \
     "$(printf '%s\n' "$all" | grep -cxE 'x{60}|x{20}' | tr -d ' ')" 2
-check "no frame separator was written out" "$(count '┄┄┄┄')" 0
+check "no frame separator was written out" "$(printf '%s\n' "$all" | grep -c '^────' | tr -d ' ')" 0
 check "no status row was written out" "$(count ' fake · ')" 0
 
 finish

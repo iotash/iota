@@ -300,9 +300,9 @@ fn snapshot_implies_draw_and_cursor_restored() {
 fn composer(draft: &str) -> crate::ui::render::frame::FrameView {
     crate::ui::render::frame::FrameView {
         rows: vec![
-            "┄".repeat(80),
+            "─".repeat(80),
             format!("❯ {draft}"),
-            "┄".repeat(80),
+            "─".repeat(80),
             "status".to_owned(),
         ],
         cursor: Some((2 + u16::try_from(draft.len()).unwrap(), 1)),
@@ -1216,7 +1216,7 @@ fn a_resize_with_a_surface_open_leaves_one_whole_frame() {
     let history: Vec<String> = (0..6).map(|i| format!("hist-{i}")).collect();
     t.push(rows_of(&history));
     let view = |w: usize| crate::ui::render::frame::FrameView {
-        rows: [String::new(), "┄".repeat(w), "❯ ".to_owned(), "┄".repeat(w)]
+        rows: [String::new(), "─".repeat(w), "❯ ".to_owned(), "─".repeat(w)]
             .into_iter()
             .chain((0..4).map(|i| format!("model-{i} {}", "·".repeat(w - 12))))
             .collect(),
@@ -1230,7 +1230,7 @@ fn a_resize_with_a_surface_open_leaves_one_whole_frame() {
     let g = grid(&p);
     let dump = g.join("\n");
     assert_eq!(g.iter().filter(|r| r.contains('❯')).count(), 1, "{dump}");
-    assert_eq!(g.iter().filter(|r| r.contains('┄')).count(), 2, "{dump}");
+    assert_eq!(g.iter().filter(|r| r.contains('─')).count(), 2, "{dump}");
     for h in &history {
         let n = g.iter().filter(|r| r.contains(h.as_str())).count();
         assert_eq!(n, 1, "{h} shown {n} times:\n{dump}");
@@ -1532,7 +1532,7 @@ struct Order {
 fn order(rows: &[String]) -> Order {
     let sep = rows
         .iter()
-        .position(|r| r.starts_with('┄'))
+        .position(|r| r.starts_with('─'))
         .expect("separator");
     let composer = rows
         .iter()
@@ -1685,7 +1685,7 @@ fn a_short_terminal_keeps_the_composer_and_the_highlighted_item() {
     let desc = "                analyze, hypothesize, then fix";
     let composer = "❯ /skills investigate";
     let status = "  claude-opus-5-5";
-    let sep = "┄".repeat(80);
+    let sep = "─".repeat(80);
     let screens: [(u16, Vec<&str>); 5] = [
         (6, vec![label, desc, &sep, composer, &sep, status]),
         (5, vec![label, desc, &sep, composer, status]),

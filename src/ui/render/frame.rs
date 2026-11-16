@@ -2,7 +2,7 @@
 //! (internal/ui/model.go:914-1193).
 //!
 //! Builds the pinned bottom frame as raw ANSI rows in the FIXED stacking order
-//! `[call preview][spacer][queue][completion list] ┄sep┄ [composer] ┄sep┄
+//! `[call preview][spacer][queue][completion list] ─sep─ [composer] ─sep─
 //! [surface | status]`, tracking `rows_above`
 //! for the real-cursor offset. Every appended row is exactly one visual line (the
 //! one-entry-one-row law) or the cursor desyncs. Above the composer the frame only ever
@@ -17,13 +17,11 @@
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
-/// The composer's two separators are drawn with this glyph, repeated across the width: a
-/// light triple-dash (U+2504) — dashed, not solid, so the composer reads as a strip inside
-/// the conversation rather than a wall across it (2026-09-17; the Go build and this one
-/// until then drew `─`, DIVERGENCES X-36). Everything that FINDS a separator row — the
-/// composer geometry, the frame tests, the tmux suite's `frame_top`/`row_width` — keys on
-/// this one string.
-pub const SEPARATOR_GLYPH: &str = "┄";
+/// The composer's two separators are drawn with this glyph, repeated across the width, in the
+/// faint hue: the light solid rule (U+2500), as the Go build drew it (model.go:1022-1046).
+/// Everything that FINDS a separator row — the composer geometry, the frame tests, the tmux
+/// suite's `frame_top`/`row_width` — keys on this one string.
+pub const SEPARATOR_GLYPH: &str = "─";
 
 use crate::shell::jobs::JobInfo;
 use crate::text;

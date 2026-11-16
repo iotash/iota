@@ -421,7 +421,7 @@ drag 21 032 B (each resize a whole repaint, by design). tmux 3.7c repaints the w
 of any block; with the size rule that is one repaint per large write, never per keystroke.
 
 **Where the detail lives.** `docs/design/fullscreen-tui.md` (the design, every exit path, the
-write-out policy); X-97–X-101 (the full screen's decisions), X-55 (2026), X-36 (the `┄` separators);
+write-out policy); X-97–X-101 (the full screen's decisions), X-55 (2026);
 TUI-VERIFY (what a human checks); `screen/tests.rs` and its siblings (the screen, the buffer, the
 search over vt100), `event_loop/vt100_tests.rs` (the loop through the real writer stack) and the tmux
 L4 scenarios (37–45 for the full screen's own mechanics; every other scenario reads the conversation

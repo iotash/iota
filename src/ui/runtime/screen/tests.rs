@@ -25,9 +25,9 @@ fn screen(w: u16, h: u16) -> (Screen<SharedBuf>, SharedBuf) {
 fn frame(w: usize) -> FrameView {
     FrameView {
         rows: vec![
-            "┄".repeat(w),
+            "─".repeat(w),
             "❯ ".to_owned(),
-            "┄".repeat(w),
+            "─".repeat(w),
             "status".to_owned(),
         ],
         cursor: Some((2, 1)),
@@ -62,7 +62,7 @@ fn the_conversation_sits_on_the_frame_and_the_frame_on_the_bottom() {
     assert!(p.screen().alternate_screen(), "on the alternate screen");
     let g = grid(&p);
     assert_eq!(g[11], "status", "{g:#?}");
-    assert_eq!(g[8], "┄".repeat(40));
+    assert_eq!(g[8], "─".repeat(40));
     assert_eq!(&g[5..8], &["line-000", "line-001", "line-002"], "{g:#?}");
     assert!(g[..5].iter().all(String::is_empty), "{g:#?}");
     assert_eq!(
@@ -91,7 +91,7 @@ fn a_resize_repaints_the_whole_screen_at_the_new_size() {
     p.process(&buf.bytes()[mark..]);
     let g = grid(&p);
     assert_eq!(g[19], "status");
-    assert_eq!(g[16], "┄".repeat(20), "the frame is full width: {g:#?}");
+    assert_eq!(g[16], "─".repeat(20), "the frame is full width: {g:#?}");
     assert_eq!(
         g[15], "wwwwwwwwwwEND",
         "the wide row wraps at the new width"

@@ -376,8 +376,8 @@ count_all() { capall | grep -cF -- "$1" | tr -d ' '; }
 # _snap [capture] — the capture given, or a fresh one.
 _snap() { if [ "$#" -gt 0 ]; then printf '%s\n' "$1"; else cap; fi; }
 
-frame_top() { _snap "$@" | grep -n '^┄┄┄' | tail -2 | head -1 | cut -d: -f1; }
-frame_bot() { _snap "$@" | grep -n '^┄┄┄' | tail -1 | cut -d: -f1; }
+frame_top() { _snap "$@" | grep -n '^───' | tail -2 | head -1 | cut -d: -f1; }
+frame_bot() { _snap "$@" | grep -n '^───' | tail -1 | cut -d: -f1; }
 
 # Everything between the separators: the composer rows.
 composer_block() {
@@ -460,7 +460,7 @@ status_model() { bottom_zone | sed 's/ · .*$//'; }
 row_width() {
     local r="$1"
     shift
-    _snap "$@" | sed -n "${r}p" | grep -o '┄' | wc -l | tr -d ' '
+    _snap "$@" | sed -n "${r}p" | grep -o '─' | wc -l | tr -d ' '
 }
 sep_width() { row_width "$(frame_bot)"; }
 
