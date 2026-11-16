@@ -39,11 +39,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 ### Changed
 
 - **Your messages stand out behind a gray `▌`.** A message you send is still
-  a reverse-video bar to the edge, so it never reads as body text; the `▌`
-  that opens it is a mid-gray rule on the bar's own colour, so the bar runs
+  a reverse-video bar to the edge, so it never reads as body text; a
+  mid-gray `▌` on its own colour runs down its left edge, every row of it,
   from the first column with no missing cell, and a resumed session's
-  messages look exactly the same. With `NO_COLOR` the bar's colours go and the `▌`
-  alone marks your message.
+  messages look exactly the same. With `NO_COLOR` the bar's colours go and
+  the `▌` on each row alone marks your message.
 - **The two rules around the composer are solid again.** The faint dashed
   line (`┄`) is a faint solid one (`─`). Same hue, same width, same place.
 - **Code blocks, tables, lists, quotes and formulas appear line by line.**
