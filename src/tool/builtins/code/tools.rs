@@ -387,7 +387,7 @@ fn writer_summary(cs: &CodeSet, args: &JsonObject) -> String {
 }
 
 /// The subject [`CodeSet::approvable`] binds a writer's call to, as the tools' `approval_subject` asks it.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn writer_subject(cs: &CodeSet, args: &JsonObject) -> Option<ApprovalSubject> {
     cs.approvable(str_arg(args, "path"))
 }

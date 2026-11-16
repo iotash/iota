@@ -577,8 +577,8 @@ mod tests {
     use crate::tool::ToolOutput;
     use std::path::{Path, PathBuf};
 
-    use super::{CodeSet, Outside, Write, byte_count, looks_binary};
-    use crate::tool::context::{Approved, RunCtx};
+    use super::{CodeSet, Outside, byte_count, looks_binary};
+    use crate::tool::context::RunCtx;
 
     /// What a writer's call is told about `arg` with no approval: under `Outside::Refuse`, exactly the jail
     /// as it was before writes could be approved — the cleaned path, or the refusal.
@@ -694,6 +694,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn write_path_classifies_inside_outside_and_unverifiable() {
+        use super::Write;
         use std::os::unix::fs::symlink;
         let (_t, root, out) = jail_fixture();
         symlink(&out, root.join("outdir")).expect("link");
@@ -944,6 +945,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn write_path_refuses_what_it_cannot_resolve() {
+        use super::Write;
+        use crate::tool::context::Approved;
         use std::os::unix::fs::symlink;
         let (t, root, out) = jail_fixture();
         plant_overlong(&root, &out);

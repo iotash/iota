@@ -2551,6 +2551,7 @@ async fn an_outside_session_grant_is_one_directory_through_one_tool() {
 
 /// The real code set behind a wrapper that moves `link` to `swap` while the gate resolves the call's
 /// subject, and back before the call runs — a sandboxed shell flipping a link in a loop, at its best moment.
+#[cfg(unix)]
 struct Flipping {
     inner: Arc<dyn Dispatcher>,
     link: PathBuf,
@@ -2558,6 +2559,7 @@ struct Flipping {
     swap: PathBuf,
 }
 
+#[cfg(unix)]
 impl Flipping {
     fn point(&self, to: &std::path::Path) {
         let _ = std::fs::remove_file(&self.link);
@@ -2565,6 +2567,7 @@ impl Flipping {
     }
 }
 
+#[cfg(unix)]
 impl Dispatcher for Flipping {
     fn tools(&self) -> Vec<ToolDef> {
         self.inner.tools()

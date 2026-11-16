@@ -265,15 +265,15 @@ async fn walks_and_listings_reach_outside_the_project_root() {
     write_project_file(&other, "skip/c.rs", "fn needle() {}\n");
     let real = fs::canonicalize(&other).expect("real other");
     let abs = real.join("b.rs").display().to_string();
-    let mut spellings = vec![
+    let spellings = vec![
         other.to_str().expect("utf-8").to_owned(),
         "../other".to_owned(),
     ];
     #[cfg(unix)]
-    {
+    let spellings = {
         std::os::unix::fs::symlink(&other, root.join("dlink")).expect("dlink");
-        spellings.extend(["dlink".to_owned(), "dlink/.".to_owned()]);
-    }
+        [spellings, vec!["dlink".to_owned(), "dlink/.".to_owned()]].concat()
+    };
     #[cfg(not(unix))]
     let _ = root;
 
