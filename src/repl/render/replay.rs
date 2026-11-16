@@ -860,7 +860,8 @@ mod tests {
     }
 
     /// The echo lays a user message out as the very block the live one draws — the 245 bar, then
-    /// the text in reverse video padded to the edge — with nothing of its own to pick.
+    /// the gutter space and the text in one reverse-video span padded to the edge — with nothing
+    /// of its own to pick.
     #[test]
     fn the_echo_draws_the_live_user_block() {
         let blocks = echo_rounds(&[user("q")], no_ask, 80, None);
@@ -869,7 +870,7 @@ mod tests {
         assert_eq!(
             live,
             [format!(
-                "\x1b[38;5;245m▌ \x1b[0m\x1b[7mq{}\x1b[0m",
+                "\x1b[38;5;245m▌\x1b[0m\x1b[7m q{}\x1b[0m",
                 " ".repeat(77)
             )]
         );

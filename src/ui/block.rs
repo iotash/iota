@@ -124,16 +124,18 @@ impl Block {
 }
 
 /// The user's submitted text as full-width rows (ui.go:224-243, chat/replay.go:196-215
-/// `printUserBlock`), laid out from the text at the width of the draw: each row is the 2-column
-/// gutter — `"▌ "` on the first row, two spaces on the wrapped ones — in [`USER_BAR`] gray, then
-/// the text in REVERSE VIDEO (the terminal's foreground behind it, its background as the text —
-/// what sets the block apart from body text in any theme), padded by display width to width − 2
-/// so the reversed span runs from column 2 to the edge at any width. The bar sits OUTSIDE the
-/// span: inside it the `▌` would take the reversed foreground and read as a notch, not a rule
-/// (X-105). Under `ColorMode::Off` it writes no escape at all — the rows are committed text that
-/// the exit writes out raw, past the frame's colour gate, so a reverse attribute would leak
-/// there — and the bar's character carries the block. The live block and the resume echo both
-/// lay out through this one, the same rows.
+/// `printUserBlock`), laid out from the text at the width of the draw. Column 0 is the bar: `▌`
+/// on the first row, a space on the wrapped ones, in [`USER_BAR`] gray and reset — OUTSIDE the
+/// reversed span, where the `▌` would take the reversed foreground and read as a notch, not a
+/// rule (X-105). Columns 1.. are one REVERSE VIDEO span (the terminal's foreground behind it, its
+/// background as the text — what sets the block apart from body text in any theme): the gutter
+/// space at column 1, then the text from column 2, padded by display width to width − 2 so the
+/// span runs to the edge at any width. The gutter space belongs to the block: in the bar's span
+/// it would show the terminal background between the bar and the block, a seam. Under
+/// `ColorMode::Off` it writes no escape at all — the rows are committed text that the exit
+/// writes out raw, past the frame's colour gate, so a reverse attribute would leak there — and
+/// the bar's character carries the block. The live block and the resume echo both lay out
+/// through this one, the same rows.
 pub struct UserBlock {
     /// The submitted text (its display form: paste tags bounded).
     pub text: String,
@@ -148,13 +150,13 @@ impl Layout for UserBlock {
             .into_iter()
             .enumerate()
             .map(|(i, row)| {
-                let g = if i == 0 { "▌ " } else { "  " };
+                let bar = if i == 0 { "▌" } else { " " };
                 let pad = (w - GUTTER).saturating_sub(crate::text::width::str_width(&row));
                 let pad = " ".repeat(pad);
                 if color {
-                    format!("{USER_BAR}{g}{RESET}{REV_ON}{row}{pad}{RESET}")
+                    format!("{USER_BAR}{bar}{RESET}{REV_ON} {row}{pad}{RESET}")
                 } else {
-                    format!("{g}{row}{pad}")
+                    format!("{bar} {row}{pad}")
                 }
             })
             .collect()
@@ -201,9 +203,10 @@ mod tests {
     use crate::text::ansi::strip_sgr;
     use crate::text::width::str_width;
 
-    /// The block at 80 columns as bytes: the gutter in the bar's 245 gray (`▌ ` on the first row,
-    /// two spaces on the wrapped one) and reset, THEN reverse video over the text padded to the
-    /// edge — every row 80 wide.
+    /// The block at 80 columns as bytes: the bar alone in the 245 gray (`▌` on the first row, a
+    /// space on the wrapped one) and reset, THEN one reverse-video span from column 1 — the gutter
+    /// space, the text from column 2, padded to the edge — every row 80 wide. The gutter space is
+    /// inside the span: in the bar's span it is a seam of terminal background.
     #[test]
     fn the_user_block_is_reverse_video_behind_a_gray_bar() {
         // 78 columns of text beside the gutter, then 5 more: the wrap lands at column 2 too.
@@ -212,9 +215,9 @@ mod tests {
         assert_eq!(
             rows,
             [
-                format!("\x1b[38;5;245m▌ \x1b[0m\x1b[7m{}\x1b[0m", "x".repeat(78)),
+                format!("\x1b[38;5;245m▌\x1b[0m\x1b[7m {}\x1b[0m", "x".repeat(78)),
                 format!(
-                    "\x1b[38;5;245m  \x1b[0m\x1b[7mtail.{}\x1b[0m",
+                    "\x1b[38;5;245m \x1b[0m\x1b[7m tail.{}\x1b[0m",
                     " ".repeat(73)
                 ),
             ]
@@ -226,7 +229,7 @@ mod tests {
         assert_eq!(
             one,
             [format!(
-                "\x1b[38;5;245m▌ \x1b[0m\x1b[7mhi{}\x1b[0m",
+                "\x1b[38;5;245m▌\x1b[0m\x1b[7m hi{}\x1b[0m",
                 " ".repeat(16)
             )]
         );
@@ -243,7 +246,7 @@ mod tests {
         assert_eq!(
             rows,
             [format!(
-                "\x1b[38;5;245m▌ \x1b[0m\x1b[7m中文一行{}\x1b[0m",
+                "\x1b[38;5;245m▌\x1b[0m\x1b[7m 中文一行{}\x1b[0m",
                 " ".repeat(70)
             )]
         );

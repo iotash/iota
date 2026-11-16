@@ -504,7 +504,7 @@ fn wide_runes_show_intact() {
     let (mut t, buf) = direct_term();
     // The user-echo shape: a padded, styled row (the padding is what makes the row's trailing
     // cells non-blank, which is where a fallback path would desync).
-    let row = format!("▌ \x1b[7m中文一行{}\x1b[0m", " ".repeat(80 - 2 - 8));
+    let row = format!("▌\x1b[7m 中文一行{}\x1b[0m", " ".repeat(80 - 2 - 8));
     t.push(Block::rows([row.clone()]));
     // The unpadded markdown shape must stay intact too.
     t.push(rows_of(&["中文一行 tail".to_owned()]));
