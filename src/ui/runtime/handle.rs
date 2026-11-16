@@ -236,7 +236,9 @@ impl TuiHandle {
         });
     }
 
+    // No SIGTSTP off unix; the twin keeps the unix method's signature, so `self` goes unused.
     #[cfg(not(unix))]
+    #[allow(clippy::unused_self)]
     fn suspend_on_sigtstp(&self) {}
 }
 

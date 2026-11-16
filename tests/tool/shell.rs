@@ -1274,7 +1274,9 @@ async fn a_write_root_that_is_a_repository_keeps_its_hooks_and_config() {
 /// The writers are not the exception (DIVERGENCES X-44, X-95): `iota config trust|untrust|init` and
 /// `mcp add|remove` stay in the sandbox even with `auto_run: true` — the prompt-injection case, where nothing is
 /// asked — so their write of the trust record or the config is refused. The binary is a stand-in that writes
-/// `~/.iota/trusted.json` and `~/.iota.yaml` itself; let out of the sandbox, either write would land.
+/// `~/.iota/trusted.json` and `~/.iota.yaml` itself; let out of the sandbox, either write would land. It reports
+/// each refused write by the write's own exit status, so the check holds whatever wording the platform's sandbox
+/// gives the error (`Operation not permitted` on macOS, `Read-only file system` on Linux).
 #[cfg(unix)]
 #[tokio::test]
 async fn the_sandbox_keeps_the_trust_and_config_writers_in() {
@@ -1302,7 +1304,7 @@ async fn the_sandbox_keeps_the_trust_and_config_writers_in() {
     fs::write(
         &fake,
         format!(
-            "#!/bin/sh\nw=\necho hostile > '{}' && w=1\necho hostile > '{}' && w=1\n[ -n \"$w\" ] && echo wrote\n",
+            "#!/bin/sh\nw=\necho hostile > '{}' && w=1 || echo refused-record\necho hostile > '{}' && w=1 || echo refused-config\n[ -n \"$w\" ] && echo wrote\n",
             shell_path(&record),
             shell_path(&config)
         ),
@@ -1344,7 +1346,10 @@ async fn the_sandbox_keeps_the_trust_and_config_writers_in() {
         );
         let (out, is_err) = call(&tool, json!({"command": command})).await;
         assert!(
-            is_err && !out.contains("wrote") && out.contains("Operation not permitted"),
+            is_err
+                && !out.contains("wrote")
+                && out.contains("refused-record")
+                && out.contains("refused-config"),
             "{command:?} wrote the trust record or the config from the model's shell: ({out:?}, {is_err})"
         );
         assert_eq!(
