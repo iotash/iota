@@ -1909,3 +1909,33 @@ fn the_completion_list_takes_the_interaction_cap() {
     assert_eq!(m.list_items, (25..40).collect::<Vec<_>>());
     assert_eq!(m.composer.value(), "/c39");
 }
+
+/// tmux's burst that ends where it began (100×30 → 60×16 → 100×30, L4 38 on 3.4): the pane's grid
+/// is cropped and regrown while the loop merges the SIGWINCHes into one size — the size of the
+/// last frame. That resize still repaints every cell, as one synchronized update: the emulator
+/// whose grid was cropped and regrown in between shows what a fresh one replaying every byte does.
+#[test]
+fn a_resize_back_to_the_drawn_size_repaints_every_cell() {
+    use crate::ui::runtime::screen::{SYNC_BEGIN, SYNC_END, SYNC_MIN};
+    let lh = idle_loop();
+    let before = lh.buf.bytes().len();
+    let mut p = parse(&lh.buf);
+    p.screen_mut().set_size(12, 40);
+    p.screen_mut().set_size(24, 80);
+    lh.resize(80, 24);
+    let all = lh.buf.bytes();
+    let after = &all[before..];
+    p.process(after);
+    let fresh = grid(&parse(&lh.buf));
+    assert_eq!(grid(&p), fresh, "a stale screen after a same-size resize");
+    // One write (the iteration's batch): a synchronized update exactly when it is longer than
+    // SYNC_MIN (X-55).
+    let count = |pat: &[u8]| after.windows(pat.len()).filter(|w| *w == pat).count();
+    let pairs = usize::from(after.len() > SYNC_MIN);
+    assert_eq!(
+        (count(SYNC_BEGIN), count(SYNC_END)),
+        (pairs, pairs),
+        "{} bytes",
+        after.len()
+    );
+}

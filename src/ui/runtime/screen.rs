@@ -14,9 +14,9 @@
 //! - **A frame** is one `Terminal::draw`: autoresize, layout, `Buffer::diff`, the cursor. The
 //!   bytes collect in [`SyncOut`] and leave in one write per loop iteration, under X-55's rule
 //!   (a write longer than `SYNC_MIN` is one DEC 2026 synchronized update).
-//! - **A resize** is a size handed to the backend; the next draw's `autoresize` clears the
-//!   screen and repaints every cell. No cursor query is ever made ([`Out`] answers ratatui's
-//!   own `get_cursor_position` from the last position it set).
+//! - **A resize** is a size handed to the backend; the next draw clears the screen and repaints
+//!   every cell, at a changed size or the one it last drew. No cursor query is ever made ([`Out`]
+//!   answers ratatui's own `get_cursor_position` from the last position it set).
 //! - **The point of no return** is the first frame: until it is drawn nothing reaches the
 //!   terminal, so a run that fails before it leaves the shell's screen as it was.
 //! - **Exit** ([`Screen::leave`]) leaves the alternate screen and writes the whole conversation
@@ -138,6 +138,10 @@ pub(crate) struct Screen<W: Write> {
     search: Option<Search>,
     /// A resize happened with a search on: the next draw puts the view back on its hit.
     rejump: bool,
+    /// A resize was taken since the last draw: the next one clears and repaints every cell, even
+    /// at the size it last drew (tmux ends a burst that comes back where it began with SIGWINCHes
+    /// the loop merges into that size, after cropping and regrowing the pane's grid).
+    resized: bool,
     /// Whether mouse reporting is requested while the alternate screen is shown ([`MOUSE_ON`]);
     /// `false` never writes a mouse sequence at all.
     mouse: bool,
@@ -206,6 +210,7 @@ impl<W: Write> Screen<W> {
             live,
             search: None,
             rejump: false,
+            resized: false,
             written: 0,
             mouse,
             sel: None,
@@ -220,10 +225,11 @@ impl<W: Write> Screen<W> {
         self.term.backend().size
     }
 
-    /// Takes the terminal's new size; the next draw's `autoresize` clears the screen and
-    /// repaints every cell — the whole resize protocol.
+    /// Takes the terminal's new size; the next draw clears the screen and repaints every cell,
+    /// whether the size changed or not — the whole resize protocol.
     pub(crate) fn resize(&mut self, size: Size) {
         self.term.backend_mut().size = size;
+        self.resized = true;
         // A selection is made at a width; another width wraps its rows differently.
         self.sel = None;
         self.rejump = self.search.is_some();
@@ -584,8 +590,14 @@ impl<W: Write> Screen<W> {
             Place::Main => self.enter()?,
             Place::Alt => {}
         }
-        self.term.autoresize()?;
         let Size { width, height } = self.size();
+        if std::mem::take(&mut self.resized) {
+            // `Terminal::resize` clears the screen and the back buffer at any area, the drawn
+            // one too, where `autoresize` would diff against a grid the terminal no longer shows.
+            self.term.resize(Rect::new(0, 0, width, height))?;
+        } else {
+            self.term.autoresize()?;
+        }
         let frame_h = u16::try_from(view.rows.len())
             .unwrap_or(u16::MAX)
             .min(height);

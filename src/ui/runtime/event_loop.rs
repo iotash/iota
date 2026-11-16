@@ -926,7 +926,8 @@ impl Model {
 
     /// The last recorded resize, once the terminal has been quiet for `RESIZE_QUIET`: the size
     /// taken — the shared atomics, the screen — and the frame left dirty, so the iteration's one
-    /// batched draw repaints every cell (`Screen::draw_frame` autoresizes).
+    /// batched draw repaints every cell (`Screen::draw_frame` clears after any resize, the same
+    /// size too).
     pub(crate) fn apply_resize<W: Write>(&mut self, term: &mut Term<W>) {
         let Some((w, h)) = self.pending_resize.take() else {
             return;
