@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::text::ansi::wrap_ansi;
-use crate::ui::render::theme::{RESET, REV_ON, USER_BAR};
+use crate::ui::render::theme::{BG_DEFAULT, RESET, REV_ON, USER_BAR};
 
 /// Lays a block out from its source at a width.
 pub trait Layout: Send + Sync {
@@ -124,18 +124,17 @@ impl Block {
 }
 
 /// The user's submitted text as full-width rows (ui.go:224-243, chat/replay.go:196-215
-/// `printUserBlock`), laid out from the text at the width of the draw. Column 0 is the bar: `▌`
-/// on the first row, a space on the wrapped ones, in [`USER_BAR`] gray and reset — OUTSIDE the
-/// reversed span, where the `▌` would take the reversed foreground and read as a notch, not a
-/// rule (X-105). Columns 1.. are one REVERSE VIDEO span (the terminal's foreground behind it, its
-/// background as the text — what sets the block apart from body text in any theme): the gutter
-/// space at column 1, then the text from column 2, padded by display width to width − 2 so the
-/// span runs to the edge at any width. The gutter space belongs to the block: in the bar's span
-/// it would show the terminal background between the bar and the block, a seam. Under
-/// `ColorMode::Off` it writes no escape at all — the rows are committed text that the exit
-/// writes out raw, past the frame's colour gate, so a reverse attribute would leak there — and
-/// the bar's character carries the block. The live block and the resume echo both lay out
-/// through this one, the same rows.
+/// `printUserBlock`), laid out from the text at the width of the draw: every row is ONE reverse
+/// video span (the terminal's foreground behind it, its background as the text — what sets the
+/// block apart from body text in any theme), so no cell of it shows the terminal background
+/// (X-105). Column 0 is the bar: `▌` on the first row, a space on the wrapped ones, drawn in the
+/// [`USER_BAR`] gray — set as the BACKGROUND, which the reverse turns into the glyph's colour, the
+/// cell behind it staying the block's — then [`BG_DEFAULT`], the reverse kept. Column 1 is the
+/// gutter space, the text from column 2, padded by display width to width − 2 so the span runs to
+/// the edge at any width, one `RESET`. Under `ColorMode::Off` it writes no escape at all — the
+/// rows are committed text that the exit writes out raw, past the frame's colour gate, so a
+/// reverse attribute would leak there — and the bar's character carries the block. The live block
+/// and the resume echo both lay out through this one, the same rows.
 pub struct UserBlock {
     /// The submitted text (its display form: paste tags bounded).
     pub text: String,
@@ -154,7 +153,7 @@ impl Layout for UserBlock {
                 let pad = (w - GUTTER).saturating_sub(crate::text::width::str_width(&row));
                 let pad = " ".repeat(pad);
                 if color {
-                    format!("{USER_BAR}{bar}{RESET}{REV_ON} {row}{pad}{RESET}")
+                    format!("{REV_ON}{USER_BAR}{bar}{BG_DEFAULT} {row}{pad}{RESET}")
                 } else {
                     format!("{bar} {row}{pad}")
                 }
@@ -203,21 +202,20 @@ mod tests {
     use crate::text::ansi::strip_sgr;
     use crate::text::width::str_width;
 
-    /// The block at 80 columns as bytes: the bar alone in the 245 gray (`▌` on the first row, a
-    /// space on the wrapped one) and reset, THEN one reverse-video span from column 1 — the gutter
-    /// space, the text from column 2, padded to the edge — every row 80 wide. The gutter space is
-    /// inside the span: in the bar's span it is a seam of terminal background.
+    /// The block at 80 columns as bytes: one reverse-video span per row — the bar in the 245 gray
+    /// (`▌` on the first row, a space on the wrapped one), the default background back, the gutter
+    /// space, the text from column 2, padded to the edge — every row 80 wide.
     #[test]
-    fn the_user_block_is_reverse_video_behind_a_gray_bar() {
+    fn the_user_block_is_one_reverse_span_with_a_gray_bar() {
         // 78 columns of text beside the gutter, then 5 more: the wrap lands at column 2 too.
         let text = format!("{}{}", "x".repeat(78), "tail.");
         let rows = UserBlock { text }.lines(80);
         assert_eq!(
             rows,
             [
-                format!("\x1b[38;5;245m▌\x1b[0m\x1b[7m {}\x1b[0m", "x".repeat(78)),
+                format!("\x1b[7m\x1b[48;5;245m▌\x1b[49m {}\x1b[0m", "x".repeat(78)),
                 format!(
-                    "\x1b[38;5;245m \x1b[0m\x1b[7m tail.{}\x1b[0m",
+                    "\x1b[7m\x1b[48;5;245m \x1b[49m tail.{}\x1b[0m",
                     " ".repeat(73)
                 ),
             ]
@@ -229,7 +227,7 @@ mod tests {
         assert_eq!(
             one,
             [format!(
-                "\x1b[38;5;245m▌\x1b[0m\x1b[7m hi{}\x1b[0m",
+                "\x1b[7m\x1b[48;5;245m▌\x1b[49m hi{}\x1b[0m",
                 " ".repeat(16)
             )]
         );
@@ -246,9 +244,34 @@ mod tests {
         assert_eq!(
             rows,
             [format!(
-                "\x1b[38;5;245m▌\x1b[0m\x1b[7m 中文一行{}\x1b[0m",
+                "\x1b[7m\x1b[48;5;245m▌\x1b[49m 中文一行{}\x1b[0m",
                 " ".repeat(70)
             )]
         );
+    }
+
+    /// The row round-trips through the frame's span parser: the bar cell is reversed with the 245
+    /// gray as its background (drawn as the glyph) and the default foreground (the cell behind
+    /// it, the block's colour); the rest of the row is reversed with neither colour set.
+    #[test]
+    fn the_bar_cell_parses_as_reversed_gray_on_the_block() {
+        use crate::ui::render::spans::ansi_to_spans_with;
+        use ratatui::style::{Color, Modifier};
+        let row = &UserBlock { text: "hi".into() }.lines(20)[0];
+        let line = ansi_to_spans_with(row, true);
+        let spans: Vec<_> = line
+            .spans
+            .iter()
+            .map(|s| (s.content.as_ref(), s.style))
+            .collect();
+        assert_eq!(spans.len(), 2, "{spans:?}");
+        let (bar, st) = spans[0];
+        assert_eq!(bar, "▌");
+        assert_eq!((st.fg, st.bg), (None, Some(Color::Indexed(245))));
+        assert!(st.add_modifier.contains(Modifier::REVERSED));
+        let (rest, st) = spans[1];
+        assert_eq!(rest, format!(" hi{}", " ".repeat(16)));
+        assert_eq!((st.fg, st.bg), (None, None));
+        assert!(st.add_modifier.contains(Modifier::REVERSED));
     }
 }

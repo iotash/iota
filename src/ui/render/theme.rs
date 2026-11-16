@@ -48,9 +48,14 @@ pub(crate) const SEARCH_HIT: &str = "\x1b[7m";
 /// Current search hit: reverse + yellow (`TUI_CONTRACTS` §9).
 pub(crate) const SEARCH_CUR: &str = "\x1b[7;33m";
 
-/// The user block's `▌` bar, outside its reversed span: a mid gray (#8a8a8a) that reads on a dark
-/// terminal and a light one alike, so one constant serves both.
-pub(crate) const USER_BAR: &str = "\x1b[38;5;245m";
+/// The user block's `▌` bar, INSIDE its reversed span: a mid gray (#8a8a8a) that reads on a dark
+/// terminal and a light one alike, so one constant serves both. It is a BACKGROUND colour because
+/// reverse video swaps the pair: the cell's background attribute is what the glyph is drawn in,
+/// while the cell behind it shows the default foreground, the block's own background. A
+/// foreground here would become the cell's background under the reverse instead.
+pub(crate) const USER_BAR: &str = "\x1b[48;5;245m";
+/// Default background (SGR 49): ends [`USER_BAR`] after the bar, keeping the reverse.
+pub(crate) const BG_DEFAULT: &str = "\x1b[49m";
 
 /// The input field's background for a dark or light terminal: one gray step off the
 /// terminal background — distinguishable, not loud. Text renders in the default foreground
