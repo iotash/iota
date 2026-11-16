@@ -85,19 +85,6 @@ impl Block {
         }))
     }
 
-    /// Live block `id` taken back: it closes showing nothing (the block it showed will be
-    /// written again elsewhere — a display formula a code fence interrupted resumes below the
-    /// code).
-    pub fn withdrawn(id: LiveId) -> Self {
-        struct Nothing;
-        impl Layout for Nothing {
-            fn lines(&self, _width: usize) -> Vec<String> {
-                Vec::new()
-            }
-        }
-        Self::live(id, Nothing, false)
-    }
-
     /// One row per line.
     pub fn rows<S: Into<String>>(lines: impl IntoIterator<Item = S>) -> Vec<Self> {
         lines.into_iter().map(|l| Self::Row(l.into())).collect()

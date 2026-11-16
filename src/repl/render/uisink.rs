@@ -94,14 +94,6 @@ impl crate::markdown::sink::Sink for UiMdSink {
         (g.commit)(vec![Block::live(id, block, true)]);
     }
 
-    /// The open block is taken back: it shows nothing, and what resumes is a new block.
-    fn withdraw_block(&mut self) {
-        let mut g = self.lock();
-        if let Some(id) = g.live.take() {
-            (g.commit)(vec![Block::withdrawn(id)]);
-        }
-    }
-
     /// Never asked: every closed block is kept as its source ([`Self::write_block`]) and laid out
     /// by the screen at the width of each draw.
     fn width(&self) -> usize {

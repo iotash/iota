@@ -8,7 +8,6 @@
 //! included) gets the uniform 2-space indent.
 
 use crate::markdown::RenderOptions;
-use crate::markdown::blocks::math::MathBlock;
 use crate::markdown::fragment::{Fragment, Source};
 use crate::markdown::highlight::LineHighlighter;
 use crate::text::ansi::{ansi_width, wrap_ansi};
@@ -21,11 +20,6 @@ pub(crate) struct CodeBlock {
     /// The highlighter and its output so far; `None` renders the raw lines (no color, a bare
     /// fence, an unknown language, or a grammar that failed on some line).
     hl: Option<(LineHighlighter, String)>,
-    /// The display-math block a fence line interrupted. Go's dispatch checks the fence
-    /// FIRST and opens the code block without closing an open `$$` block, so the formula
-    /// is open again once the fence closes — including at the end of input, where
-    /// markdown.go:379-399 renders the fence alone and leaves `inMath` set. Kept as written.
-    interrupted: Option<MathBlock>,
 }
 
 impl CodeBlock {
@@ -39,9 +33,9 @@ impl CodeBlock {
             .to_owned()
     }
 
-    /// An empty block just opened by a fence tagged `lang`, carrying the display-math block the
-    /// fence interrupted, if any. A bare fence NEVER carries color sequences.
-    pub(crate) fn new(lang: &str, opts: RenderOptions, interrupted: Option<MathBlock>) -> Self {
+    /// An empty block just opened by a fence tagged `lang`. A bare fence NEVER carries color
+    /// sequences.
+    pub(crate) fn new(lang: &str, opts: RenderOptions) -> Self {
         let hl = (opts.color && !lang.is_empty())
             .then(|| LineHighlighter::new(lang, opts.code_theme))
             .flatten()
@@ -49,7 +43,6 @@ impl CodeBlock {
         Self {
             lines: Vec::new(),
             hl,
-            interrupted,
         }
     }
 
@@ -62,19 +55,18 @@ impl CodeBlock {
         }
     }
 
-    /// Takes back the display-math block the fence interrupted, if any.
-    pub(crate) fn take_interrupted(&mut self) -> Option<MathBlock> {
-        self.interrupted.take()
-    }
-
     /// The block as it stands — highlighted once, line by line: only its wrap depends on the
-    /// width ([`indent_code`] lays it out at one).
-    pub(crate) fn fragment(&self, opts: RenderOptions) -> Fragment {
+    /// width ([`indent_code`] lays it out at one). `None` until its first line, like the other
+    /// blocks with nothing to show.
+    pub(crate) fn fragment(&self, opts: RenderOptions) -> Option<Fragment> {
+        if self.lines.is_empty() {
+            return None;
+        }
         let code = match &self.hl {
             Some((_, out)) => out.strip_suffix('\n').unwrap_or(out).to_owned(),
             None => self.lines.join("\n"),
         };
-        Fragment::new(Source::Code(code), opts)
+        Some(Fragment::new(Source::Code(code), opts))
     }
 }
 

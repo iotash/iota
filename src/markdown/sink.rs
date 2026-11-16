@@ -32,7 +32,4 @@ pub trait Sink: Send {
     /// The open buffering block as it stands (only when [`Sink::shows_open_blocks`]): it replaces
     /// the one given before, and the [`Sink::write_block`] that closes it replaces the last.
     fn grow_block(&mut self, _block: Fragment) {}
-    /// The open block shown so far is taken back: a code fence interrupted it, and it shows again
-    /// where it resumes, after the code (only when [`Sink::shows_open_blocks`]).
-    fn withdraw_block(&mut self) {}
 }

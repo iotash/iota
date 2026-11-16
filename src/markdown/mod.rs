@@ -152,25 +152,13 @@ impl Writer {
     /// consumeLine twin (markdown.go:219-369) — THE dispatch ordering law.
     fn consume_line(&mut self, line: &str) {
         // Fenced code block: buffer until the closing fence, then render once. A fence
-        // line always wins: it closes an open fence, and otherwise flushes a pending
-        // table/list/quote first — but NOT an open display-math block, which it
-        // interrupts and which resumes after the closing fence (Go's dispatch order).
+        // line always wins: it closes an open fence, and otherwise closes whatever block is
+        // open first — an unclosed display-math block included, as it stands.
         if line.trim().starts_with("```") {
-            if matches!(self.block, Block::Code(_)) {
-                self.flush_block(); // the closing fence
-            } else {
-                let interrupted = match std::mem::replace(&mut self.block, Block::None) {
-                    Block::Math(math) => {
-                        self.sink.withdraw_block();
-                        Some(math)
-                    }
-                    other => {
-                        self.block = other;
-                        self.flush_block();
-                        None
-                    }
-                };
-                self.open_code(line, interrupted);
+            let closing = matches!(self.block, Block::Code(_));
+            self.flush_block();
+            if !closing {
+                self.open_code(line);
             }
             return;
         }
@@ -267,14 +255,10 @@ impl Writer {
     }
 
     /// Opens a fenced code block at `fence` (its language tag is what follows the
-    /// backticks), carrying the display-math block the fence interrupted, if any.
-    fn open_code(&mut self, fence: &str, interrupted: Option<MathBlock>) {
+    /// backticks).
+    fn open_code(&mut self, fence: &str) {
         let lang = CodeBlock::lang_of(fence);
-        self.open_block(Block::Code(Box::new(CodeBlock::new(
-            &lang,
-            self.opts,
-            interrupted,
-        ))));
+        self.open_block(Block::Code(Box::new(CodeBlock::new(&lang, self.opts))));
     }
 
     /// The open block as it stands, whichever it is (`None`: no block open, or one with nothing
@@ -283,7 +267,7 @@ impl Writer {
         let opts = self.opts;
         match &self.block {
             Block::None => None,
-            Block::Code(code) => Some(code.fragment(opts)),
+            Block::Code(code) => code.fragment(opts),
             Block::Table(table) => table.fragment(opts),
             Block::List(list) => list.fragment(opts),
             Block::Quote(quote) => quote.fragment(opts),
@@ -303,24 +287,18 @@ impl Writer {
 
     /// Closes and renders the open block, whichever it is. A list re-emits its held blank
     /// after the render (the blank turned out to END the list, not to make it loose) —
-    /// routed through `emit_blank` so it joins the blank-run collapse. A fence leaves the
-    /// display-math block it interrupted open again (`CodeBlock::interrupted`), opened like a new
-    /// block: it pays its gap below the code and shows again from there.
+    /// routed through `emit_blank` so it joins the blank-run collapse.
     fn flush_block(&mut self) {
         let block = self.fragment();
-        let (resumed, held_blank) = match &mut self.block {
+        let held_blank = match &self.block {
             Block::None => return,
-            Block::Code(code) => (code.take_interrupted(), false),
-            Block::List(list) => (None, list.holds_blank()),
-            _ => (None, false),
+            Block::List(list) => list.holds_blank(),
+            _ => false,
         };
         self.block = Block::None;
         self.render_block(block);
         if held_blank {
             self.emit_blank();
-        }
-        if let Some(math) = resumed {
-            self.open_block(Block::Math(math));
         }
     }
 

@@ -26,7 +26,8 @@ fn a_code_block_streams_line_by_line_as_one_block() {
     let mut s = Streamed::new();
     let mut c = Conversation::new();
     c.push(s.feed("Here is the code:\n```rust\n"));
-    let blocks = c.pushed();
+    // The fence alone shows nothing: the block appears with its first line, and stays one.
+    let blocks = c.pushed() + 1;
     for i in 0..40 {
         c.push(s.feed(&format!("{}\n", code_line(i))));
         let lines = shown(&mut c, 120);
@@ -247,8 +248,8 @@ fn text_render(md: &str, width: usize) -> Vec<String> {
 
 #[test]
 fn a_formula_a_fence_interrupts_streams_to_where_the_text_render_puts_it() {
-    // The fence interrupts the open `$$` block, the code renders first, and the formula resumes
-    // after the closing fence — below the code, with the gap a block owes.
+    // The fence closes the open `$$` block as it stands, the code follows it, and what came
+    // after the closing fence is text again — streamed and rendered as text alike.
     for md in [
         "intro\n\n$$\na + b\n```\nx\n```\nc\n$$\nafter\n",
         "intro\n$$\na + b\n```\nx\n```\nc\n$$\nafter\n",

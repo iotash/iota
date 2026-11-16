@@ -330,11 +330,6 @@ impl Streamed {
                 let id = *self.id.get_or_insert_with(LiveId::next);
                 lock(&self.out).push(Block::live(id, block, true));
             }
-            fn withdraw_block(&mut self) {
-                if let Some(id) = self.id.take() {
-                    lock(&self.out).push(Block::withdrawn(id));
-                }
-            }
         }
         let out = Arc::new(Mutex::new(Vec::new()));
         let w = Writer::new(
