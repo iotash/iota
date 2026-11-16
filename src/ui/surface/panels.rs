@@ -32,7 +32,6 @@ fn cursor_at(x: usize, y: usize) -> (u16, u16) {
 pub(crate) fn render_rows(st: &mut SurfaceState, width: u16) -> Rendered {
     let focus = st.focus;
     let room = st.room();
-    let cap = st.cap();
     let dark = st.dark();
     let n = st.slots.len();
     let mut cursor = None;
@@ -79,10 +78,10 @@ pub(crate) fn render_rows(st: &mut SurfaceState, width: u16) -> Rendered {
         PanelKind::Browser => 1 + usize::from(!ps.error_text.is_empty()),
         _ => 0,
     };
-    ps.room = room.map(|r| Room {
-        rows: r.saturating_sub(body + 1 + own).max(1),
-        cap,
-    });
+    ps.room = Room {
+        rows: room.rows.saturating_sub(body + 1 + own).max(1),
+        cap: room.cap,
+    };
 
     match p.kind() {
         PanelKind::List | PanelKind::Multi => {
@@ -235,13 +234,12 @@ fn render_picker(p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<String
     let cols = picker_preview_cols(ps, w);
     if cols > 0 && !ps.items.is_empty() {
         let mut prev_h = if p.height > 0 { p.height } else { PICKER_ROWS };
-        if let Some(Room { rows: r, cap }) = ps.room {
-            // The preview is the panel's too: with no `height` it stays under the cap.
-            if p.height == 0 {
-                prev_h = prev_h.min(cap);
-            }
-            prev_h = clamp(prev_h, 4.min(r), r);
+        let Room { rows: r, cap } = ps.room;
+        // The preview is the panel's too: with no `height` it stays under the cap.
+        if p.height == 0 {
+            prev_h = prev_h.min(cap);
         }
+        prev_h = clamp(prev_h, 4.min(r), r);
         preview = ps.preview_rows(cols, prev_h);
     }
 

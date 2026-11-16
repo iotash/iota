@@ -818,11 +818,11 @@ fn surface_key_ignores_non_press_and_empty_specs() {
 /// out — 15; clamped to the item count, minimum 1.
 #[test]
 fn panel_height_defaults_and_clamps() {
-    let room = |rows, cap| Some(Room { rows, cap });
+    let room = |rows, cap| Room { rows, cap };
     let l = list("A", &[]);
-    assert_eq!(panel_height(&l, 40, None), INTERACTION_MAX_ROWS);
-    assert_eq!(panel_height(&l, 3, None), 3);
-    assert_eq!(panel_height(&l, 0, None), 1);
+    assert_eq!(panel_height(&l, 40, Room::default()), INTERACTION_MAX_ROWS);
+    assert_eq!(panel_height(&l, 3, Room::default()), 3);
+    assert_eq!(panel_height(&l, 0, Room::default()), 1);
     assert_eq!(
         panel_height(&l, 40, room(30, 15)),
         15,
@@ -837,8 +837,8 @@ fn panel_height_defaults_and_clamps() {
     let v = Panel::view("", Vec::new());
     assert_eq!(panel_height(&v, 400, room(33, 12)), 12, "a View too");
     let h = list("A", &[]).with_height(6);
-    assert_eq!(panel_height(&h, 40, None), 6);
-    assert_eq!(panel_height(&h, 2, None), 2);
+    assert_eq!(panel_height(&h, 40, Room::default()), 6);
+    assert_eq!(panel_height(&h, 2, Room::default()), 2);
     assert_eq!(
         panel_height(&h, 40, room(4, 15)),
         4,
