@@ -112,8 +112,12 @@ pub(crate) fn text(
 }
 
 /// The display lines `[first, last]` of the one line that display line `at` belongs to: back to
-/// where it starts, on through its continuations (what a triple-click selects).
+/// where it starts, on through its continuations (what a triple-click selects); `(0, 0)` for no
+/// lines at all.
 pub(crate) fn line_around(lines: &[(String, bool)], at: usize) -> (usize, usize) {
+    if lines.is_empty() {
+        return (0, 0);
+    }
     let at = at.min(lines.len().saturating_sub(1));
     let first = (0..=at).rev().find(|&i| !lines[i].1).unwrap_or(0);
     let last = (at + 1..lines.len())
@@ -300,5 +304,12 @@ mod tests {
         assert_eq!(super::line_around(&block, 2), (1, 2));
         assert_eq!(super::line_around(&block, 1), (1, 2));
         assert_eq!(super::line_around(&block, 3), (3, 3));
+    }
+
+    /// No lines at all: the first line, never an index past the end.
+    #[test]
+    fn a_line_around_no_lines_is_the_first() {
+        assert_eq!(super::line_around(&[], 0), (0, 0));
+        assert_eq!(super::line_around(&[], 3), (0, 0));
     }
 }

@@ -1275,3 +1275,84 @@ fn a_drag_over_a_growing_code_block_holds_the_view_and_copies_its_lines() {
         Some("  fn step_1() {}\n  fn step_2() {}")
     );
 }
+
+/// A triple-click on the line an empty layout holds selects that blank line and copies nothing —
+/// it used to land on a row with no lines and index past the end (a panic, which `panic =
+/// "abort"` turns into the process dying with the conversation unwritten). A double-click above
+/// it still copies the word on the row the screen shows there.
+#[test]
+fn a_triple_click_on_an_empty_block_copies_nothing_and_the_marks_stay_on_their_rows() {
+    struct Nothing;
+    impl crate::ui::block::Layout for Nothing {
+        fn lines(&self, _width: usize) -> Vec<String> {
+            Vec::new()
+        }
+    }
+    let (mut s, buf) = mouse_screen(40, 12);
+    let mut blocks = rows_of(&rows(20));
+    blocks.push(crate::ui::block::Block::laid(Nothing));
+    s.push(blocks);
+    s.draw_frame(&frame(40), None).unwrap();
+    // The viewport is rows 0–7 and follows the tail: line-013 … line-019, then the blank line.
+    let g = grid(&replay(&buf, 12, 40));
+    assert_eq!(
+        (g[0].as_str(), g[6].as_str()),
+        ("line-013", "line-019"),
+        "{g:#?}"
+    );
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 0,
+            row: 7,
+            clicks: 3,
+        },
+    );
+    select(&mut s, SelectOp::Release);
+    assert_eq!(s.take_copied(), None);
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 2,
+            row: 0,
+            clicks: 2,
+        },
+    );
+    select(&mut s, SelectOp::Release);
+    assert_eq!(s.take_copied().as_deref(), Some("line-013"));
+}
+
+/// A row carrying a hyperlink copies the text the screen shows: no OSC 8 byte reaches the
+/// clipboard, and columns count the visible cells (the URL takes none).
+#[test]
+fn a_selection_over_a_hyperlink_copies_its_text_alone() {
+    let link = crate::markdown::hyperlink("https://example.com/docs", "docs", true);
+    let (mut s, _buf) = mouse_screen(40, 12);
+    s.push(rows_of(&[format!("see {link} now")]));
+    s.draw_frame(&frame(40), None).unwrap();
+    let click = |s: &mut Screen<SharedBuf>, col, clicks| {
+        select(
+            s,
+            SelectOp::Press {
+                col,
+                row: 7,
+                clicks,
+            },
+        );
+        select(s, SelectOp::Release);
+        s.take_copied()
+    };
+    assert_eq!(click(&mut s, 0, 3).as_deref(), Some("see docs now"));
+    assert_eq!(click(&mut s, 5, 2).as_deref(), Some("docs"));
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 0,
+            row: 7,
+            clicks: 1,
+        },
+    );
+    select(&mut s, SelectOp::Drag { col: 6, row: 7 });
+    select(&mut s, SelectOp::Release);
+    assert_eq!(s.take_copied().as_deref(), Some("see doc"));
+}

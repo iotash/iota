@@ -44,10 +44,13 @@ fn a_row_wider_than_the_screen_is_wrapped_once_per_width() {
         ["wwwwwwwwww", "wwwwwwwwww", "wwwwwwwEND", "next"]
     );
     assert_eq!(
-        c.rows[0].laid.as_ref().map(|l| (l.width, l.lines.len())),
+        c.rows[0].cache.as_ref().map(|l| (l.width, l.lines.len())),
         Some((10, 3))
     );
-    assert!(c.rows[1].laid.is_none(), "a row that fits is never wrapped");
+    assert!(
+        c.rows[1].cache.is_none(),
+        "a row that fits is never wrapped"
+    );
     // Wider again: the row fits and no wrap is consulted.
     assert_eq!(
         c.view_lines(40, 5, None)[0],
@@ -55,7 +58,7 @@ fn a_row_wider_than_the_screen_is_wrapped_once_per_width() {
     );
     // Another width replaces the cached wrap.
     c.view_lines(15, 5, None);
-    assert_eq!(c.rows[0].laid.as_ref().map(|l| l.width), Some(15));
+    assert_eq!(c.rows[0].cache.as_ref().map(|l| l.width), Some(15));
 }
 
 #[test]
@@ -188,5 +191,92 @@ fn an_entry_is_forty_bytes_and_a_row_that_fits_caches_nothing() {
     assert_eq!(std::mem::size_of::<super::Entry>(), 40);
     let mut c = conv(3);
     c.view_lines(80, 5, None);
-    assert!(c.rows.iter().all(|e| e.laid.is_none()));
+    assert!(c.rows.iter().all(|e| e.cache.is_none()));
+}
+
+/// A layout with nothing to show — what a block that closes empty lays out to.
+struct Nothing;
+impl crate::ui::block::Layout for Nothing {
+    fn lines(&self, _width: usize) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+/// An empty layout holds its place as one blank line, and every count agrees on it: what the
+/// view shows, the marks under it, and how far the tail scrolls. (Its height used to be 1 while
+/// it showed 0 lines: the view lost its last line and every mark below it was one row off.)
+#[test]
+fn an_empty_layout_is_one_blank_line_in_the_view_and_in_the_marks() {
+    use crate::ui::block::{Block, LiveId};
+    let mut c = Conversation::new();
+    let id = LiveId::next();
+    c.push(vec![
+        Block::Row("a".to_owned()),
+        Block::laid(Nothing),
+        Block::Row("b".to_owned()),
+        Block::live(id, Nothing, true),
+        Block::live(id, Nothing, false),
+        Block::Row("c".to_owned()),
+    ]);
+    assert_eq!(c.view_lines(20, 3, None), ["b", "", "c"]);
+    assert_eq!(
+        c.view_marks(20, 3),
+        [Some((2, 0)), Some((3, 0)), Some((4, 0))]
+    );
+    assert_eq!(c.view_lines(20, 10, None), ["a", "", "b", "", "c"]);
+    assert_eq!(c.view_marks(20, 10).len(), 5);
+}
+
+/// An empty code fence shows nothing — no block at all, not even while it is open — so the lines
+/// around it are where the text render puts them and the marks match the lines.
+#[test]
+fn an_empty_fence_lays_out_no_block_open_or_closed() {
+    let mut s = crate::ui::testutil::Streamed::new();
+    let mut c = Conversation::new();
+    c.push(s.feed("before\n```\n"));
+    assert_eq!(c.view_lines(20, 10, None), ["before", ""]);
+    assert_eq!(c.view_marks(20, 10).len(), 2);
+    c.push(s.feed("```\nafter\n"));
+    c.push(s.end());
+    assert_eq!(c.view_lines(20, 10, None), ["before", "", "after"]);
+    assert_eq!(c.view_marks(20, 10).len(), 3);
+    let mut closed = Conversation::new();
+    closed.push(crate::ui::testutil::markdown_blocks(
+        "before\n```\n```\nafter\n",
+    ));
+    assert_eq!(closed.view_lines(20, 10, None), ["before", "", "after"]);
+}
+
+/// A hyperlink's URL is not text the reader sees: a selection copies the link's text alone, and a
+/// search neither finds the URL nor counts it.
+#[test]
+fn a_hyperlink_copies_and_searches_as_the_text_on_screen() {
+    use crate::markdown::hyperlink;
+    use crate::ui::block::Block;
+    use crate::ui::runtime::screen::search::Search;
+    let row = format!(
+        "see {} now",
+        hyperlink("https://example.com/x", "docs", true)
+    );
+    let mut c = Conversation::new();
+    c.push(vec![Block::Row(row)]);
+    assert_eq!(
+        c.plain_lines(0, 40),
+        Some(vec![("see docs now".to_owned(), false)])
+    );
+    let mut search = Search::new(&c, 0);
+    search.set_query(&mut c, "example", 40);
+    assert_eq!(search.current(), None, "the URL is not searched");
+    search.set_query(&mut c, "docs", 40);
+    assert_eq!(search.current(), Some((0, 0)));
+    let hl = super::Highlight {
+        query: "docs",
+        current: search.current(),
+    };
+    let lit = c.view_lines(40, 1, Some(&hl));
+    assert_eq!(
+        crate::text::ansi::strip_ansi(&lit[0]),
+        "see docs now",
+        "the highlight lands on the text: {lit:?}"
+    );
 }

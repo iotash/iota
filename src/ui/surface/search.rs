@@ -6,7 +6,7 @@
 //! invariant the whole offset scheme rests on; `highlight_line` replays a line's own
 //! SGR state after every highlight closes.
 
-use crate::text::ansi::{sgr_carry, strip_sgr, strip_sgr_into};
+use crate::text::ansi::{escape_len_at, sgr_carry, strip_ansi, strip_ansi_into, strip_sgr};
 
 use super::tabbed::{PanelState, panel_height};
 use super::theme::{SEARCH_CUR, SEARCH_HIT};
@@ -131,7 +131,7 @@ pub(crate) fn find_hits<'a>(
     for (i, line) in lines.into_iter().enumerate() {
         // Only a line with an escape in it needs stripping (the offsets are the plain text's).
         let plain = if line.contains('\x1b') {
-            strip_sgr_into(line, &mut buf);
+            strip_ansi_into(line, &mut buf);
             buf.as_str()
         } else {
             line
@@ -162,22 +162,6 @@ pub(crate) fn matches_query(text: &str, query: &str) -> bool {
 
 // --- highlighting -----------------------------------------------------------
 
-/// Byte length of the ANSI CSI escape starting at `b[i]`, or 0 (clip.go ansiLen — the
-/// CSI-only scanner `highlight_line`'s walk uses, exactly like Go).
-fn csi_len_at(b: &[u8], i: usize) -> usize {
-    if i + 1 >= b.len() || b[i] != 0x1b || b[i + 1] != b'[' {
-        return 0;
-    }
-    let mut j = i + 2;
-    while j < b.len() && !(0x40..=0x7e).contains(&b[j]) {
-        j += 1;
-    }
-    if j < b.len() {
-        j += 1; // include the final byte
-    }
-    j - i
-}
-
 /// Reverse-videos every occurrence of `query` in `line`, which may already carry its
 /// own SGR (search.go:134-180).
 ///
@@ -192,7 +176,7 @@ pub(crate) fn highlight_line(line: &str, query: &str, cur_off: Option<usize>) ->
     if query.is_empty() {
         return line.to_owned();
     }
-    let ranges = match_ranges(&strip_sgr(line), query);
+    let ranges = match_ranges(&strip_ansi(line), query);
     if ranges.is_empty() {
         return line.to_owned();
     }
@@ -207,13 +191,17 @@ pub(crate) fn highlight_line(line: &str, query: &str, cur_off: Option<usize>) ->
 
     let mut i = 0;
     while i < line.len() {
-        let n = csi_len_at(bytes, i);
+        // Every escape is copied through and takes no plain offset; an OSC 8 hyperlink's URL
+        // is not text the reader sees, so it never matches.
+        let n = escape_len_at(bytes, i);
         if n > 0 {
             let seq = &line[i..i + n];
             b.push_str(seq);
-            state = sgr_carry(&state, seq);
-            if hl_end.is_some() {
-                b.push_str(open); // the line's own escape may have reset us
+            if seq.starts_with("\x1b[") {
+                state = sgr_carry(&state, seq);
+                if hl_end.is_some() {
+                    b.push_str(open); // the line's own escape may have reset us
+                }
             }
             i += n;
             continue;

@@ -51,8 +51,15 @@ pub(crate) fn escape_len_at(b: &[u8], i: usize) -> usize {
 /// Removes every CSI and OSC escape (SGR and OSC 8 hyperlinks alike), leaving the text
 /// the user actually sees — what [`ansi_width`] measures.
 pub fn strip_ansi(s: &str) -> String {
-    let b = s.as_bytes();
     let mut out = String::with_capacity(s.len());
+    strip_ansi_into(s, &mut out);
+    out
+}
+
+/// [`strip_ansi`] into `out` (cleared first), so a caller stripping many lines reuses one buffer.
+pub fn strip_ansi_into(s: &str, out: &mut String) {
+    out.clear();
+    let b = s.as_bytes();
     let mut i = 0;
     // Text between escapes is copied a run at a time; an ESC that starts no sequence is kept.
     while let Some(j) = s[i..].find('\x1b') {
@@ -67,7 +74,6 @@ pub fn strip_ansi(s: &str) -> String {
         }
     }
     out.push_str(&s[i..]);
-    out
 }
 
 /// CSI/OSC scanner: the total byte count occupied by ANSI escape sequences in `s`.
@@ -100,13 +106,6 @@ pub fn ansi_width(s: &str) -> usize {
 /// `ansiRe` shape. Other escapes (OSC 8 hyperlinks) are kept.
 pub fn strip_sgr(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    strip_sgr_into(s, &mut out);
-    out
-}
-
-/// [`strip_sgr`] into `out` (cleared first), so a caller stripping many lines reuses one buffer.
-pub fn strip_sgr_into(s: &str, out: &mut String) {
-    out.clear();
     let b = s.as_bytes();
     let mut i = 0;
     // Text between escapes is copied a run at a time (a search strips every row of a session).
@@ -127,6 +126,7 @@ pub fn strip_sgr_into(s: &str, out: &mut String) {
         }
     }
     out.push_str(&s[i..]);
+    out
 }
 
 /// Escape-preserving truncation (x/ansi Truncate twin): a string whose visible width

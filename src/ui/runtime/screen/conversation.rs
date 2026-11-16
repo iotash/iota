@@ -26,7 +26,7 @@
 
 use std::collections::VecDeque;
 
-use crate::text::ansi::{ansi_width, strip_sgr, wrap_ansi};
+use crate::text::ansi::{ansi_width, strip_ansi, wrap_ansi};
 use crate::ui::block::{Block, Live, LiveId};
 use crate::ui::render::theme::{FAINT, RESET};
 use crate::ui::surface::search::{highlight_line, match_ranges};
@@ -38,11 +38,12 @@ pub(crate) const BLOCK_CAP: usize = 200_000;
 /// The row standing in for the blocks the cap dropped.
 pub(crate) const TRIMMED: &str = "earlier output trimmed — /export has the full text";
 
-/// What a block holds beyond itself once it has been laid out: its display lines at one width,
-/// which of them continue the line before (`Block::display`), and — a laid-out block's — its
-/// search text. Boxed, because the commonest entry by far, a row that fits the screen, never
-/// needs any of it and so pays one pointer, not the struct.
-struct Laid {
+/// What a block holds beyond itself once it has been laid out: its display lines at one width
+/// (at least one: an empty layout holds its place as one blank line), which of them continue the
+/// line before (`Block::display`), and — a laid-out block's — its search text. Boxed, because
+/// the commonest entry by far, a row that fits the screen, never needs any of it and so pays one
+/// pointer, not the struct.
+struct Cache {
     width: usize,
     lines: Vec<String>,
     joins: Vec<bool>,
@@ -58,19 +59,20 @@ struct Entry {
     block: Block,
     /// A row's display width (a laid-out block: 0, unused).
     cols: usize,
-    laid: Option<Box<Laid>>,
+    cache: Option<Box<Cache>>,
 }
 
 impl Entry {
     fn new(block: Block) -> Self {
-        let cols = match &block {
-            Block::Row(t) => ansi_width(t),
-            Block::Laid(_) | Block::Live(_) => 0,
+        let cols = if let Block::Row(t) = &block {
+            ansi_width(t)
+        } else {
+            0
         };
         Self {
             block,
             cols,
-            laid: None,
+            cache: None,
         }
     }
 
@@ -79,10 +81,10 @@ impl Entry {
         matches!(self.block, Block::Row(_)) && self.cols <= width
     }
 
-    /// The block's display lines at `width`.
+    /// The block's display lines at `width`: at least one — the one source of a block's height.
     fn lines(&mut self, width: usize) -> &[String] {
         self.fill(width);
-        match (&self.block, &self.laid) {
+        match (&self.block, &self.cache) {
             (Block::Row(t), _) if self.cols <= width => std::slice::from_ref(t),
             (_, Some(l)) => &l.lines,
             _ => &[],
@@ -90,24 +92,29 @@ impl Entry {
     }
 
     /// Lays the block out at `width` when what it holds is another width's (a row that fits needs
-    /// nothing). The first layout of a laid-out block keeps its search text.
+    /// nothing). An empty layout is one blank line. The first layout of a laid-out block keeps
+    /// its search text.
     fn fill(&mut self, width: usize) {
-        if self.fits(width) || self.laid.as_ref().is_some_and(|l| l.width == width) {
+        if self.fits(width) || self.cache.as_ref().is_some_and(|l| l.width == width) {
             return;
         }
-        let (lines, joins): (Vec<String>, Vec<bool>) =
-            self.block.display(width).into_iter().unzip();
-        if let Some(l) = &mut self.laid {
+        let mut display = self.block.display(width);
+        if display.is_empty() {
+            display.push((String::new(), false));
+        }
+        let (lines, joins): (Vec<String>, Vec<bool>) = display.into_iter().unzip();
+        if let Some(l) = &mut self.cache {
             l.width = width;
             l.lines = lines;
             l.joins = joins;
             return;
         }
-        let text = match self.block {
-            Block::Laid(_) | Block::Live(_) => strip_sgr(&lines.join("\n")),
-            Block::Row(_) => String::new(),
+        let text = if matches!(self.block, Block::Row(_)) {
+            String::new()
+        } else {
+            strip_ansi(&lines.join("\n"))
         };
-        self.laid = Some(Box::new(Laid {
+        self.cache = Some(Box::new(Cache {
             width,
             lines,
             joins,
@@ -119,7 +126,7 @@ impl Entry {
     /// screen's wrap made).
     fn lines_joined(&mut self, width: usize) -> Vec<(String, bool)> {
         self.fill(width);
-        match (&self.block, &self.laid) {
+        match (&self.block, &self.cache) {
             (Block::Row(t), _) if self.cols <= width => vec![(t.clone(), false)],
             (_, Some(l)) => l
                 .lines
@@ -131,15 +138,15 @@ impl Entry {
         }
     }
 
-    /// At least one line: an empty laid-out block still holds its place.
+    /// Its display lines' count ([`Entry::lines`]).
     fn height(&mut self, width: usize) -> usize {
-        self.lines(width).len().max(1)
+        self.lines(width).len()
     }
 
     /// What a search scans: a row's text as written (its wrap does not split a match), a
-    /// laid-out block's search text ([`Laid::text`]) — laid out at `width` only if it never was.
+    /// laid-out block's search text ([`Cache::text`]) — laid out at `width` only if it never was.
     fn search_text(&mut self, width: usize) -> &str {
-        if !matches!(self.block, Block::Row(_)) && self.laid.is_none() {
+        if !matches!(self.block, Block::Row(_)) && self.cache.is_none() {
             self.fill(width);
         }
         self.searched()
@@ -147,7 +154,7 @@ impl Entry {
 
     /// The search text as it stands (a laid-out block not yet laid out has none: `""`).
     fn searched(&self) -> &str {
-        match (&self.block, &self.laid) {
+        match (&self.block, &self.cache) {
             (Block::Row(t), _) => t,
             (_, Some(l)) => &l.text,
             (_, None) => "",
@@ -159,13 +166,15 @@ impl Entry {
     /// is on); in a laid-out block, by counting the occurrences line by line.
     fn line_of(&mut self, k: usize, query: &str, width: usize) -> usize {
         if let Block::Row(t) = &self.block {
-            let off = match_ranges(&strip_sgr(t), query).get(k).map_or(0, |r| r.0);
+            let off = match_ranges(&strip_ansi(t), query)
+                .get(k)
+                .map_or(0, |r| r.0);
             let mut seen = 0;
             return self
                 .lines(width)
                 .iter()
                 .position(|l| {
-                    seen += strip_sgr(l).len();
+                    seen += strip_ansi(l).len();
                     off < seen
                 })
                 .unwrap_or(0);
@@ -174,7 +183,7 @@ impl Entry {
         self.lines(width)
             .iter()
             .position(|l| {
-                seen += match_ranges(&strip_sgr(l), query).len();
+                seen += match_ranges(&strip_ansi(l), query).len();
                 k < seen
             })
             .unwrap_or(0)
@@ -288,9 +297,9 @@ impl Conversation {
             .and_then(|(_, n)| Some((n, self.index_of(n)?)));
         let n = if let Some((n, i)) = held {
             let old = self.rows[i]
-                .laid
+                .cache
                 .as_ref()
-                .map(|l| (l.lines.len().max(1), l.width));
+                .map(|l| (l.lines.len(), l.width));
             if self.grew.is_none()
                 && let Some((h, w)) = old
             {
@@ -620,7 +629,8 @@ impl Conversation {
         out
     }
 
-    /// Block number `n`'s display lines at `width`, SGR stripped (what a selection copies), each
+    /// Block number `n`'s display lines at `width`, every escape stripped — SGR and OSC 8
+    /// hyperlinks alike (what a selection copies: the text the screen shows), each
     /// with whether it continues the line before — a row's wrap segments do, a laid-out block's
     /// own lines do not; `None` once the cap has dropped it.
     pub(crate) fn plain_lines(&mut self, n: u64, width: usize) -> Option<Vec<(String, bool)>> {
@@ -629,7 +639,7 @@ impl Conversation {
             self.rows[i]
                 .lines_joined(width)
                 .into_iter()
-                .map(|(l, j)| (strip_sgr(&l), j))
+                .map(|(l, j)| (strip_ansi(&l), j))
                 .collect(),
         )
     }
@@ -648,7 +658,7 @@ impl Conversation {
         let cur = hl.current.and_then(|(cn, k)| (Some(cn) == n).then_some(k));
         let entry = &mut self.rows[index];
         if let Block::Row(text) = &entry.block {
-            let ranges = match_ranges(&strip_sgr(text), hl.query);
+            let ranges = match_ranges(&strip_ansi(text), hl.query);
             if ranges.is_empty() {
                 return None;
             }
@@ -664,7 +674,7 @@ impl Conversation {
         let mut any = false;
         let mut out = Vec::new();
         for line in entry.lines(width) {
-            let ranges = match_ranges(&strip_sgr(line), hl.query);
+            let ranges = match_ranges(&strip_ansi(line), hl.query);
             if ranges.is_empty() {
                 out.push(line.clone());
                 continue;
