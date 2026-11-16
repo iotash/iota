@@ -128,8 +128,9 @@ impl Block {
 /// gutter — `"▌ "` on the first row, two spaces on the wrapped ones — in [`USER_BAR`] gray, then
 /// the text on the input field's gray ([`input_bg`]) in the terminal's own foreground, padded by
 /// display width to width − 2 so the bubble runs from column 2 to the edge at any width. Under
-/// `ColorMode::Off` the frame's one colour gate drops the gray and the bar's character carries the
-/// block. The live block and the resume echo both lay out through this one.
+/// `ColorMode::Off` it writes no escape at all — the rows are committed text that the exit writes
+/// out raw, past the frame's colour gate — and the bar's character carries the block. The live
+/// block and the resume echo both lay out through this one.
 pub struct UserBlock {
     /// The submitted text (its display form: paste tags bounded).
     pub text: String,
@@ -142,13 +143,19 @@ impl Layout for UserBlock {
         const GUTTER: usize = 2;
         let w = width.max(8);
         let bg = input_bg(self.dark);
+        let color = crate::app::color::enabled();
         crate::text::ansi::wrap_by_width(&self.text, w - GUTTER)
             .into_iter()
             .enumerate()
             .map(|(i, row)| {
                 let g = if i == 0 { "▌ " } else { "  " };
                 let pad = (w - GUTTER).saturating_sub(crate::text::width::str_width(&row));
-                format!("{USER_BAR}{g}{RESET}{bg}{row}{}{RESET}", " ".repeat(pad))
+                let pad = " ".repeat(pad);
+                if color {
+                    format!("{USER_BAR}{g}{RESET}{bg}{row}{pad}{RESET}")
+                } else {
+                    format!("{g}{row}{pad}")
+                }
             })
             .collect()
     }
@@ -193,7 +200,6 @@ mod tests {
     use super::{Layout, RESET, USER_BAR, UserBlock, input_bg};
     use crate::text::ansi::strip_sgr;
     use crate::text::width::str_width;
-    use crate::ui::render::spans::ansi_to_spans_with;
 
     /// The bubble at 80 columns as bytes, in both tones: the gutter in the bar's gray (`▌ ` on
     /// the first row, two spaces on the wrapped one), then the text on the bubble's gray with no
@@ -252,26 +258,5 @@ mod tests {
                 " ".repeat(70)
             )]
         );
-    }
-
-    /// Under `ColorMode::Off` the frame's colour gate leaves no colour on any cell: the bubble
-    /// and the bar's gray are gone, and what remains is the `▌` in the terminal's own foreground
-    /// beside the plain text — still a marked block.
-    #[test]
-    fn without_colour_the_bubble_reads_as_the_bar_and_plain_text() {
-        let rows = UserBlock {
-            text: "hi".into(),
-            dark: true,
-        }
-        .lines(20);
-        let line = ansi_to_spans_with(&rows[0], false);
-        assert!(
-            line.spans
-                .iter()
-                .all(|s| s.style.fg.is_none() && s.style.bg.is_none()),
-            "{line:?}"
-        );
-        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, format!("▌ hi{}", " ".repeat(16)));
     }
 }

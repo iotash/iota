@@ -132,10 +132,11 @@ if raw_has_color; then
 else
     ok "NO_COLOR: not one foreground or background color in the whole byte stream"
 fi
-# …and the attributes the frame is built from are still there (the separators are faint,
-# the user block is reverse video): the gate removes colors, not the frame.
+# …and the attributes the frame is built from are still there (the separators are faint):
+# the gate removes colors, not the frame. The user block's bubble is a color, so it goes; its
+# `▌` bar is a character and stays, in the terminal's own foreground.
 check_raw "NO_COLOR: the frame keeps faint" "${ESC}[2m" yes
-check_raw "NO_COLOR: the frame keeps reverse video" "${ESC}[7m" yes
+check "NO_COLOR: the user block keeps its ▌ bar" "$(count_all '▌ md')" 1
 # The chat side: nothing at all (X-27).
 row="$(heading_row 1)"
 if [ -n "$row" ] && ! row_is_styled "$row"; then
@@ -201,7 +202,7 @@ else
     ok "TERM=dumb: not one foreground or background color in the whole byte stream"
 fi
 check_raw "TERM=dumb: the frame keeps faint" "${ESC}[2m" yes
-check_raw "TERM=dumb: the frame keeps reverse video" "${ESC}[7m" yes
+check "TERM=dumb: the user block keeps its ▌ bar" "$(count_all '▌ md')" 3
 check "TERM=dumb: the heading rendered once more" "$(count_all 'Heading')" 3
 row="$(heading_row 3)"
 if [ -n "$row" ] && ! row_is_styled "$row"; then
