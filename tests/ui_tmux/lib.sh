@@ -102,6 +102,14 @@ _history() {
 type_() { tm send-keys -t s -l "$1"; }
 key() { tm send-keys -t s "$@"; }
 
+# clear_screen — a shell pane's screen wiped from tmux's side (`send-keys -R`: the terminal reset,
+# the rows scrolled into the history as `scroll-on-clear` has it), so a marker the last command
+# printed cannot satisfy the next wait. Never a Ctrl+L typed at the shell: bash's readline clears on
+# it, but dash (ubuntu's `sh`) has no line editing and keeps it as a literal form feed at the start
+# of the next command line, where it is part of the first word (CI 43858638523:
+# `^LIOTA_TEST_PANIC=__boom__: not found`, rc=127).
+clear_screen() { tm send-keys -t s -R; }
+
 # mouse <button> <col> <row> [M|m] [target] — one SGR (1006) mouse report, 1-based cells, as the
 # terminal sends it: 0 left, 32 left drag, 64 wheel up, 65 wheel down; `M` press or motion, `m`
 # release. Written straight into the pane's input (`send-keys -H`), so it is what the app reads —

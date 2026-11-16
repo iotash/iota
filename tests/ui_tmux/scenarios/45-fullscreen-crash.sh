@@ -28,7 +28,7 @@ gone() { ! kill -0 "$1" 2>/dev/null; }
 now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time*1000'; }
 # launch <label> <env/args prefix> <args> — iota under the shell, the status and tty mode after it.
 launch() {
-    tm send-keys -t s C-l
+    clear_screen
     : >"$RAW"
     type_ "$2 $(iota_cmd openai fake) ${3:-}; echo \"r\"\"c=\$?\"; stty -a | tr ' ' '\\n' | grep -xE -- '-?icanon' | sed 's/^/t''ty=/'"
     key Enter

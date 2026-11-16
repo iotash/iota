@@ -40,7 +40,7 @@ handed_back() {
 
 # taken_again <label> <width> — `fg`, and the whole screen repainted at that width.
 taken_again() {
-    tm send-keys -t s C-l
+    clear_screen
     type_ 'fg'
     key Enter
     _poll_until 50 _alt_is_v 1 || miss "$2: fg did not take the screen back"

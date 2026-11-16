@@ -29,22 +29,22 @@ run_in_shell "--help" "$bin --help"
 if _vis_has 'Commands:'; then ok "--help: the usage is on the shell's screen"; else bad "--help: no usage"; dump_pane; fi
 check_raw "--help: the alternate screen was never entered" "$ALT_ON" no
 check "--help: exit 0" "$(rc)" "rc=0"
-tm send-keys -t s C-l
+clear_screen
 
 CONFIG_BODY='providers: [unclosed' write_iota_config openai fake
 run_in_shell "bad config" "$bin"
 if cap | grep -qiE 'error|yaml|config'; then ok "bad config: the error is on the shell's screen"; else bad "bad config: no error shown"; dump_pane; fi
 check_raw "bad config: the alternate screen was never entered" "$ALT_ON" no
-if [ "$(rc)" != "rc=0" ]; then ok "bad config: a failing status ($(rc))"; else bad "bad config: exit 0"; fi
+check "bad config: status 1 (a 127 is the shell not finding the command)" "$(rc)" "rc=1"
 check "bad config: the tty is canonical" "$(tty_mode)" "tty=icanon"
-tm send-keys -t s C-l
+clear_screen
 
 run_in_shell "missing session" "$(iota_cmd openai fake resume nosuchsessn1)"
 if cap | grep -qiE 'nosuchsessn1|no session|not found'; then ok "missing session: the error is on the shell's screen"; else bad "missing session: no error shown"; dump_pane; fi
 check_raw "missing session: the alternate screen was never entered" "$ALT_ON" no
-if [ "$(rc)" != "rc=0" ]; then ok "missing session: a failing status ($(rc))"; else bad "missing session: exit 0"; fi
+check "missing session: status 1 (a 127 is the shell not finding the command)" "$(rc)" "rc=1"
 check "missing session: the tty is canonical" "$(tty_mode)" "tty=icanon"
-tm send-keys -t s C-l
+clear_screen
 
 # The next iota in the same terminal: up on the full screen, out with Ctrl+D, the shell back.
 : >"$RAW"
