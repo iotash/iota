@@ -45,7 +45,8 @@ pub(crate) fn clean(p: &Path) -> PathBuf {
     out
 }
 
-/// `filepath.Rel(base, target)` (lexical, both cleaned); None when they share no common root or need `..` through
+/// `filepath.Rel(base, target)` (lexical, both cleaned); None when they share no common root, sit on different
+/// Windows prefixes (Go's volume check: `C:` and `\\?\C:` are different prefixes), or need `..` through
 /// the root (an `Option`, not `Result<_, ()>`, which trips `clippy::result_unit_err`). Walks the cleaned paths'
 /// components as `OsStr` (byte comparison), so byte-distinct non-UTF-8 components never collapse to equal.
 pub(crate) fn rel(base: &Path, target: &Path) -> Option<PathBuf> {
@@ -54,7 +55,7 @@ pub(crate) fn rel(base: &Path, target: &Path) -> Option<PathBuf> {
     if base == targ {
         return Some(PathBuf::from("."));
     }
-    if base.has_root() != targ.has_root() {
+    if base.has_root() != targ.has_root() || prefix(&base) != prefix(&targ) {
         return None;
     }
     // Go empties a `"."` base; a `"."` target keeps its element and the final clean folds it away.
@@ -82,6 +83,14 @@ pub(crate) fn rel(base: &Path, target: &Path) -> Option<PathBuf> {
         out = clean(&out);
     }
     Some(out)
+}
+
+/// A path's Windows prefix (`C:`, `\\?\C:`, `\\server\share`), if it has one; never on Unix.
+fn prefix(p: &Path) -> Option<&OsStr> {
+    match p.components().next() {
+        Some(Component::Prefix(pre)) => Some(pre.as_os_str()),
+        _ => None,
+    }
 }
 
 /// The elements Go's `Rel` loop walks over a CLEANED path: the root contributes a single empty element (`/` is
@@ -192,6 +201,21 @@ mod tests {
 
         assert_eq!(to_slash(Path::new("a/b/c")), "a/b/c");
         assert_eq!(to_slash(Path::new("/")), "/");
+    }
+
+    // Go's volume check: a plain drive path and its verbatim (`canonicalize`) spelling share no prefix, so neither
+    // is relative to the other. Before, pushing the verbatim prefix replaced the `..`s and `rel` returned the
+    // target itself, which `within` read as "inside".
+    #[cfg(windows)]
+    #[test]
+    fn paths_rel_needs_the_same_prefix() {
+        assert_eq!(rel(Path::new(r"C:\a"), Path::new(r"\\?\C:\a\b")), None);
+        assert_eq!(rel(Path::new(r"\\?\C:\a"), Path::new(r"C:\a\b")), None);
+        assert_eq!(rel(Path::new(r"C:\a"), Path::new(r"D:\a")), None);
+        assert_eq!(
+            rel(Path::new(r"C:\a"), Path::new(r"C:\a\b")),
+            Some(PathBuf::from("b"))
+        );
     }
 
     // New (idiom-11): components compare as bytes — two byte-distinct non-UTF-8 components both decode lossily

@@ -2658,10 +2658,13 @@ async fn a_grant_for_one_directory_never_admits_a_write_the_link_moved_into_anot
 }
 
 // Review S1 through the gate: an inside session grant does not cover a write to `/`, whose real location
-// has no parent — it is asked about, keyed on `/` itself.
+// has no parent — it is asked about, keyed on that location itself (`/` on Unix, the current drive's root,
+// `\\?\C:\`, on Windows).
 #[tokio::test]
 async fn an_inside_grant_does_not_cover_a_parentless_target() {
     let (_t, _root, _real_out, dispatch) = code_chat(crate::tool::OutsideWrites::Ask, false);
+    let top = std::fs::canonicalize("/").expect("real /");
+    assert_eq!(top.parent(), None, "{}", top.display());
     let mut script = vec![choose(1), choose(2)];
     script.extend(quiet(1));
     let fx = Fx::new(dispatch, script);
@@ -2690,8 +2693,11 @@ async fn an_inside_grant_does_not_cover_a_parentless_target() {
                 "Allow for this session".to_owned()
             ),
             (
-                "write_file / (outside the project root) — allow?".to_owned(),
-                "Allow in / for this session".to_owned()
+                format!(
+                    "write_file {} (outside the project root) — allow?",
+                    top.display()
+                ),
+                format!("Allow in {} for this session", top.display())
             ),
         ]
     );
