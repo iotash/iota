@@ -232,7 +232,10 @@ mod tests {
             reverse: true,
         }
         .lines(80);
-        assert_eq!(rows, [format!("▌ {REV_ON}中文一行{}{RESET}", " ".repeat(70))]);
+        assert_eq!(
+            rows,
+            [format!("▌ {REV_ON}中文一行{}{RESET}", " ".repeat(70))]
+        );
     }
 
     /// The resume echo without colour: the same gutter and padding, no escape at all.
