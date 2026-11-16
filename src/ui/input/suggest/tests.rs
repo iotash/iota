@@ -15,7 +15,7 @@ use crate::ui::input::suggest::{
     DESC_LINES, DESC_MEASURE, LABEL_CAP, ListView, cancel, choose, frame_list, item_rows,
     label_column, layout, match_suggestions, step, tab_complete,
 };
-use crate::ui::render::theme::{CYAN, FAINT, RESET};
+use crate::ui::render::theme::{BOLD, CYAN, FAINT, RESET};
 
 /// Builds a suggestion table from plain values (Go `cmdTable`).
 fn cmd_table(vals: &[&str]) -> Vec<Suggestion> {
@@ -403,12 +403,26 @@ fn test_skill_rows_hide_until_a_space_then_show_bare_names() {
     assert_eq!(c.value(), "/skills brain-page");
 }
 
-/// The list is chrome under the composer: unselected labels and every description faint, the
-/// highlighted label (and its pointer) cyan, the description column faint beside it; no leading
-/// slash is repeated.
+/// The two columns differ by WEIGHT on every row, and by colour where there is colour: the label
+/// is bold — cyan too, with its cyan `›`, when highlighted — and every description faint; no
+/// leading slash is repeated.
 // Go: model_test.go:2177
 #[test]
 fn test_suggest_row_hues() {
+    let rows = hue_rows();
+    assert_eq!(
+        rows[0],
+        format!(" {CYAN}› {BOLD}status{RESET}   {FAINT}Provider, tokens, tools{RESET}")
+    );
+    assert_eq!(
+        rows[1],
+        format!("   {BOLD}session{RESET}  {FAINT}Resume or delete{RESET}")
+    );
+    assert!(!plain(&rows).iter().any(|r| r.contains("/status")));
+}
+
+/// The rows [`test_suggest_row_hues`] pins: `/status` highlighted, `/session` not.
+fn hue_rows() -> Vec<String> {
     let cmds = vec![
         sug("/status", "Provider, tokens, tools"),
         sug("/session", "Resume or delete"),
@@ -416,14 +430,42 @@ fn test_suggest_row_hues() {
     let mut c = Composer::new();
     c.set_value("/s");
     tab_complete(&mut c, &cmds);
-    let rows = frame_list(&mut c, &cmds, 80, 20).rows;
-    assert_eq!(
-        rows[0],
-        format!(" {CYAN}› status{RESET}   {FAINT}Provider, tokens, tools{RESET}")
-    );
-    assert_eq!(
-        rows[1],
-        format!("   {FAINT}session{RESET}  {FAINT}Resume or delete{RESET}")
-    );
-    assert!(!plain(&rows).iter().any(|r| r.contains("/status")));
+    frame_list(&mut c, &cmds, 80, 20).rows
+}
+
+/// Under `NO_COLOR` (`ColorMode::Off`, decided at `ansi_to_spans`) the cyan is gone and the weight
+/// is what separates the columns: on both rows the label's cells are bold and not dim, the
+/// description's dim and not bold, and no cell carries a colour.
+#[test]
+fn the_columns_stay_distinct_without_colour() {
+    use crate::ui::render::spans::ansi_to_spans_with;
+    use ratatui::style::Modifier;
+    for (row, label, desc) in hue_rows()
+        .iter()
+        .zip([
+            ("status", "Provider, tokens, tools"),
+            ("session", "Resume or delete"),
+        ])
+        .map(|(r, (l, d))| (r, l, d))
+    {
+        let line = ansi_to_spans_with(row, false);
+        let span = |t: &str| {
+            line.spans
+                .iter()
+                .find(|s| s.content == t)
+                .unwrap_or_else(|| panic!("no span {t:?} in {:?}", line.spans))
+                .style
+        };
+        let (l, d) = (span(label), span(desc));
+        assert!(l.add_modifier.contains(Modifier::BOLD), "{row:?}");
+        assert!(!l.add_modifier.contains(Modifier::DIM), "{row:?}");
+        assert!(d.add_modifier.contains(Modifier::DIM), "{row:?}");
+        assert!(!d.add_modifier.contains(Modifier::BOLD), "{row:?}");
+        assert!(
+            line.spans
+                .iter()
+                .all(|s| s.style.fg.is_none() && s.style.bg.is_none()),
+            "{row:?}"
+        );
+    }
 }

@@ -4,6 +4,7 @@
 //! clipped, wrapped, and re-emitted by the frame and `wrap_ansi`, and bare
 //! fragments compose predictably there. Semantics:
 //!
+//! - bold   — weight: the strong column of a two-column list (the completion list's labels)
 //! - faint  — chrome and secondary text: separators, hints, placeholders
 //! - cyan   — the accent: cursor rows, markers, prompt, spinner
 //! - green  — positive: checked boxes, command highlight
@@ -17,9 +18,12 @@
 //! `NO_COLOR` is not decided here (DIVERGENCES X-28): these fragments are the palette, and
 //! whether the terminal gets the colors in it is settled once at the byte→cell boundary,
 //! `super::spans::ansi_to_spans`, which under `crate::app::color::ColorMode::Off` drops every
-//! foreground and background and keeps the attributes — so `FAINT` and `REV_ON` still
+//! foreground and background and keeps the attributes — so `BOLD`, `FAINT` and `REV_ON` still
 //! shape the frame when `CYAN` and `RED` have gone.
 
+/// Bold SGR: weight, not colour — the strong text beside faint secondary text. An attribute, so
+/// it survives `NO_COLOR` where a foreground does not.
+pub(crate) const BOLD: &str = "\x1b[1m";
 /// Faint/dim SGR (theme.go:22).
 pub(crate) const FAINT: &str = "\x1b[2m";
 /// Cyan foreground SGR (theme.go:23).

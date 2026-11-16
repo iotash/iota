@@ -17,7 +17,7 @@ use crate::text::width::str_width;
 use crate::ui::facade::Suggestion;
 
 use super::composer::Composer;
-use crate::ui::render::theme::{CYAN, FAINT, RESET};
+use crate::ui::render::theme::{BOLD, CYAN, FAINT, RESET};
 
 /// A description's measure, in columns: 72, the classic line length of terminal prose (a commit
 /// body, a man page). A wide terminal keeps a description a short block beside its label instead
@@ -158,8 +158,8 @@ pub(crate) fn label_column(ms: &[&Suggestion], width: usize) -> usize {
         .max(1)
 }
 
-/// The rows of one item at `width` with a label column `col` wide. The first row is the label — a
-/// cyan `›` and label when `selected`, faint otherwise, cut with `…` past `col` — then, [`GAP`]
+/// The rows of one item at `width` with a label column `col` wide. The first row is the label —
+/// bold, and with a cyan `›` and cyan label when `selected`, cut with `…` past `col` — then, [`GAP`]
 /// past the column, the description's first line, faint; its further lines start at the same
 /// column. The description wraps at `min(width - its column, DESC_MEASURE)`, at most
 /// [`DESC_LINES`] lines, the last cut with `…` when the text runs on. An item with no description
@@ -167,9 +167,9 @@ pub(crate) fn label_column(ms: &[&Suggestion], width: usize) -> usize {
 pub(crate) fn item_rows(s: &Suggestion, selected: bool, col: usize, width: usize) -> Vec<String> {
     let label = truncate_ansi(suggest_label(s), col, "…");
     let head = if selected {
-        format!(" {CYAN}› {label}{RESET}")
+        format!(" {CYAN}› {BOLD}{label}{RESET}")
     } else {
-        format!("   {FAINT}{label}{RESET}")
+        format!("   {BOLD}{label}{RESET}")
     };
     // A description is prose: its own breaks and runs of spaces are not layout.
     let desc = s.desc.split_whitespace().collect::<Vec<_>>().join(" ");
