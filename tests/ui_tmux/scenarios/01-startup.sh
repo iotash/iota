@@ -54,10 +54,10 @@ check_frame_intact "startup" 80
 
 comp="$(composer_row)"
 bot="$(frame_bot)"
-check "status row is the bottom zone" "$(status_model)" "  fake"
+check "status row is the bottom zone" "$(status_model)" "fake"
 # The WP53 token half, in a real terminal: a fresh chat against a usage-reporting dialect
 # shows the estimated context occupancy beside the model.
-check "status row carries the context segment" "$(bottom_zone)" "  fake · ≈0% / 128k"
+check "status row carries the context segment" "$(bottom_zone)" "fake · ≈0% / 128k"
 
 # Nothing renders below the status row: the bottom zone is the last frame row.
 tail_rows="$(cap | tail -n "+$((bot + 2))" | grep -c '[^[:space:]]' | tr -d ' ')"

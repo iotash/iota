@@ -92,7 +92,7 @@ wait_all 'Model switched to gemini-pro' || miss "the close record never landed"
 settle || miss "frame never settled after the commit"
 
 check_once "closing commits exactly ONE one-line record" 'Model switched to gemini-pro'
-check "the status line swapped to the chosen model" "$(status_model)" "  gemini-pro"
+check "the status line swapped to the chosen model" "$(status_model)" "gemini-pro"
 check "no ghost panel rows after close" "$(count_vis '↑↓ move')" 0
 check "no ghost option rows after close" "$(count_vis 'gpt-4o')" 0
 check "history contiguous across open/close" "$(uniq_all 'l#[0-9][0-9]')" 40

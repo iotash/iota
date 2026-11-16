@@ -175,7 +175,7 @@ key Down
 key Enter
 wait_all 'Model switched to fake' || miss "arrow navigation never reached the first candidate"
 settle || miss "frame never settled after the second switch"
-check "the status row followed the model" "$(status_model)" '  fake'
+check "the status row followed the model" "$(status_model)" 'fake'
 check_frame_intact "after the arrow-driven switch" 80
 
 # ------------------------------------------------------------------ E: ESC during the fetch (§8b.8)

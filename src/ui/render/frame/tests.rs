@@ -387,7 +387,7 @@ fn jobs_segment_in_status_line() {
     let row = rows.last().expect("the status row");
     assert_eq!(
         row.as_str(),
-        "  gpt-4o · job b3 cargo test --test session resume 1m 12s"
+        "gpt-4o · job b3 cargo test --test session resume 1m 12s"
     );
     // The command wears the `[shell …]` header's cyan — not the row's faint — between the id and
     // the clock, which keep the row's own style; the text under the escapes is the row above.
@@ -422,24 +422,24 @@ fn jobs_segment_in_status_line() {
     // at 64 runes before the row's own width has a say — the same text as the `[shell …]` row.
     let script = [job("b3", "cargo test\n   --test session resume", 72, now)];
     let row = strip_sgr(&status_line(&status, None, 0, false, &script, 80, now));
-    assert_eq!(row, "  gpt-4o · job b3 cargo test … 1m 12s");
+    assert_eq!(row, "gpt-4o · job b3 cargo test … 1m 12s");
     let long = [job("b3", &"x".repeat(100), 72, now)];
     let row = strip_sgr(&status_line(&status, None, 0, false, &long, 120, now));
-    assert_eq!(row, format!("  gpt-4o · job b3 {}… 1m 12s", "x".repeat(63)));
+    assert_eq!(row, format!("gpt-4o · job b3 {}… 1m 12s", "x".repeat(63)));
 
     // Narrow: the command gives way first — cut, then dropped — and the clock stays. The cut's
     // `…` is the command's, so it is cyan too; a segment without a command carries no cyan.
-    let raw = status_line(&status, None, 0, false, &one.jobs, 37, now);
+    let raw = status_line(&status, None, 0, false, &one.jobs, 35, now);
     let narrow = strip_sgr(&raw);
-    assert_eq!(narrow, "  gpt-4o · job b3 cargo test … 1m 12s");
-    assert_eq!(str_width(&narrow), 37);
+    assert_eq!(narrow, "gpt-4o · job b3 cargo test … 1m 12s");
+    assert_eq!(str_width(&narrow), 35);
     assert!(
         raw.contains(&format!("{RESET}{CYAN}cargo test …{RESET}{FAINT} 1m 12s")),
         "{raw:?}"
     );
-    let raw = status_line(&status, None, 0, false, &one.jobs, 24, now);
+    let raw = status_line(&status, None, 0, false, &one.jobs, 22, now);
     let narrower = strip_sgr(&raw);
-    assert_eq!(narrower, "  gpt-4o · job b3 1m 12s");
+    assert_eq!(narrower, "gpt-4o · job b3 1m 12s");
     assert!(
         !raw.contains(&format!("{CYAN}1m 12s"))
             && raw.ends_with(&format!("{FAINT} · job b3 1m 12s{RESET}")),
@@ -461,7 +461,7 @@ fn jobs_segment_in_status_line() {
         ..Case::default()
     };
     let row = plain(&view(&many)).pop().expect("the status row");
-    assert_eq!(row, "  gpt-4o · 3 jobs 3m 1s");
+    assert_eq!(row, "gpt-4o · 3 jobs 3m 1s");
     let raw = status_line(&status, None, 0, false, &many.jobs, 80, now);
     assert!(
         raw.ends_with(&format!("{FAINT} · 3 jobs 3m 1s{RESET}")),
@@ -703,7 +703,7 @@ fn status_line_debug_marker() {
         "marker missing or not yellow+faint:\n{line:?}"
     );
 
-    for width in [28_u16, 24] {
+    for width in [24_u16, 20] {
         let narrow = strip_sgr(&status_line(
             &on,
             None,
@@ -713,8 +713,10 @@ fn status_line_debug_marker() {
             width,
             Instant::now(),
         ));
+        // Column 0 — no gutter left over from the composer's old `❯ ` — and the cut tail ends
+        // in the re-appended marker.
         assert!(
-            narrow.contains("debug"),
+            narrow.starts_with("gpt-4o") && narrow.ends_with("… · debug"),
             "marker lost to truncation at {width}: {narrow:?}"
         );
         assert!(

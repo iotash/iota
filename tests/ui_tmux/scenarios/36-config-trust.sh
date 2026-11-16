@@ -69,7 +69,7 @@ key Enter
 wait_frame || miss "the chat never started after not now"
 ready
 if _all_has 'Not using' && _all_has 'for this run'; then ok "not now is said in one line"; else miss "no line says the file is skipped"; fi
-check "the chat runs on the home config" "$(status_model | sed 's/^ *//')" "fake"
+check "the chat runs on the home config" "$(status_model)" "fake"
 if marker_absent; then ok "not now: the file's server never ran"; else bad "not now: the marker exists"; fi
 quit
 

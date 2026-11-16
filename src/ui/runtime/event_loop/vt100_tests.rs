@@ -504,7 +504,7 @@ fn wide_runes_show_intact() {
     let (mut t, buf) = direct_term();
     // The user-echo shape: a padded, styled row (the padding is what makes the row's trailing
     // cells non-blank, which is where a fallback path would desync).
-    let row = format!("\x1b[7m▌ 中文一行{}\x1b[0m", " ".repeat(80 - 2 - 8));
+    let row = format!("▌ \x1b[7m中文一行{}\x1b[0m", " ".repeat(80 - 2 - 8));
     t.push(Block::rows([row.clone()]));
     // The unpadded markdown shape must stay intact too.
     t.push(rows_of(&["中文一行 tail".to_owned()]));
@@ -1684,7 +1684,7 @@ fn a_short_terminal_keeps_the_composer_and_the_highlighted_item() {
     let label = "› investigate  Systematic debugging with root cause investigation: reproduce,";
     let desc = "               analyze, hypothesize, then fix";
     let composer = "/skills investigate";
-    let status = "  claude-opus-5-5";
+    let status = "claude-opus-5-5";
     let sep = "─".repeat(80);
     let screens: [(u16, Vec<&str>); 5] = [
         (6, vec![label, desc, &sep, composer, &sep, status]),

@@ -402,7 +402,7 @@ pub(crate) fn status_line(
     // truncation (model.go:1139-1142).
     let dbg = if s.debug { "debug" } else { "" };
 
-    let mut out = format!("  {CYAN}{FAINT}{model}{RESET}");
+    let mut out = format!("{CYAN}{FAINT}{model}{RESET}");
     if !tokens.is_empty() {
         let _ = write!(out, "{FAINT} · {RESET}{GREEN}{FAINT}{tokens}{RESET}");
     }

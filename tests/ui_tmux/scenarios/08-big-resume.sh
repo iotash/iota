@@ -34,7 +34,7 @@ check "…nor their answers" "$(count_all 'r28 answer')" 0
 
 # The frame survived a block three times the pane height.
 check_frame_intact "after the oversized echo" 80
-check "status line survived the chunked insert" "$(status_model)" "  fake"
+check "status line survived the chunked insert" "$(status_model)" "fake"
 
 # The resumed chat still works, and the new turn appends to the same bundle.
 #
