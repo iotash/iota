@@ -420,8 +420,8 @@ wait_composer() {
     echo "$n"
 }
 
-# The frame's bottom zone: the row directly under the LOWER separator (the status line, a
-# surface's first row, or — while the line is a slash command — the completion list's first row).
+# The frame's bottom zone: the row directly under the LOWER separator (the status line or a
+# surface's first row).
 bottom_zone() {
     local s bot
     s="$(_snap "$@")"
@@ -429,13 +429,15 @@ bottom_zone() {
     [ -n "$bot" ] && printf '%s\n' "$s" | sed -n "$((bot + 1))p"
 }
 
-# The completion list: the rows between the LOWER separator and the status row (the frame's last).
+# The completion list: the rows directly above the UPPER separator, up to the frame's blank
+# spacer row (the queue's `» ` rows, between the two, are left out).
 list_block() {
-    local s bot n
+    local s top
     s="$(_snap "$@")"
-    bot="$(frame_bot "$s")"
-    n="$(printf '%s\n' "$s" | wc -l | tr -d ' ')"
-    [ -n "$bot" ] && [ "$n" -gt $((bot + 1)) ] && printf '%s\n' "$s" | sed -n "$((bot + 1)),$((n - 1))p"
+    top="$(frame_top "$s")"
+    [ -n "$top" ] && [ "$top" -gt 1 ] && printf '%s\n' "$s" | sed -n "1,$((top - 1))p" |
+        awk '/^[[:space:]]*$/ { n = 0; next } { r[++n] = $0 } END { for (i = 1; i <= n; i++) print r[i] }' |
+        grep -v '^» '
 }
 
 # count_list <item label> [capture] — the list's items with that label (highlighted or not), the
@@ -443,7 +445,7 @@ list_block() {
 count_list() {
     local f="$1"
     shift
-    list_block "$@" | grep -cE -- "^  (› |  )$f(  |\$)" | tr -d ' '
+    list_block "$@" | grep -cE -- "^ (› |  )$f(  |\$)" | tr -d ' '
 }
 
 # The status row's MODEL segment alone — everything before the first " · " joiner.

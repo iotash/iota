@@ -140,18 +140,19 @@ Facade shape decisions from the adversarial review:
   flush ordering (close preview BEFORE committing the rendered block) is
   preserved by construction.
 - **Frame stacking order is fixed and ui-owned** (user-confirmed final):
-  `[staging tail] [stream preview] [spacer] [queue] ─sep─ [composer] ─sep─
-  [completion list] [status | surface]` (the list since the full screen:
-  `fullscreen-tui.md` "补全列表"). One constant blank spacer row separates
+  `[staging tail] [stream preview] [spacer] [queue] [completion list] ─sep─
+  [composer] ─sep─ [status | surface]` (the list since the full screen,
+  above the composer since 2026-11-16: `fullscreen-tui.md` "补全列表"). One constant blank spacer row separates
   the content side from everything input-side (it cannot bounce — it never
   changes height), and residue rows render BLANK: they hold their height
   until fresh lines consume them, but their content is stale widget chrome
   and showing it next to an injected user block read as leaked tool output.
   The composer is wrapped by two
   separators; the bottom zone below the lower separator holds exactly one
-  of the status line or an open interaction surface (surface > status), with
-  the completion list above it while the line is a slash command — swapping them is a content
-  change plus below-composer growth, never a composer move. Content-side
+  of the status line or an open interaction surface (surface > status) —
+  swapping them is a content change plus below-composer growth, never a composer move; the
+  completion list, while the line is a slash command, grows upward from the upper separator
+  into the conversation's rows, so it never moves the composer either. Content-side
   transients (stream preview) morph in place through the staging window (Rust: deleted
   in tui-plan S7b — the frame holds only the call preview);
   the busy indicator is a status-line segment. Layout laws: above the
