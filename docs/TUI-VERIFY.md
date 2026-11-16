@@ -253,8 +253,9 @@ parses them). The GUI terminals are not drivable from the test runner: tick thes
       `set-clipboard` on or external, in the terminal's clipboard.
 - [x] 自动化：scenario 46 **4c.5** A click on the composer puts the cursor there; a click on a
       surface row moves the cursor, a second click on it chooses it.
-- [x] 自动化：scenario 46 **4c.6** A long surface (`/status` in a short pane) takes every row the
-      composer leaves, and closing it gives the conversation back where it was; in a 6-row pane
+- [x] 自动化：scenario 46 **4c.6** A long surface (`/status`) takes the interaction cap — half the
+      screen, at most 15 rows: 12 of 24, 7 of 14 — and scrolls inside it (`G` reaches its last
+      line), the conversation keeping the rows above; closing it gives the conversation back where it was; in a 6-row pane
       the dialog and its hint are still on the screen (the composer yields).
 - [ ] **4c.7** `mouse: false` in iTerm2 (with "scroll wheel sends arrow keys in alternate screen
       mode" on), Terminal.app and WezTerm: does the wheel turn into ↑/↓ and walk the composer's

@@ -9,7 +9,8 @@
 #      the release copies it — into tmux's paste buffer and through the local clipboard tool (a
 #      stub first on PATH, so the developer's own clipboard is never touched) — and the buffer
 #      pastes into another program whole;
-#   D. a surface (/status) takes the whole viewport, and closing it gives the conversation back;
+#   D. a surface (/status) takes the interaction cap — half the screen, at most 15 rows — and
+#      scrolls inside it; closing it gives the conversation back;
 #   E. in a pane the frame alone fills (6 rows), the dialog is still on the screen, whole.
 #
 # Scenario 47 sends the reports through a tmux with `mouse on` instead, and turns the mouse off.
@@ -114,26 +115,32 @@ key x
 check "a key after the copy is typed" "$(wait_composer '❯ x' 1)" 1
 key BSpace
 
-# --- D. a surface takes the whole viewport --------------------------------------------------------
-# /status is a View of 16 lines: S5 capped a View at 15 rows (and said `NN%` in its hint); now the
-# viewport yields it every row it needs, and in a short pane all of its rows.
+# --- D. a surface takes the interaction cap -------------------------------------------------------
+# /status is a View of 16 lines. An interaction area never exceeds half the screen or 15 rows: in
+# 24 rows the View takes 12 and scrolls (G to its end), and the conversation keeps the rest;
+# in a 14-row pane it takes 7.
 type_ '/status'
 key Enter
-wait_vis 'Title ' || miss "/status never opened"
+wait_vis 'Provider ' || miss "/status never opened"
 settle
-if _vis_has 'Provider ' && _vis_has 'Title '; then ok "every line of /status is shown"; else bad "/status is cut"; dump_pane; fi
-hint="$(cap | grep -F 'q/Esc close')"
-if printf '%s' "$hint" | grep -q '%'; then bad "the View scrolls: $hint"; else ok "…with nothing to scroll"; fi
+if _vis_has 'Provider ' && _vis_lacks 'Title '; then ok "/status takes 12 rows, its last line below them"; else bad "/status is not capped"; dump_pane; fi
+if _vis_has 'l#99 line'; then ok "…the conversation keeps its rows above it"; else bad "the conversation yielded every row"; dump_pane; fi
+# The hint is cut at 80 columns before its `NN%`: the scroll shows in what the View holds.
+key G
+_at_end() { _vis_has 'Title ' && _vis_lacks 'Provider '; }
+if _poll_until 100 _at_end; then ok "G scrolls to its last line"; else bad "G never reached /status's last line"; dump_pane; fi
+key g
+wait_vis 'Provider ' || miss "g never came back to the top"
 tm resize-window -t s -x 80 -y 14
 _short() { [ "$(cap | wc -l | tr -d ' ')" -le 14 ] && _vis_has 'q/Esc close'; }
 _poll_until 100 _short || miss "the pane never got short"
 settle
-# The frame's own rows are the spacer, two separators and the composer; the View has the rest —
-# the conversation's viewport is down to nothing.
-check "in a short pane the frame starts on row 2 (the spacer above it)" "$(frame_top)" 2
-check "…the View right under the composer" "$(cap | sed -n '5p')" " Status"
-if _vis_lacks 'l#'; then ok "…the conversation yielded every row"; else bad "conversation rows beside the View"; dump_pane; fi
-if _vis_has 'Session input' && _vis_lacks 'Title '; then ok "…and the View scrolls in it"; else bad "the short View is not cut"; dump_pane; fi
+# Half of 14 is 7: the conversation's one row, the spacer, two separators and the composer, then
+# the View's title, its 7 rows and its hint.
+check "in a short pane the frame starts on row 3 (a conversation row and the spacer above it)" "$(frame_top)" 3
+check "…the View right under the composer" "$(cap | sed -n '6p')" " Status"
+check "…7 rows of it" "$(( $(row_of 'q/Esc close') - $(row_of ' Status') - 1 ))" 7
+if _vis_has 'l#99 line'; then ok "…the conversation keeps a row"; else bad "no conversation beside the View"; dump_pane; fi
 tm resize-window -t s -x 80 -y 24
 _tall() { [ "$(cap | wc -l | tr -d ' ')" -ge 24 ]; }
 _poll_until 100 _tall || miss "the pane never grew back"
