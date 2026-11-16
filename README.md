@@ -34,8 +34,10 @@ a model, a prompt, a set of tools — in one YAML file, and run them:
   config, asks every time; the sandbox never makes one.
 - **Sessions are plain files.** Resume them, grep them, export them to HTML or
   Markdown; nothing is hidden, `/debug` shows the exact bytes on the wire.
-- **The terminal is the interface.** Streaming replies you can type over,
-  markdown, tables and math rendered inline, file attachments, a model picker.
+- **The terminal is the interface.** A full-screen chat: streaming replies
+  you can type over, markdown, tables and math rendered inline and laid out
+  again when the window resizes, a conversation you scroll, search and select
+  with the mouse, file attachments, a model picker.
 - **No account, no daemon, no telemetry.** Child agents are `iota run <agent>
   -m "<task>"` from bash, like anything else.
 
@@ -124,7 +126,7 @@ config file cannot cover:
 | `IOTA_SHELL` | The interpreter the `shell` tool runs commands with — an absolute path or a name on `PATH`. Wins on every platform. | Your commands need a shell other than the one iota finds (`bash` on macOS and Linux; Git Bash, then PowerShell, then `cmd.exe` on Windows). A value that is not an executable is an error, never a silent fallback. |
 | `IOTA_GIT_BASH_PATH` | Windows only: the `bash.exe` of Git Bash. | Git for Windows is installed somewhere iota does not look (not next to the `git.exe` on `PATH`, not in a default install root), or you want an MSYS2 bash. |
 | `IOTA_LOG` | A file path; iota appends its diagnostic log there (`tracing` events: iota at `DEBUG`, its libraries at `INFO`). | Something misbehaves — an MCP server, a connection — and you want to see what happened underneath. Nothing reaches this log unless the variable is set; warnings you need to act on are always shown in the terminal regardless. |
-| `IOTA_DEBUG_REGION` | A file path; iota appends a trace of every operation on the terminal's live region there. | You are reporting (or fixing) a rendering glitch — a stray blank row, a misplaced line — and need to show which layer drew it. Developer tooling; most people never need it. |
+| `IOTA_DEBUG_REGION` | A file path; iota appends a trace of every operation on the frame's live region (the tool-call preview) there. | You are reporting (or fixing) a rendering glitch — a stray blank row, a misplaced line — and need to show which layer drew it. Developer tooling; most people never need it. |
 
 ## Development
 

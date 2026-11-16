@@ -9,7 +9,7 @@ v1 只有一种投递方式：复用 `Notice`，空闲时立刻唤醒，忙时�
 | 问题 | v1 的答案 | 代码 |
 |---|---|---|
 | 消息走哪条路 | 进程外 → socket → `Ui::deliver` → 和 job 通知**同一个**队列 | `src/repl/inbound.rs:165`、`src/ui/runtime/event_loop.rs:609` |
-| 模型看到的是什么 | `Body::Notice`（发给 provider 时是 `Role::User`），**不是用户轮**：不画 `❯`、不进历史回溯、不走 slash 派发 | `src/repl/run.rs:786`、`src/repl/turn/steer.rs:63` |
+| 模型看到的是什么 | `Body::Notice`（发给 provider 时是 `Role::User`），**不是用户轮**：不画 `▌` 用户块、不进历史回溯、不走 slash 派发 | `src/repl/run.rs:786`、`src/repl/turn/steer.rs:63` |
 | 标题与正文 | `[message from <who>] <首行>`；正文写明来源（pid、同一 OS 用户）、「不是用户敲的、不算任何审批」、回复地址，然后是原文 | `src/repl/inbound.rs:239` |
 | socket 在哪 | `~/.iota/run/<pid>.sock`（0700 目录、0600 文件）；bundle 里放符号链接 `<bundle>/sock` → 它 | `src/session/sock.rs:322`、`:197` |
 | 谁能写 | 同一 uid（`SO_PEERCRED` / `LOCAL_PEERCRED`，tokio 的 `peer_cred`，无 `unsafe`）；不是就回 `refused`，一个字节都不读 | `src/session/sock.rs:385` |
@@ -122,9 +122,9 @@ herdr 0.9.5 的 `pane.report_agent_session` 只有 `agent_session_id` / `agent_s
 | # | 性质 | 测试 | 变异 → 红 |
 |---|---|---|---|
 | ① | 空闲 → `woken`；忙 → `queued` 带位置 | `queue_tests::deliver_wakes_a_parked_reader_else_queues_with_its_place` | 忽略挂起的 reader |
-| ② | 忙时在 round 边界、工具结果之后进入，工具不被打断 | `tools::tests::a_socket_message_lands_at_the_round_boundary_after_the_tool` | steer 只认 `Notice`（变成 `❯` 块） |
+| ② | 忙时在 round 边界、工具结果之后进入，工具不被打断 | `tools::tests::a_socket_message_lands_at_the_round_boundary_after_the_tool` | steer 只认 `Notice`（变成 `▌` 用户块） |
 | ③ | 等审批时 `blocked`，且不进队列 | `inbound::tests::waiting_on_the_user_is_blocked` | 去掉 `NeedsInput` 检查 |
-| ④ | 到达模型是 notice，不画 `❯`，`/new` 不执行，落盘为 notice | `tests/repl/messaging.rs::a_socket_message_is_a_notice_turn_and_leaves_nothing_behind`、`inbound::tests::a_message_is_a_notice_of_a_fixed_shape` | 主循环只认 `Notice` |
+| ④ | 到达模型是 notice，不画 `▌` 用户块，`/new` 不执行，落盘为 notice | `tests/repl/messaging.rs::a_socket_message_is_a_notice_turn_and_leaves_nothing_behind`、`inbound::tests::a_message_is_a_notice_of_a_fixed_shape` | 主循环只认 `Notice` |
 | ⑤ | uid 不符 → `refused`，inbox 什么都没收到 | `sock::tests::another_uid_is_refused_unread` | uid 检查恒真 |
 | ⑥ | 目录 0700、socket 0600；链接目录照样可用 | `sock::tests::the_socket_is_private_and_goes_with_the_listener`、`a_linked_run_dir_works` | 去掉 chmod 0600 |
 | ⑦ | 退出后 socket 与链接都被删 | 同 ④ 的 loop 测试 | `close` 不删链接 |

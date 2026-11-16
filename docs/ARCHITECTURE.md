@@ -386,10 +386,11 @@ reflow. A resize is the size taken and every cell repainted on the next draw (`R
 only merges a burst of events into one repaint). Streaming output that only scrolls the viewport is one
 `DECSTBM` + `SU` and the new lines (`Screen::scroll_region`), not a rewrite of every row that moved.
 
-**The conversation buffer** (`screen/conversation.rs`, X-98). Committed rows are ANSI strings (T-05),
-wrapped per width on demand and cached; 200 000 rows at most, the oldest dropped behind one notice (the
-session log keeps everything). The view follows the tail or is anchored on a row, and stays on it
-through a resize. Keys: `PgUp`/`PgDn`, `Ctrl+Home`/`Ctrl+End`, the search (`Ctrl+R`, `/` scrolled back;
+**The conversation buffer** (`screen/conversation.rs`, X-98). It holds blocks (`ui/block.rs`): fixed
+rows (ANSI strings, T-05) or a source laid out again at every width, each width's lines computed on
+demand and cached; an open block grows in place while it streams (X-103). 200 000 blocks at most, the
+oldest dropped whole behind one notice (the session log keeps everything). The view follows the tail or
+is anchored on a block, and stays on it through a resize. Keys: `PgUp`/`PgDn`, `Ctrl+Home`/`Ctrl+End`, the search (`Ctrl+R`, `/` scrolled back;
 never `Ctrl+F`, which is forward-char), the write-out (`Ctrl+O`, X-99), job control (`Ctrl+Z`, X-101).
 
 **The mouse** (X-102; `input/mouse.rs`, `render/selection.rs`, `clipboard.rs`). Reporting (`?1000/1002/1006`)

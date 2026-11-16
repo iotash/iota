@@ -1,6 +1,6 @@
 # 全屏（alternate-screen）TUI
 
-Status: **已实现，唯一的终端（S1–S7；S5 删除了 inline 终端，S6 加了鼠标、应用内选择与浮层 surface，S7 从源重新布局、块在缓冲里生长）** · 计划：`~/.iota/reports/iota/tui-plan.md` · 决策记录：DIVERGENCES X-97–X-105（X-52、X-54、X-81 被取代，作为历史保留）· 契约摘要：ARCHITECTURE §12 · 人工检查：TUI-VERIFY §1–§4b
+Status: **已实现并随 0.10.0 发布（2026-11-16），唯一的终端（S1–S7；S5 删除了 inline 终端，S6 加了鼠标、应用内选择与浮层 surface，S7 从源重新布局、块在缓冲里生长）** · 计划：`~/.iota/reports/iota/tui-plan.md` · 决策记录：DIVERGENCES X-97–X-105（X-52、X-54、X-81 被取代，作为历史保留）· 契约摘要：ARCHITECTURE §12 · 人工检查：TUI-VERIFY §1–§4b
 
 ## 终端拥有屏幕
 

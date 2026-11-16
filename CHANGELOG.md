@@ -38,39 +38,6 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
-- **Your messages stand out behind a gray `▌`.** A message you send is still
-  a reverse-video bar to the edge, so it never reads as body text; a
-  mid-gray `▌` on its own colour runs down its left edge, every row of it,
-  from the first column with no missing cell, and a resumed session's
-  messages look exactly the same. With `NO_COLOR` the bar's colours go and
-  the `▌` on each row alone marks your message.
-- **The two rules around the composer are solid again.** The faint dashed
-  line (`┄`) is a faint solid one (`─`). Same hue, same width, same place.
-- **Code blocks, tables, lists, quotes and formulas appear line by line.**
-  While the reply is being written, a code block shows each line as it
-  arrives, a table its rows (its columns widening as longer cells come in),
-  a list its items and a quote its lines, all at the window's width, so a
-  resize mid-reply lays them out again. The `rendering… · N lines` counter
-  that stood in for them until they were complete is gone. A display formula
-  shows as its source until its closing `$$`, then as the formula.
-- **Slash completion is a list.** Typing `/` opens a list above the input,
-  one command per row with its description beside it, wrapped to at most two
-  lines (longer ones end in `…`) and kept to a readable width on a wide
-  window. `↑`/`↓` move through it, `Enter` runs the highlighted command, `Esc`
-  puts back what you typed, `Tab` completes as before, and a click on an item
-  highlights it. `/skills ` lists each skill with its own description. The
-  status row no longer gives way to a command's description.
-- **Resizing the window re-lays-out the conversation.** Pull the window
-  wider or narrower and what is on screen is laid out again for the new
-  width, not cut and wrapped: a table's columns are recomputed (its long cells
-  come back onto one row when there is room), a list's wrapped lines stay
-  under the item's text, a code block wraps under its indent instead of at
-  the left edge, a quote keeps its bar on every row, a file edit's diff fills
-  the new width with its colored rows, and the startup banner draws its card
-  again (or its bare rows, when the window is too narrow). Plain paragraphs
-  re-flow both ways too: they are no longer broken at the width they first
-  appeared at. Long list items and long code lines now wrap neatly at any
-  width, not only after a resize.
 - **iota now takes the whole terminal window.** The chat runs full screen, on
   the terminal's alternate screen, the way `vim` or `less` do: the
   conversation fills the window and the input box stays pinned to the bottom.
@@ -111,6 +78,41 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   rounds are not in the window, and scrolling up does not reach them: the
   window starts at those three rounds. `/export` has the whole conversation.
   This is true for `/resume`, `-c`, `iota resume` and a bot.
+- **Resizing the window re-lays-out the conversation.** Pull the window
+  wider or narrower and what is on screen is laid out again for the new
+  width, not cut and wrapped: a table's columns are recomputed (its long cells
+  come back onto one row when there is room), a list's wrapped lines stay
+  under the item's text, a code block wraps under its indent instead of at
+  the left edge, a quote keeps its bar on every row, a file edit's diff fills
+  the new width with its colored rows, and the startup banner draws its card
+  again (or its bare rows, when the window is too narrow). Plain paragraphs
+  re-flow both ways too: they are no longer broken at the width they first
+  appeared at. Long list items and long code lines now wrap neatly at any
+  width, not only after a resize.
+- **Code blocks, tables, lists, quotes and formulas appear line by line.**
+  While the reply is being written, a code block shows each line as it
+  arrives, a table its rows (its columns widening as longer cells come in),
+  a list its items and a quote its lines, all at the window's width, so a
+  resize mid-reply lays them out again. The `rendering… · N lines` counter
+  that stood in for them until they were complete is gone. A display formula
+  shows as its source until its closing `$$`, then as the formula.
+- **Slash completion is a list.** Typing `/` opens a list above the input,
+  one command per row with its description beside it, wrapped to at most two
+  lines (longer ones end in `…`) and kept to a readable width on a wide
+  window. `↑`/`↓` move through it, `Enter` runs the highlighted command, `Esc`
+  puts back what you typed, `Tab` completes as before, and a click on an item
+  highlights it. `/skills ` lists each skill with its own description. The
+  status row no longer gives way to a command's description.
+- **Your messages stand out behind a gray `▌`.** A message you send is still
+  a reverse-video bar to the edge, so it never reads as body text; a
+  mid-gray `▌` on its own colour runs down its left edge, every row of it,
+  from the first column with no missing cell, and a resumed session's
+  messages look exactly the same. With `NO_COLOR` the bar's colours go and
+  the `▌` on each row alone marks your message. The input box has no `❯`
+  any more: what you type starts at the left edge and wraps at the full
+  width, and the status row below it starts at the left edge too.
+- **The two rules around the input box are solid again.** The faint dashed
+  line (`┄`) is a faint solid one (`─`). Same hue, same width, same place.
 
 ## 0.9.0 - 2026-11-11
 

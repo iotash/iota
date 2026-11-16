@@ -171,7 +171,7 @@ match got {
 | 探测又 429 | host 状态保持 `Error`，**不再** `notify(Failed)` | **不**再打红块；一行灰字 `⏸ Still rate limited (429) — 2 notice(s) held; next try 18:12`。供应商原话在第一块红块里，已经在屏幕上 |
 | 探测成功 | — | 那个 turn 的正常输出；hold 清除不额外打字 |
 | 中断 → `Interrupted` | — | 今天的 `Interrupted.`；之后每条被收起的通知一行灰字 `⏸ [background job …] — held; it goes with your next message` |
-| 键入放行 | — | 被带上的通知按 `tr.boundary_notice` 回显 headline，然后 `❯` 用户块（与 `Steerer::drain` 的顺序一致） |
+| 键入放行 | — | 被带上的通知按 `tr.boundary_notice` 回显 headline，然后 `▌` 用户块（与 `Steerer::drain` 的顺序一致） |
 
 状态行（`StatusData`，`src/ui/facade.rs:45-62`）不加段：§8 Q3。
 
@@ -209,7 +209,7 @@ match got {
 | 12 | 流式中途 ESC，队列里有通知 | — | `Interrupted` | 队列里的逐条收起；本 turn 输入若是通知且 turn 被整个丢弃，放回 | `Interrupted.` + 每条一行 `⏸ … held; it goes with your next message` |
 | 13 | 梯子中途 ESC（429 退避中），队列里有通知 | 取消赢过计时器 | `Interrupted`（不是 `RateLimited`） | 同 12 | 同 12 |
 | 14 | `Interrupted` 中来通知 | — | 不变 | 收起 | 一行 `⏸ … held; …` |
-| 15 | `Interrupted` 后用户键入 | 正常梯子 | 按该 turn 结果（成功 `None`、429 `RateLimited`、中断 `Interrupted`） | 全部带在消息前面 | 通知 headline，然后 `❯` 块 |
+| 15 | `Interrupted` 后用户键入 | 正常梯子 | 按该 turn 结果（成功 `None`、429 `RateLimited`、中断 `Interrupted`） | 全部带在消息前面 | 通知 headline，然后 `▌` 用户块 |
 | 16 | ESC 时有键入的排队消息 | — | `Interrupted` | — | 折回输入框（今天的行为），不自动发 |
 | 17 | 非 429 的失败（5xx 爬完、400……） | 不变 | `None` | 带上的随回滚丢掉（今天对失败 turn 的处理；§8 Q2） | 今天的红块 |
 | 18 | bot 的 flush notice | 不变 | 不读也不改 gate | 从不收起 | 今天的 |
@@ -271,7 +271,7 @@ gate 模块（纯逻辑，无 I/O）：
 - `a_rate_limited_notice_holds_the_ones_behind_it`：通知 1 → 429（梯子 4 次调用）→ 再 `enqueue` 通知 2、3 → provider 调用数**不再增加**；transcript 有一块 `✗ Rate limited (429)`、两行 `⏸ … held until`。
 - `the_probe_releases_every_held_notice_in_one_turn`：接上条，推进暂停时钟 60 s → 一个 turn，历史里三条 `Body::Notice` 按 1、2、3 的顺序，provider 只被调 1 次（零级梯子，FakeProvider 不经线路层）；成功后 gate 为 `None`。
 - `a_failed_probe_backs_off_and_prints_one_line`：探测又 429 → 无第二块红块、一行 `⏸ Still rate limited`；120 s 后再探测。
-- `a_typed_message_carries_the_held_notices_ahead_of_it`：hold 中键入 `go` → 历史为 notice…notice、user `go`；transcript 顺序为 headline 行、然后 `❯ go`。
+- `a_typed_message_carries_the_held_notices_ahead_of_it`：hold 中键入 `go` → 历史为 notice…notice、user `go`；transcript 顺序为 headline 行、然后 `▌ go`。
 - `a_model_switch_probes_at_once`：hold 中 `/model` 换模型 → 立即一个 turn，无需推进时钟。
 - `esc_holds_the_notices_queued_behind_the_turn`：通知 turn 流到一半被中断（`tests/repl/host.rs:318-330` 的 `Answer::Interrupt` 装置）→ 队列里的两条通知被收起，provider 不再被调用；随后键入 → 一个 turn 带着它们。
 - `an_interrupted_notice_turn_keeps_its_notice`：通知 turn 在出字前被取消（整个丢弃）→ 这条通知在 `held` 里，随下一次键入进入历史；会话文件里恰好一次。
