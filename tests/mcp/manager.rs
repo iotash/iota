@@ -356,7 +356,8 @@ async fn cancelled_token_aborts_connect() {
 /// the cause chain kept as detail lines — never rmcp's `connect failed: Send message error Transport
 /// [rmcp::transport::worker::WorkerTransport<…>] error: …, when send initialize request`. One server per kind:
 /// a port nobody listens on (the line the owner quoted, 2026-10-15), a 404, a 5xx whose body is an HTML page
-/// (a proxy's error page), and a web page where the MCP endpoint should be.
+/// (a proxy's error page — rmcp hands a 5xx over typed and leaves the body unread, so the status alone is
+/// worded), a 429 with `Retry-After`, and a web page where the MCP endpoint should be.
 #[tokio::test]
 async fn http_failures_say_what_happened_and_what_to_do() {
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
@@ -371,6 +372,10 @@ async fn http_failures_say_what_happened_and_what_to_do() {
             "<!doctype html>\n<html><head><title>Unable to connect</title></head><body>…</body></html>",
             "text/html",
         ))
+        .mount(&server)
+        .await;
+    Mock::given(matchers::path("/429"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "120"))
         .mount(&server)
         .await;
     Mock::given(matchers::path("/page"))
@@ -394,6 +399,7 @@ async fn http_failures_say_what_happened_and_what_to_do() {
             http("nb", refused.clone()),
             http("missing", format!("{}/404", server.uri())),
             http("proxied", format!("{}/503", server.uri())),
+            http("limited", format!("{}/429", server.uri())),
             http("page", format!("{}/page", server.uri())),
         ],
         // The bare client: a developer machine's system proxy would answer for the closed port itself.
@@ -421,7 +427,11 @@ async fn http_failures_say_what_happened_and_what_to_do() {
                 server.uri()
             ),
             format!(
-                "{}/503 answered 503 Service Unavailable (\"Unable to connect\") — the server, or a proxy on the way to it, is failing; try again later",
+                "{}/503 answered 503 Service Unavailable — the server, or a proxy on the way to it, is failing; try again later",
+                server.uri()
+            ),
+            format!(
+                "{}/429 answered 429 Too Many Requests — the server is limiting requests; try again later (Retry-After: 120)",
                 server.uri()
             ),
             format!(
@@ -448,11 +458,9 @@ async fn http_failures_say_what_happened_and_what_to_do() {
         statuses[1].failure().expect("failed").1,
         vec![r#"response body: {"error":"nope"}"#]
     );
-    let (_, detail) = statuses[2].failure().expect("failed");
-    assert!(
-        detail.len() == 1 && detail[0].starts_with("response body: an HTML page ("),
-        "{detail:?}"
-    );
+    // rmcp leaves a 5xx/429 body unread: there is no detail to keep, and none is made up.
+    assert!(statuses[2].failure().expect("failed").1.is_empty());
+    assert!(statuses[3].failure().expect("failed").1.is_empty());
     for s in &statuses {
         let text = s.error().expect("failed");
         for leak in [

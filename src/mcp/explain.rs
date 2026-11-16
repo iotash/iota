@@ -4,7 +4,8 @@
 //! [rmcp::transport::worker::WorkerTransport<…>] error: Client error: error sending request for url (…), when
 //! send initialize request` names a generic type and an internal step, and says nothing of why — the
 //! `Connection refused` is three `source()`s further down, where `Display` never looks. This module reads the
-//! TYPED error (never its text, except the `HTTP <status>: <body>` that rmcp only hands over as text) and
+//! TYPED error (never its text, except the `HTTP <status>: <body>` that rmcp only hands over as text for a 4xx;
+//! a 5xx or 429 comes typed, status and `Retry-After` only, its body unread) and
 //! words it as ONE line: what happened, to which endpoint, and what to do about it.
 //!
 //! The text contract every outlet already followed is now the deliberate one: **line 1 is the summary**, the
@@ -17,7 +18,7 @@ use std::error::Error;
 use std::fmt::Write as _;
 
 use rmcp::service::{ClientInitializeError, ServiceError};
-use rmcp::transport::streamable_http_client::StreamableHttpError;
+use rmcp::transport::streamable_http_client::{HttpStatusError, StreamableHttpError};
 
 use crate::mcp::config::{AuthMode, ServerConfig};
 
@@ -180,7 +181,7 @@ fn http_failure(cfg: &ServerConfig, err: &HttpError) -> Explained {
     match err {
         HttpError::Client(e) => {
             if let Some(status) = e.status() {
-                status_failure(cfg, status.as_u16(), &status.to_string(), "")
+                status_failure(cfg, status.as_u16(), &status.to_string(), "", None)
             } else {
                 let (reason, hint) = unreachable(e);
                 Explained::new(
@@ -190,12 +191,19 @@ fn http_failure(cfg: &ServerConfig, err: &HttpError) -> Explained {
             }
         }
         HttpError::UnexpectedServerResponse(text) => match parse_status(text) {
-            Some((code, status, body)) => status_failure(cfg, code, status, body),
+            Some((code, status, body)) => status_failure(cfg, code, status, body, None),
             None => Explained::new(
                 format!("{url} answered unexpectedly — check that the url is its MCP endpoint"),
                 vec![clip(text, BODY_DETAIL_CHARS)],
             ),
         },
+        HttpError::HttpStatus(e) => status_failure(
+            cfg,
+            e.status,
+            &status_named(e),
+            "",
+            e.retry_after.as_deref(),
+        ),
         HttpError::UnexpectedContentType(content_type) => Explained::new(
             format!(
                 "{url} answered with {}, not MCP — check that the url is the server's MCP endpoint",
@@ -251,9 +259,21 @@ fn parse_status(text: &str) -> Option<(u16, &str, &str)> {
     Some((code, status, body))
 }
 
-/// A server that answered with an HTTP error status: the status named, the action it implies, and the body
-/// kept as one detail line — an HTML page (a proxy's, a web server's) by its title, never whole.
-fn status_failure(cfg: &ServerConfig, code: u16, status: &str, body: &str) -> Explained {
+/// A typed 5xx/429: `503 Service Unavailable`, or the bare code when it has no canonical reason.
+fn status_named(e: &HttpStatusError) -> String {
+    reqwest::StatusCode::from_u16(e.status).map_or_else(|_| e.status.to_string(), |s| s.to_string())
+}
+
+/// A server that answered with an HTTP error status: the status named, the action it implies (with the
+/// server's `Retry-After` when it sent one), and the body kept as one detail line — an HTML page (a proxy's, a
+/// web server's) by its title, never whole.
+fn status_failure(
+    cfg: &ServerConfig,
+    code: u16,
+    status: &str,
+    body: &str,
+    retry_after: Option<&str>,
+) -> Explained {
     let url = &cfg.url;
     let title = html_title(body);
     let named = match &title {
@@ -263,9 +283,14 @@ fn status_failure(cfg: &ServerConfig, code: u16, status: &str, body: &str) -> Ex
     let hint = match code {
         401 | 403 => credentials_hint(cfg),
         404 | 405 | 410 => "check that the url is the server's MCP endpoint".to_owned(),
-        500..=599 => {
-            "the server, or a proxy on the way to it, is failing; try again later".to_owned()
-        }
+        429 => format!(
+            "the server is limiting requests; try again later{}",
+            retry_suffix(retry_after)
+        ),
+        500..=599 => format!(
+            "the server, or a proxy on the way to it, is failing; try again later{}",
+            retry_suffix(retry_after)
+        ),
         _ => "check the url".to_owned(),
     };
     let detail = if body.trim().is_empty() {
@@ -279,6 +304,11 @@ fn status_failure(cfg: &ServerConfig, code: u16, status: &str, body: &str) -> Ex
         vec![format!("response body: {}", clip(body, BODY_DETAIL_CHARS))]
     };
     Explained::new(format!("{url} answered {named} — {hint}"), detail)
+}
+
+/// ` (Retry-After: <value>)` when the server sent one, as sent (seconds or an HTTP date).
+fn retry_suffix(retry_after: Option<&str>) -> String {
+    retry_after.map_or_else(String::new, |v| format!(" (Retry-After: {v})"))
 }
 
 /// Whether the entry sends an `Authorization` header of its own.
@@ -453,6 +483,14 @@ fn service_reason(err: &ServiceError) -> (String, Option<&'static str>) {
                     )
                 }
             }
+            Some(HttpError::HttpStatus(e)) => (
+                format!(
+                    "it answered {}{}",
+                    status_named(e),
+                    retry_suffix(e.retry_after.as_deref())
+                ),
+                None,
+            ),
             Some(HttpError::UnexpectedServerResponse(text)) => match parse_status(text) {
                 Some((_, status, _)) => (format!("it answered {status}"), None),
                 None => ("it answered unexpectedly".to_owned(), None),
@@ -645,6 +683,27 @@ mod tests {
                 None
             ))),
             "it returned an error: Invalid params: rpcerror (code -32602)"
+        );
+        // A 5xx/429 mid-session comes typed: the status named, and Retry-After when the server sent one.
+        let status = |code, retry_after: Option<&str>| {
+            ServiceError::TransportSend(rmcp::transport::DynamicTransportError::from_parts(
+                "http",
+                std::any::TypeId::of::<()>(),
+                Box::new(super::HttpError::HttpStatus(
+                    rmcp::transport::streamable_http_client::HttpStatusError::new(
+                        code,
+                        retry_after.map(str::to_owned),
+                    ),
+                )),
+            ))
+        };
+        assert_eq!(
+            call(&status(429, Some("120"))),
+            "it answered 429 Too Many Requests (Retry-After: 120)"
+        );
+        assert_eq!(
+            call(&status(503, None)),
+            "it answered 503 Service Unavailable"
         );
     }
 
