@@ -140,8 +140,9 @@ Facade shape decisions from the adversarial review:
   flush ordering (close preview BEFORE committing the rendered block) is
   preserved by construction.
 - **Frame stacking order is fixed and ui-owned** (user-confirmed final):
-  `[staging tail] [stream preview] [spacer] [queue] [completion list] ─sep─
-  [composer] ─sep─ [status | surface]` (the list since the full screen,
+  `[call preview] [spacer] [queue] [completion list] ─sep─
+  [composer] ─sep─ [status | surface]` over the conversation's viewport (the staging tail and
+  the stream preview were deleted in tui-plan S7b; the list since the full screen,
   above the composer since 2026-11-16: `fullscreen-tui.md` "补全列表"). One constant blank spacer row separates
   the content side from everything input-side (it cannot bounce — it never
   changes height), and residue rows render BLANK: they hold their height
@@ -152,14 +153,12 @@ Facade shape decisions from the adversarial review:
   of the status line or an open interaction surface (surface > status) —
   swapping them is a content change plus below-composer growth, never a composer move; the
   completion list, while the line is a slash command, grows upward from the upper separator
-  into the conversation's rows, so it never moves the composer either. Content-side
-  transients (stream preview) morph in place through the staging window (Rust: deleted
-  in tui-plan S7b — the frame holds only the call preview);
-  the busy indicator is a status-line segment. Layout laws: above the
-  composer the frame only grows (staging window + queue; shrink happens by
-  in-place morph); the status row is the permanent carrier for transient
-  indicators; below-composer shrink dies at the screen bottom and
-  self-heals from subsequent output. A side benefit: the composer never
+  into the conversation's rows, so it never moves the composer either. A block still being
+  written grows in the conversation itself (tui-plan S7b), so the frame holds only the call
+  preview; the busy indicator is a status-line segment. Layout laws: the frame is pinned to the
+  bottom of the full screen and the conversation's viewport takes the rows it leaves, so a
+  frame that grows or shrinks moves the viewport's bottom edge, never the composer's place in
+  the frame; the status row is the permanent carrier for transient indicators. A side benefit: the composer never
   sits on the physical bottom row (status pads it), removing the
   Terminal.app bottom-row CJK crash surface.
 

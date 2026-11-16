@@ -137,21 +137,19 @@ _poll_until 30 composer_rows_is 1 || miss "Ctrl+U did not clear the wrapped CJK 
 check_frame_intact "after the wrapped drafts" 80
 
 # ------------------------------------------------- pin 4: a terminal shorter than the frame
-# CHARACTERISATION, not an aspiration. The frame's floor is about ten rows (4 staging-tail
-# rows + spacer + 2 separators + composer + status), so below ~12 the inline viewport and
-# the inserted history overlap: the frame stops being drawn intact and the overlapped
-# history rows keep the damage (a terminal's scrollback is immutable). What must hold is
-# that it is only cosmetic — the process survives, input keeps working, and growing the
-# window back restores a clean frame.
+# Ten rows: the frame (2 separators + composer + status) is pinned to the bottom and the
+# conversation's viewport takes the six rows left, so a 12-row stream scrolls inside it. What
+# must hold: the frame stays intact, the process survives, every row reaches the conversation
+# (read back through the write-out, `capall`), input keeps working, and growing the window back
+# leaves a clean frame.
 start 60 10 || finish
 settle || miss "small-terminal startup never settled"
 check_frame_intact "60x10 at idle, before any insert" 60
 
 type_ 'stream 12'
 key Enter
-# Deliberately NOT `wait_all 'l#11 line'`: on a pane this short the overlap can make the
-# last rows illegible, and this pin exists to record that, not to demand it away. Wait for
-# the pane to stop moving instead — the spinner animates until the turn is over.
+# Wait for the first row, then for the pane to stop moving — the spinner animates until the
+# turn is over; the count below then asks for all twelve.
 wait_all 'l#0' || wart "60x10: not one streamed row is legible"
 settle || miss "60x10: the pane never stopped moving"
 if alive; then ok "60x10: the app survives an insert taller than the frame's floor"; else bad "60x10: the app died"; fi
@@ -159,7 +157,7 @@ legible="$(uniq_all 'l#[0-9][0-9]')"
 if [ "$(cap | grep -c '^┄┄┄' | tr -d ' ')" -eq 2 ] && [ "$legible" -eq 12 ]; then
     ok "60x10: the frame and all 12 rows survived intact"
 else
-    wart "60x10: frame overlapped by the inserted history, $legible/12 rows legible (frame floor ≈ 10 rows leaves no insert room) — cosmetic and recorded in docs/TUI-VERIFY.md §6"
+    bad "60x10: the frame is not intact or rows are missing: $legible/12 rows in the conversation"
 fi
 
 tm resize-window -t s -x 60 -y 24

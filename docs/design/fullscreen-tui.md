@@ -1,12 +1,12 @@
 # 全屏（alternate-screen）TUI
 
-Status: **已实现，唯一的终端（S1–S7；S5 删除了 inline 终端，S6 加了鼠标、应用内选择与浮层 surface，S7 从源重新布局、块在缓冲里生长）** · 计划：`~/.iota/reports/iota/tui-plan.md` · 决策记录：DIVERGENCES X-97–X-103（X-52、X-54、X-81 被取代，作为历史保留）· 契约摘要：ARCHITECTURE §12 · 人工检查：TUI-VERIFY §1–§4b
+Status: **已实现，唯一的终端（S1–S7；S5 删除了 inline 终端，S6 加了鼠标、应用内选择与浮层 surface，S7 从源重新布局、块在缓冲里生长）** · 计划：`~/.iota/reports/iota/tui-plan.md` · 决策记录：DIVERGENCES X-97–X-104（X-52、X-54、X-81 被取代，作为历史保留）· 契约摘要：ARCHITECTURE §12 · 人工检查：TUI-VERIFY §1–§4b
 
 ## 终端拥有屏幕
 
 启动后第一帧进入 alt 屏（`ESC[?1049h`），退出时离开（`?1049l`）。之后所有字节都可以用绝对寻址：alt 屏没有历史、没有 reflow。inline 时代自研终端（X-54）的唯一理由——主屏上的绝对行号会在 resize 竞态中失效——在这里不存在，所以直接用 ratatui 自带的 `Terminal`（`Viewport::Fullscreen`）+ `CrosstermBackend`（`src/ui/runtime/screen.rs`）。backend 外面套一层 `Out`：尺寸取自最近一次 resize 事件，光标位置取自最近一次设置——**循环里零次光标查询**：启动、resize、退出都不发 DSR，对 DSR 不应答的终端也能运行。唯一的例外在循环之外：两个启动探测（OSC 11 查背景色，`osc.rs`；OSC 7501 查 herdr-core，`host/hc.rs`）各跟一个 `ESC[6n` 当读取终止符——在两者都不应答的终端上，第一个按键会被吞掉。
 
-**布局**：自上而下 `[对话视口][帧]`。帧是 `FrameView` 的行（预览、分隔线、composer、状态行、surface；`render/frame.rs` 未改），固定在屏幕底部；视口占其余全部，对话贴着帧（内容少时空行在顶部）。
+**布局**：自上而下 `[对话视口][帧]`。帧是 `FrameView` 的行（预览、分隔线、composer、状态行、补全列表、surface；`render/frame.rs` 沿用 inline 时代的帧，只加了补全列表的槽位、矮终端的让行 `shed` 和命中测试用的 `FrameMap`），固定在屏幕底部；视口占其余全部，对话贴着帧（内容少时空行在顶部）。
 
 **每帧路径**：一次循环迭代 = 布局 → `Buffer::diff` → 一次写。X-55 的规则不变，只是从 `InlineTerminal::commit` 移到了 backend 之下的 `SyncOut::commit`：一次写超过 `SYNC_MIN`（1024 B）就包成一个 DEC 2026 同步块，小的裸发。循环外的一次绘制（会话选择器）也是一次写。
 
@@ -50,7 +50,7 @@ Status: **已实现，唯一的终端（S1–S7；S5 删除了 inline 终端，S
   | 每帧 | 6.2 ms | 10.3 ms | 26.4 ms | 50.3 ms |
 
   生产侧：feed 累计 2 000 行 0.93 s、20 000 行 12.6 s，略超线性，因为 `CodeBlock::fragment` 每来一行都复制一遍整段高亮文本；push 累计 20 000 行 1.8 s。一个 2 万行的块大约被限到 20 帧每秒。M1（`m1_a_growing_code_block`：2 000 行，每行一帧，含 feed、push 和画，三次跑）：全程 7.39/7.40/7.43 s；最后一行 6.05/6.04/6.11 ms；最慢的是第 0 行，42 ms（syntect 第一次加载语法）；RSS +27.3/+28.0/+27.5 MB。真实循环里一次迭代只画一帧，同一帧到的几行只付一次。原来每帧约 26 ms：尺子（`str_width`）对每行做 grapheme 切分，`ansi_width` 每行复制一份；现在可打印 ASCII 直接按长度量，不含转义的行不复制。
-- **公式**：行间公式也逐行生长，但关闭前显示的是**线性源码**（半截的 LaTeX 排不成二维），收到结尾的 `$$` 才排成二维。代码围栏打断一个打开的公式时，公式先被收回（`Sink::withdraw_block`，提交一个什么都不显示的关闭块），代码在它的位置生长；围栏关闭后公式作为一个新块在代码下面重新打开，付它的分隔空行——和纯文本渲染的位置一样。
+- **公式**：行间公式也逐行生长，但关闭前显示的是**线性源码**（半截的 LaTeX 排不成二维），收到结尾的 `$$` 才排成二维。代码围栏遇到一个没闭合的公式时，公式按当时的样子关闭（线性源码排版），代码在它下面另起一块；围栏关闭后的行就是普通文本——和纯文本渲染的结果一样（Go 会在代码之后续上公式，见 X-103）。
 - **同一时刻至多一个打开的块**：`Conversation` 只记一个打开的块。现在每轮只有一个 markdown 生产者，所以成立；两个生产者交错的话，前一个的下一次 grow 会被追加成重复块。
 - **`↓ N new lines` 数的是块**：往回滚的时候，尾部那个块原地长了 400 行，提示仍是 `1 new line`（S7a 起就按块数，S7b 让差距更明显）。留给 owner 决定（X-98/X-103）。
 - **删掉的**：`markdown/preview.rs`（`PreviewHandle`）、`Sink::block_preview`、`UiStreamSink::block_preview`、`ui::sink::PreviewWriter`、`count_lines`、`PREVIEW_COUNTER_EVERY`，以及暂存窗口整套。
@@ -126,7 +126,7 @@ Status: **已实现，唯一的终端（S1–S7；S5 删除了 inline 终端，S
 - **宽度**：每一段按写出那一刻的终端宽度折行。之后的 resize 不会回头改已经写出的行，那些行归终端所有，由终端自己 reflow。退出时写的那段用退出时的宽度。
 - **写出期间**：不画任何东西，新输出照样进缓冲；下一个键（不管是什么）回到全屏并整屏重画，这个键本身被吞掉。如果写出期间退出，就不再发第二次 `?1049l`。
 - **与搜索叠加**：搜索中按 Ctrl+O，写出的是**原样的行**（不带高亮）；回来后搜索仍在原处。搜索中退出，同样写原样的行。
-- **上限**：写出之前就被 20 万行上限裁掉的行，用"更早内容已裁剪"那一行代替。
+- **上限**：写出之前就被 20 万块上限裁掉的块，用"更早内容已裁剪"那一行代替。
 - **挂起**（Ctrl+Z/SIGTSTP）不写出：`fg` 会把全屏原样带回来。
 
 ## 事件源（为什么用 `use-dev-tty`）
@@ -161,9 +161,9 @@ crossterm 0.29 默认的 unix 事件源（mio、边沿触发）有两处会让�
 
 ## 应用内选择（`render/selection.rs`）
 
-- **点是缓冲里的格，不是屏幕的格**：(行号, 折行内第几行, 显示列)。行号按提交编号，所以 20 万行上限丢旧行不移动它；新输出到来时选择留在原文上。resize 换了折行，选择清掉。
+- **点是缓冲里的格，不是屏幕的格**：(行号, 折行内第几行, 显示列)。块号按提交编号，所以 20 万块上限丢旧块不移动它；新输出到来时选择留在原文上。resize 换了折行，选择清掉。
 - **画**：只改屏幕 cell 的 `REVERSED`，行本身不动——**写出（Ctrl+O、退出）永远不带选择的样式**（`screen::tests::the_selection_is_drawn_reversed_and_never_written_out`）。
-- **复制的内容**：去掉 SGR 的纯文本；**屏幕**把一行折成的几段拼回成那一行（缓冲按 `Block::display` 标出哪些显示行是续段）；其余的行，包括块与块之间、布局块自己的行（表格的、代码块的），之间都是 `\n`；行尾空白去掉。三击选指针下那一行连同它的续段，不是整块（S7a 评审 B1）。双击的"词"＝字母数字加路径/URL/标识符的标点 `_-./~+:@\`，句末的 `.` `,` `:` 不算。
+- **复制的内容**：屏幕上看得见的纯文本——SGR 和 OSC 8 超链接都去掉（链接只复制它的文字，搜索也不会命中看不见的 URL）；一个布局出零行的块占一行空行（块的行数只有 `Entry::lines` 一个来源，视口、命中和三击都按它算）；**屏幕**把一行折成的几段拼回成那一行（缓冲按 `Block::display` 标出哪些显示行是续段）；其余的行，包括块与块之间、布局块自己的行（表格的、代码块的），之间都是 `\n`；行尾空白去掉。三击选指针下那一行连同它的续段，不是整块（S7a 评审 B1）。双击的"词"＝字母数字加路径/URL/标识符的标点 `_-./~+:@\`，句末的 `.` `,` `:` 不算。
 - **按键清掉选择**（也结束一次没收到松开的拖动）；单击（不拖，或只抖一格）什么也不选、不复制。
 - **三条复制路径**（`runtime/clipboard.rs`，Claude Code 的做法）：不在 SSH 下用本机工具（`pbcopy`；`wl-copy`/`xclip`/`xsel`；`clip`）；在 tmux 里（`$TMUX`）写 `tmux load-buffer -w -`（`-w` 让 tmux 按 `set-clipboard` 再交给外层终端）；SSH 下且不在 tmux 里写 OSC 52；本机工具一个也没有时也退回 OSC 52。外部工具在自己的线程里跑，卡住也不拖住循环，**跑完把结果报回循环**：只有某个工具成功才说 `copied`；全部失败（没有 `$DISPLAY` 的 `xclip`、出错的 `pbcopy`）就落到 OSC 52。OSC 52 自己报不回结果，所以状态行写明 `via OSC 52`。OSC 52 序列有上限 `OSC52_MAX`（100 000 字节，约 73 KB 文本；hterm、tmux 也在这个量级截断）：超过就不发，状态行写 `not copied: N characters is too large — use Ctrl+O`。
 - **提示**：复制后状态行 4 秒内显示 `copied N characters · Shift+drag selects in the terminal`（只走了 OSC 52 时是 `copied N characters via OSC 52 · …`；iTerm2——`TERM_PROGRAM=iTerm.app` 或 `LC_TERMINAL=iTerm2`——显示 `Option`）。一句话，不是段落。

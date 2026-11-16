@@ -88,11 +88,10 @@ key BSpace
 wait_gone '❯ 中文' || miss "backspace over a wide rune failed"
 check "cursor after backspace over one wide rune" "$(cursor_xy)" "4 $((comp - 1))"
 
-# --- the exit, with the banner's tail still in the staging window (X-49): Ctrl+D at the prompt
-#     leaves. The window's rows — the card's last three and the blank under it, the window being
-#     four rows — go to scrollback and the frame is repainted without them, so each is in the
-#     history ONCE, not once in the scrollback and once more in the frame that had shown it. The
-#     pane is kept past the exit (`remain-on-exit`) so the history can be read.
+# --- the exit: Ctrl+D at the prompt leaves the alternate screen and writes the conversation into
+#     the main screen (X-99) — the banner's rows each ONCE, after the mark row the startup put in
+#     the scrollback, and never the frame. The pane is kept past the exit (`remain-on-exit`) so
+#     the history can be read.
 tm set-option -t s remain-on-exit on
 key C-d
 _poll_until 60 pane_dead || miss "Ctrl+D at the prompt did not exit"

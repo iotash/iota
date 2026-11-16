@@ -757,7 +757,8 @@ pub struct ViewSpec {
     pub title: String,
     /// The lines (may carry raw SGR).
     pub lines: Vec<String>,
-    /// Visible rows; `0` = `min(lines.len(), 15)` (applied by the panel layer, ui.go:388-395).
+    /// Visible rows; `0` = the interaction cap (`ui::interaction_rows`: half the screen, at most
+    /// 15), clamped to the line count — applied by the panel layer (`panel_height`).
     pub height: usize,
 }
 
@@ -985,8 +986,8 @@ pub trait Ui: Send + Sync {
         })
     }
 
-    /// One `PanelKind::View`; height 0 => `min(lines.len(), 15)` at the panel layer
-    /// (ui.go:388-395).
+    /// One `PanelKind::View`; height 0 => the interaction cap, clamped to the line count, at the
+    /// panel layer (`panel_height`).
     fn view<'a>(
         &'a self,
         cancel: &'a CancellationToken,

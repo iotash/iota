@@ -895,10 +895,10 @@ mod tests {
         h.ui.close().await.expect("close");
     }
 
-    /// `close` flushes the window into the conversation BEFORE quitting: the mailbox FIFO
-    /// lands the flushed `Scrollback` batches ahead of `Quit`, so the loop pushes them on its
-    /// way out and the exit writes the whole conversation into the main screen (X-99) — each
-    /// line on the final grid ONCE, in order, and no frame.
+    /// `close` commits what is pending BEFORE quitting: the mailbox FIFO lands the `Scrollback`
+    /// batches ahead of `Quit`, so the loop pushes them on its way out and the exit writes the
+    /// whole conversation into the main screen (X-99) — each line on the final grid ONCE, in
+    /// order, and no frame.
     #[tokio::test(flavor = "multi_thread")]
     async fn close_writes_every_row_once_in_order() {
         let h = start_facade();
@@ -914,9 +914,8 @@ mod tests {
         );
         h.ui.close().await.expect("close");
         // The exit wrote the conversation into the main screen — each line on the final grid
-        // exactly once, in order, under the transcript mark, and no frame. Through 0.4.0 the
-        // inline terminal left its last-painted frame, whose staging tail still showed the same
-        // rows, and each line landed twice.
+        // exactly once, in order, under the transcript mark, and no frame (the frame lives on the
+        // alternate screen and is never written out).
         let c = h.contents();
         assert!(
             !c.contains('❯'),

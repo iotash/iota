@@ -31,8 +31,8 @@ use crate::ui::block::{Block, Live, LiveId};
 use crate::ui::render::theme::{FAINT, RESET};
 use crate::ui::surface::search::{highlight_line, match_ranges};
 
-/// The most blocks the buffer keeps (tui-plan §1: 200k rows, ~20–40 MB; a block is a row or a
-/// laid-out source, so this is at least as many rows).
+/// The most blocks the buffer keeps — each a row or a laid-out source, dropped whole past the cap
+/// (M1: 100k rows +16 MB).
 pub(crate) const BLOCK_CAP: usize = 200_000;
 
 /// The row standing in for the blocks the cap dropped.

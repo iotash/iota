@@ -5,10 +5,11 @@
 //! history and no reflow, so every byte may name a row.
 //!
 //! The screen is two rectangles, top to bottom: the conversation viewport and the frame (the
-//! loop's [`FrameView`] rows, unchanged, pinned to the bottom). The conversation is a plain
-//! buffer of already-rendered ANSI strings (T-05, [`Conversation`]): every committed row is
-//! appended there, and only the rows a draw shows go through `ansi_to_spans`. A row wider than
-//! the screen is hard-wrapped by `wrap_ansi` at draw time, the wrap cached per width.
+//! loop's [`FrameView`] rows, pinned to the bottom). The conversation is a buffer of committed
+//! BLOCKS ([`Conversation`], `ui::block`): fixed rows, and blocks laid out from their source at
+//! the width of the draw. A block's display lines are computed when a draw first needs them at a
+//! width and cached with it (a row wider than the screen is hard-wrapped by `wrap_ansi`), and
+//! only the lines a draw shows go through `ansi_to_spans`.
 //!
 //! - **A frame** is one `Terminal::draw`: autoresize, layout, `Buffer::diff`, the cursor. The
 //!   bytes collect in [`SyncOut`] and leave in one write per loop iteration, under X-55's rule
