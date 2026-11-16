@@ -92,10 +92,13 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   **Ctrl+F** is not search: it still moves the cursor one character right.
   **Ctrl+Z** suspends iota and gives the terminal back to the shell; `fg`
   brings it back, redrawn at the window's size.
-- **Dialogs can be as tall as the window.** A long list, `/status` or a
-  picker's preview is no longer cut at 15 rows: it takes the rows of the
-  conversation above it while it is open, and closing it gives the
-  conversation back where it was.
+- **A dialog never takes the whole window.** A dialog's list, `/status`,
+  `/file`'s directory browser and the slash-completion list take at most
+  half the window, and never more than 15 rows; a longer list scrolls inside
+  them (`↑`/`↓` a row, `←`/`→` a page, `g`/`G` the top and the bottom in a
+  dialog), and the conversation keeps the rest of the window; a picker's
+  preview stays under the same limit. A dialog that asks for its own height
+  gets it. Closing a dialog gives the conversation back where it was.
 - **A resumed session shows its last three rounds, not all of it.** Older
   rounds are not in the window, and scrolling up does not reach them: the
   window starts at those three rounds. `/export` has the whole conversation.

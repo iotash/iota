@@ -151,32 +151,25 @@ fn the_list_column_starts_at_the_same_screen_column_on_every_row() {
     }
 }
 
-/// The preview budget is clamped to the room the viewport yields the surface (C13; it was the
-/// terminal height less 12 frame rows, tabbed.go:797-799): the title and hint rows come out of
-/// it; an unknown room (the model before its first resize) skips the clamp, as Go's
+/// The preview budget is clamped to the interaction cap and the room the viewport yields the
+/// surface (C13; it was the terminal height less 12 frame rows, tabbed.go:797-799): on a 10-row
+/// screen the room leaves 8 rows, but half the screen is 5; on a 40-row screen the default 14
+/// fits under both; an unknown room (the model before its first resize) skips the clamp, as Go's
 /// `m.height > 0` does.
 #[test]
-fn preview_height_is_clamped_by_the_room() {
+fn preview_height_is_clamped_by_the_cap_and_the_room() {
     let geo: Arc<Mutex<Vec<usize>>> = Arc::default();
-    let sink = Arc::clone(&geo);
-    let panel = || Panel::picker("Pick".to_owned(), vec!["a".to_owned()]);
-    let mut p = panel();
-    let sink2 = Arc::clone(&sink);
-    p = p.with_preview(Box::new(move |_, _, rows| {
-        sink2.lock().expect("geo").push(rows);
-        vec!["x".to_owned()]
-    }));
-    // A 10-row room leaves 8 rows for the preview.
-    let _ = Surf::sized(vec![p], 100, 10).content();
-    // …and an unknown height keeps the default 14.
-    let mut p = panel();
-    let sink3 = Arc::clone(&sink);
-    p = p.with_preview(Box::new(move |_, _, rows| {
-        sink3.lock().expect("geo").push(rows);
-        vec!["x".to_owned()]
-    }));
-    let _ = Surf::sized(vec![p], 100, 0).content();
-    assert_eq!(*geo.lock().expect("geo"), vec![8, 14]);
+    for height in [10, 40, 0] {
+        let sink = Arc::clone(&geo);
+        let p = Panel::picker("Pick".to_owned(), vec!["a".to_owned()]).with_preview(Box::new(
+            move |_, _, rows| {
+                sink.lock().expect("geo").push(rows);
+                vec!["x".to_owned()]
+            },
+        ));
+        let _ = Surf::sized(vec![p], 100, height).content();
+    }
+    assert_eq!(*geo.lock().expect("geo"), vec![5, 14, 14]);
 }
 
 /// The picker's hint row is byte-exact and `/` filters the rows like a List does

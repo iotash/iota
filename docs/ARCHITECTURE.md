@@ -401,7 +401,8 @@ buffer position (row number, wrap line, column) and scrolls at the viewport's ed
 screens. The selection is drawn on the screen's cells only, never into the rows, so a write-out never
 carries it; its release copies plain text to the local tool, tmux's buffer and/or OSC 52 by where the
 session runs. An open surface takes the viewport's rows (C13): its room is the screen less the frame's
-own rows.
+own rows, and a panel with no `height` — like the completion list — stays under the interaction cap:
+an interaction area never exceeds half the screen or 15 rows (`ui::interaction_rows`).
 
 **The point of no return** (X-100) is the first frame: before it nothing is written, so a run that fails
 early leaves the shell's screen untouched. After it every way out but SIGKILL restores the terminal —

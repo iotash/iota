@@ -235,7 +235,11 @@ fn render_picker(p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<String
     let cols = picker_preview_cols(ps, w);
     if cols > 0 && !ps.items.is_empty() {
         let mut prev_h = if p.height > 0 { p.height } else { PICKER_ROWS };
-        if let Some(Room { rows: r, .. }) = ps.room {
+        if let Some(Room { rows: r, cap }) = ps.room {
+            // The preview is the panel's too: with no `height` it stays under the cap.
+            if p.height == 0 {
+                prev_h = prev_h.min(cap);
+            }
             prev_h = clamp(prev_h, 4.min(r), r);
         }
         preview = ps.preview_rows(cols, prev_h);
