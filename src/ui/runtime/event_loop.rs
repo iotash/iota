@@ -1218,14 +1218,12 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
                 term.write_raw(seq.as_bytes())?;
             }
             let prompt = m.search_prompt();
-            term.draw_frame(&view, prompt.as_ref())?; // the same iteration as the rows above
+            // The same iteration as the rows above; the rows it left out at the top of a frame
+            // taller than the screen are what a click on the frame counts from.
+            m.frame_map.cut = term.draw_frame(&view, prompt.as_ref())?;
             m.view_paused = term.view_paused();
             m.view_h = term.view_height();
             m.copy_pending = term.copy_pending();
-            // The rows `Screen::paint` left out at the top of a frame taller than the screen.
-            m.frame_map.cut = view
-                .map
-                .cut_for(view.rows.len(), usize::from(term.size().height - m.view_h));
             m.dirty = false;
         }
         if !resizing {

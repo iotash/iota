@@ -558,26 +558,27 @@ impl<W: Write> Screen<W> {
 
     /// Runs `op` inside a batch of its own: whatever it writes leaves as one write (X-55), also
     /// outside the loop's batches (the session picker draws without them).
-    fn batched(&mut self, op: impl FnOnce(&mut Self) -> io::Result<()>) -> io::Result<()> {
+    fn batched<T>(&mut self, op: impl FnOnce(&mut Self) -> io::Result<T>) -> io::Result<T> {
         self.begin_batch();
         let done = op(self);
         let written = self.end_batch();
-        done.and(written)
+        done.and_then(|v| written.map(|()| v))
     }
 
     /// One frame, one write: the conversation's visible rows over the frame's rows, the real
-    /// cursor where the frame puts it (hidden when it puts none).
+    /// cursor where the frame puts it (hidden when it puts none). Returns how many of the frame's
+    /// top rows it left out ([`FrameMap::cut_for`]): what a click below the viewport counts from.
     pub(crate) fn draw_frame(
         &mut self,
         view: &FrameView,
         prompt: Option<&Prompt>,
-    ) -> io::Result<()> {
+    ) -> io::Result<usize> {
         self.batched(|s| s.paint(view, prompt))
     }
 
-    fn paint(&mut self, view: &FrameView, prompt: Option<&Prompt>) -> io::Result<()> {
+    fn paint(&mut self, view: &FrameView, prompt: Option<&Prompt>) -> io::Result<usize> {
         match self.place {
-            Place::Out | Place::Left => return Ok(()),
+            Place::Out | Place::Left => return Ok(0),
             Place::Main => self.enter()?,
             Place::Alt => {}
         }
@@ -657,7 +658,7 @@ impl<W: Write> Screen<W> {
             view_h,
             following: self.conv.following(),
         });
-        Ok(())
+        Ok(cut)
     }
 
     /// The cells the selection covers on this draw, as (screen row, from column, to column):

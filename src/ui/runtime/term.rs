@@ -172,12 +172,12 @@ impl<W: Write> Term<W> {
     }
 
     /// One frame: the conversation viewport over the frame's rows, the real cursor where the
-    /// frame (or the search line) puts it.
+    /// frame (or the search line) puts it; how many of the frame's top rows it left out.
     pub(crate) fn draw_frame(
         &mut self,
         view: &FrameView,
         prompt: Option<&Prompt>,
-    ) -> io::Result<()> {
+    ) -> io::Result<usize> {
         self.screen.draw_frame(view, prompt)
     }
 

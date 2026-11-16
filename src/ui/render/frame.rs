@@ -184,8 +184,8 @@ pub(crate) struct FrameMap {
     pub(crate) list: Option<usize>,
     /// How many rows the completion list has.
     pub(crate) list_rows: usize,
-    /// The frame's top rows the screen left out because the frame was taller than it (set by the
-    /// loop after the draw; `Screen::paint` keeps the bottom while a surface is open).
+    /// The frame's top rows the screen left out because the frame was taller than it (what the
+    /// draw returned; `Screen::paint` keeps the bottom while a surface is open).
     pub(crate) cut: usize,
 }
 

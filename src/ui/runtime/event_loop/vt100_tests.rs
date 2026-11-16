@@ -389,9 +389,13 @@ fn a_write_is_one_synchronized_update_exactly_when_it_is_longer_than_sync_min() 
         }
         (body, pairs)
     };
-    write(&mut t, &|t| t.draw_frame(&composer(""), None).unwrap());
+    write(&mut t, &|t| {
+        t.draw_frame(&composer(""), None).unwrap();
+    });
     // Small: a keystroke, a line of output, a clear, a small batch, an OSC.
-    let (n, pairs) = write(&mut t, &|t| t.draw_frame(&composer("h"), None).unwrap());
+    let (n, pairs) = write(&mut t, &|t| {
+        t.draw_frame(&composer("h"), None).unwrap();
+    });
     assert!(
         pairs == 0 && n < 64,
         "a keystroke echo is a few bytes, bare: {n} B"
