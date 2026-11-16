@@ -105,11 +105,11 @@ pub(crate) fn target(row: u16, view_h: u16, map: &FrameMap, search: bool, paused
     if let Some(top) = map.surface.filter(|&top| fr >= top) {
         return Target::Surface(fr - top);
     }
-    if let Some(top) = map.list.filter(|&top| fr >= top) {
-        return match fr - top {
-            row if row < map.list_rows => Target::List(row),
-            _ => Target::Frame,
-        };
+    if let Some(top) = map
+        .list
+        .filter(|&top| (top..top + map.list_rows).contains(&fr))
+    {
+        return Target::List(fr - top);
     }
     if (map.composer..map.composer + map.composer_rows).contains(&fr) {
         return Target::Composer(fr - map.composer);

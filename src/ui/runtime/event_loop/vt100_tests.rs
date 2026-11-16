@@ -1489,7 +1489,11 @@ fn skill_rows() -> Vec<crate::ui::facade::Suggestion> {
     ]
 }
 
-/// The model's frame as a `w`×`h` terminal shows it, one string per screen row.
+/// The last line of the conversation the completion screens show above the frame.
+const CONV_LAST: &str = "the conversation's last line";
+
+/// The model's frame as a `w`×`h` terminal shows it, one string per screen row, under a
+/// two-line conversation ending in [`CONV_LAST`].
 fn shown(m: &mut Model, cols: u16, lines: u16) -> Vec<String> {
     m.width = cols;
     m.height = lines;
@@ -1498,6 +1502,7 @@ fn shown(m: &mut Model, cols: u16, lines: u16) -> Vec<String> {
     let wtr = buf.clone();
     let mut term =
         Term::headless(Box::new(move || wtr.clone()), Size::new(cols, lines), false).unwrap();
+    term.push(Block::rows(["a first line", CONV_LAST]));
     term.draw_frame(&view, None).unwrap();
     let parser = parse_sized(&buf, cols, lines);
     parser
@@ -1507,49 +1512,111 @@ fn shown(m: &mut Model, cols: u16, lines: u16) -> Vec<String> {
         .collect()
 }
 
-/// The completion list as a terminal shows it, at 80 and 160 columns: two columns, the labels
-/// and — two past the longest label — the descriptions, starting at the same column on every
-/// row; at 160 columns a description still wraps at the 72-column measure, not one 140-column
-/// line, and is cut with `…` after two lines; an item with no description is its label alone; the
-/// status row under the list keeps its own content. Run with `--nocapture` to see the screens.
-#[test]
-fn the_completion_list_on_screen_at_80_and_160_columns() {
-    use crate::ui::input::suggest::DESC_MEASURE;
+/// Where the screen's blocks are, top to bottom: the conversation's last line, the list's first
+/// and last rows, the upper separator, the composer, the status row.
+#[derive(Debug, PartialEq, Eq)]
+struct Order {
+    conv: Option<usize>,
+    list: std::ops::RangeInclusive<usize>,
+    sep: usize,
+    composer: usize,
+    status: usize,
+}
+
+/// The [`Order`] of `rows` (the list is the rows between the frame's spacer and the separator).
+fn order(rows: &[String]) -> Order {
+    let sep = rows
+        .iter()
+        .position(|r| r.starts_with('┄'))
+        .expect("separator");
+    let composer = rows
+        .iter()
+        .position(|r| r.starts_with('❯'))
+        .expect("composer");
+    let status = rows
+        .iter()
+        .position(|r| r.contains("claude-opus-5-5"))
+        .expect("status");
+    let conv = rows.iter().position(|r| r == CONV_LAST);
+    let first = rows[..sep]
+        .iter()
+        .position(|r| r.starts_with(" › ") || r.starts_with("   "))
+        .expect("list row");
+    Order {
+        conv,
+        list: first..=sep - 1,
+        sep,
+        composer,
+        status,
+    }
+}
+
+/// A model with the skill rows and a status row, `typed` in the composer.
+fn skills_model(typed: &str) -> Model {
     let mut m = test_model();
     m.apply(UiMsg::Status(StatusData {
         model: "claude-opus-5-5".to_owned(),
         ..StatusData::default()
     }));
-    m.apply(UiMsg::Commands(skill_rows()));
-    crate::ui::testutil::type_text(&mut m, "/skills ");
+    let mut commands = skill_rows();
+    commands.push(crate::ui::facade::Suggestion {
+        value: "/skills".to_owned(),
+        label: String::new(),
+        desc: "List skills, or run one".to_owned(),
+    });
+    m.apply(UiMsg::Commands(commands));
+    crate::ui::testutil::type_text(&mut m, typed);
+    m
+}
+
+/// The completion list as a terminal shows it, at 80 and 160 columns, ABOVE the composer: the
+/// conversation's last line, the frame's one spacer row, the list, the upper separator, the
+/// composer, the lower separator, the status row — in that order. Two columns: the labels at
+/// column 3 and — two past the longest label — the descriptions, at the same column on every
+/// row; at 160 columns a description still wraps at the 72-column measure, and is cut with `…`
+/// after two lines; an item with no description is its label alone. Run with `--nocapture` to
+/// see the screens.
+#[test]
+fn the_completion_list_on_screen_at_80_and_160_columns() {
+    use crate::ui::input::suggest::DESC_MEASURE;
+    let mut m = skills_model("/skills ");
     crate::ui::input::suggest::tab_complete(&mut m.composer, &m.commands);
     crate::ui::input::suggest::tab_complete(&mut m.composer, &m.commands);
-    // `code-review` and `investigate` are the longest labels: 11 columns, after the 4 of indent.
-    let at = 4 + 11 + 2;
+    // `code-review` and `investigate` are the longest labels: 11 columns, after the 3 of indent.
+    let at = 3 + 11 + 2;
     for w in [80u16, 160] {
         let rows = shown(&mut m, w, 24);
         let dump = rows.join("\n");
         println!("--- {w}x24 ---\n{dump}");
-        let first = rows
-            .iter()
-            .rposition(|r| r.starts_with('┄'))
-            .expect("separator")
-            + 1;
-        let list = &rows[first..first + 6];
-        assert!(list[0].starts_with("    brain-page   Read"), "{w}:\n{dump}");
+        let o = order(&rows);
+        // The conversation's last line, the frame's constant spacer (13), the list's six rows.
+        assert_eq!(
+            o,
+            Order {
+                conv: Some(12),
+                list: 14..=19,
+                sep: 20,
+                composer: 21,
+                status: 23,
+            },
+            "{w}:\n{dump}"
+        );
+        assert_eq!(rows[13], "", "{w}: only the spacer between:\n{dump}");
+        let list = &rows[*o.list.start()..=*o.list.end()];
+        assert!(list[0].starts_with("   brain-page   Read"), "{w}:\n{dump}");
         assert!(
-            list[1].starts_with("  › code-review  Review"),
+            list[1].starts_with(" › code-review  Review"),
             "{w}:\n{dump}"
         );
         assert_eq!(
-            list[3], "    release",
+            list[3], "   release",
             "{w}: no description, one row:\n{dump}"
         );
         assert!(
-            list[4].starts_with("    investigate  Systematic"),
+            list[4].starts_with("   investigate  Systematic"),
             "{w}:\n{dump}"
         );
-        for r in list.iter().filter(|r| r.as_str() != "    release") {
+        for r in list.iter().filter(|r| r.as_str() != "   release") {
             let cs: Vec<char> = r.chars().collect();
             assert!(
                 cs[at - 2] == ' ' && cs[at - 1] == ' ' && cs[at] != ' ',
@@ -1564,20 +1631,48 @@ fn the_completion_list_on_screen_at_80_and_160_columns() {
             list[2].starts_with(&" ".repeat(at)) && list[2].ends_with('…'),
             "{w}: the second line in column two, cut with …:\n{dump}"
         );
-        assert!(
-            rows[23].contains("claude-opus-5-5"),
-            "{w}: the status row stays itself"
-        );
     }
 }
 
-/// On a 4-row terminal the list shrinks to the highlighted item and the composer stays on the
-/// screen: the rows above the composer yield, then what does not fit at the bottom.
+/// The list grows UPWARD: one more character that matches more items — `/skills` offers the
+/// command alone, `/skills ` its whole catalog — adds rows at the list's top, and the composer, the separators and the status row keep their rows; the
+/// conversation gives the rows up.
 #[test]
-fn a_four_row_terminal_keeps_the_composer_and_the_highlighted_item() {
-    let mut m = test_model();
-    m.apply(UiMsg::Commands(skill_rows()));
-    crate::ui::testutil::type_text(&mut m, "/skills ");
+fn the_composer_holds_still_while_the_list_grows() {
+    let mut m = skills_model("/skills");
+    let before = shown(&mut m, 80, 24);
+    println!("--- /skills ---\n{}", before.join("\n"));
+    let b = order(&before);
+    assert_eq!(b.list.clone().count(), 1, "{before:#?}");
+    crate::ui::testutil::type_text(&mut m, " ");
+    let after = shown(&mut m, 80, 24);
+    println!("--- /skills␠ ---\n{}", after.join("\n"));
+    let a = order(&after);
+    assert_eq!(a.list.clone().count(), 6, "{after:#?}");
+    assert_eq!(
+        (a.sep, a.composer, a.status),
+        (b.sep, b.composer, b.status),
+        "the composer moved:\n{after:#?}"
+    );
+    assert_eq!(a.list.end(), b.list.end(), "the list's bottom moved");
+    assert_eq!(
+        *a.list.start() + 5,
+        *b.list.start(),
+        "the list's top is what moves"
+    );
+    assert_eq!(
+        a.conv.map(|c| c + 5),
+        b.conv,
+        "the conversation gives up the rows"
+    );
+}
+
+/// On a 4-row terminal the composer and the status row stay on the screen: the frame's rows
+/// above the composer yield — the spacer, then the list from its top. The layout still holds the
+/// highlighted item alone; at 4 rows none of it is left on the screen.
+#[test]
+fn a_four_row_terminal_keeps_the_composer_and_the_status_row() {
+    let mut m = skills_model("/skills ");
     for _ in 0..4 {
         crate::ui::input::suggest::tab_complete(&mut m.composer, &m.commands);
     }
@@ -1586,12 +1681,24 @@ fn a_four_row_terminal_keeps_the_composer_and_the_highlighted_item() {
     assert_eq!(
         rows,
         vec![
+            "┄".repeat(80),
             "❯ /skills investigate".to_owned(),
             "┄".repeat(80),
-            "  › investigate  Systematic debugging with root cause investigation: reproduce,"
-                .to_owned(),
-            "                 analyze, hypothesize, then fix".to_owned(),
+            "  claude-opus-5-5".to_owned(),
         ]
     );
     assert_eq!(m.list_items, vec![3, 3], "the highlighted item alone");
+    // Two rows more and the highlighted item's rows come back, bottom first.
+    let rows = shown(&mut m, 80, 6);
+    println!("--- 80x6 ---\n{}", rows.join("\n"));
+    assert_eq!(
+        rows[..2],
+        [
+            " › investigate  Systematic debugging with root cause investigation: reproduce,"
+                .to_owned(),
+            "                analyze, hypothesize, then fix".to_owned(),
+        ]
+    );
+    assert_eq!(rows[3], "❯ /skills investigate");
+    assert_eq!(rows[5], "  claude-opus-5-5");
 }

@@ -43,7 +43,7 @@ fn plain(rows: &[String]) -> Vec<String> {
     rows.iter().map(|r| strip_sgr(r)).collect()
 }
 
-/// Where the description starts on a plain row: the first text past the label's own column 4
+/// Where the description starts on a plain row: the first text past the label's own column 3
 /// that follows two spaces (a label holds no double space, a description is single-spaced).
 /// `None` for a row with no description.
 fn desc_at(row: &str) -> Option<usize> {
@@ -96,7 +96,7 @@ fn test_slash_tab_completion() {
     let mut c = Composer::new();
     c.set_value("/s");
     let rows = plain(&frame_list(&mut c, &cmds, 80, 20).rows);
-    assert_eq!(rows, vec!["    session", "    status"], "one row per item");
+    assert_eq!(rows, vec!["   session", "   status"], "one row per item");
     tab_complete(&mut c, &cmds);
     assert_eq!(c.value(), "/session", "tab");
     tab_complete(&mut c, &cmds);
@@ -116,17 +116,17 @@ fn test_slash_tab_completion() {
 #[test]
 fn item_heights_wrap_at_the_measure_and_cap_at_two_lines() {
     let bare = item_rows(&sug("/help", ""), false, 4, 80);
-    assert_eq!(plain(&bare), vec!["    help"]);
+    assert_eq!(plain(&bare), vec!["   help"]);
 
     let short = item_rows(&sug("/help", "Show the commands"), false, 4, 80);
-    assert_eq!(plain(&short), vec!["    help  Show the commands"]);
+    assert_eq!(plain(&short), vec!["   help  Show the commands"]);
 
     // Twelve 6-column words (+ spaces) are 83 columns: two lines at the 72 measure, not one at 200.
     let two = plain(&item_rows(&sug("/x", &words(12)), false, 1, 200));
     assert_eq!(two.len(), 2, "{two:#?}");
-    assert!(two[0].starts_with("    x  word00"), "{two:#?}");
+    assert!(two[0].starts_with("   x  word00"), "{two:#?}");
     assert!(
-        two[1].starts_with("       word"),
+        two[1].starts_with("      word"),
         "the second line starts in the description column: {two:#?}"
     );
     for row in &two {
@@ -156,7 +156,7 @@ fn item_heights_wrap_at_the_measure_and_cap_at_two_lines() {
 
     // The description's own newlines are not layout.
     let nl = plain(&item_rows(&sug("/x", "one\ntwo"), false, 1, 80));
-    assert_eq!(nl, vec!["    x  one two"]);
+    assert_eq!(nl, vec!["   x  one two"]);
 }
 
 /// The two columns at 80 and 160 columns: the label column is as wide as the longest label, the
@@ -176,10 +176,10 @@ fn the_list_is_two_columns_at_80_and_160() {
         assert_eq!(label_column(&ms, w), LABEL_CAP, "{w}: capped");
         let (view, _) = layout(&ms, Some(0), 0, w, 40);
         let rows = plain(&view.rows);
-        let at = 4 + LABEL_CAP + 2;
+        let at = 3 + LABEL_CAP + 2;
         for (r, item) in rows.iter().zip(&view.items) {
             if *item == 2 {
-                assert_eq!(r, "    bare", "{w}: no description, one row");
+                assert_eq!(r, "   bare", "{w}: no description, one row");
                 continue;
             }
             assert_eq!(
@@ -192,7 +192,7 @@ fn the_list_is_two_columns_at_80_and_160() {
         assert_eq!(view.items, vec![0, 0, 1, 2, 3, 3], "{w}: {rows:#?}");
         let cut: String = long.chars().take(LABEL_CAP - 1).collect();
         assert!(
-            rows[4].starts_with(&format!("    {cut}…  word00")),
+            rows[4].starts_with(&format!("   {cut}…  word00")),
             "{w}: the long label is cut at the cap: {rows:#?}"
         );
         assert!(rows[1].ends_with('…'), "{w}: two lines, then …: {rows:#?}");
@@ -200,7 +200,7 @@ fn the_list_is_two_columns_at_80_and_160() {
     // Without the long label the column is the longest of the rest: `review`, 6 wide.
     let (view, _) = layout(&ms[..3], Some(0), 0, 80, 40);
     let rows = plain(&view.rows);
-    assert_eq!(rows[2], format!("    go{}Short", " ".repeat(6 - 2 + 2)));
+    assert_eq!(rows[2], format!("   go{}Short", " ".repeat(6 - 2 + 2)));
 }
 
 /// The label column is measured over ALL the matches, not the shown window: walking down a list
@@ -209,7 +209,7 @@ fn the_list_is_two_columns_at_80_and_160() {
 fn the_description_column_holds_still_while_the_list_scrolls() {
     let mut cmds = vec![sug("/a-long-command-name", "first")];
     cmds.extend((0..10).map(|i| sug(&format!("/c{i}"), &words(3))));
-    let at = 4 + "a-long-command-name".len() + 2;
+    let at = 3 + "a-long-command-name".len() + 2;
     let mut c = Composer::new();
     c.set_value("/");
     let mut scrolled = false;
@@ -253,7 +253,7 @@ fn the_highlight_moves_by_item_across_items_of_different_heights() {
     // The highlighted item's label row carries the pointer, whatever its height.
     let rows = plain(&frame_list(&mut c, &cmds, 80, 40).rows);
     assert!(
-        rows.iter().any(|r| r.starts_with("  › d  word00")),
+        rows.iter().any(|r| r.starts_with(" › d  word00")),
         "{rows:#?}"
     );
 
@@ -317,7 +317,7 @@ fn the_window_keeps_the_highlight_fully_visible() {
         assert!(
             plain(&rows)
                 .iter()
-                .any(|r| r.starts_with(&format!("  › c{i:02}  "))),
+                .any(|r| r.starts_with(&format!(" › c{i:02}  "))),
             "step {i}"
         );
     }
@@ -383,7 +383,7 @@ fn test_skill_rows_hide_until_a_space_then_show_bare_names() {
     let rows = plain(&frame_list(&mut c, &cmds, 80, 20).rows);
     assert_eq!(
         rows,
-        vec!["    skills  List skills, or run one: /skills <name>"],
+        vec!["   skills  List skills, or run one: /skills <name>"],
         "the catalog leaked before the space"
     );
 
@@ -393,8 +393,8 @@ fn test_skill_rows_hide_until_a_space_then_show_bare_names() {
     assert_eq!(
         rows,
         vec![
-            "    brain-page   Read and write brain pages",
-            "    code-review"
+            "   brain-page   Read and write brain pages",
+            "   code-review"
         ],
         "bare names, each with its own description"
     );
@@ -419,11 +419,11 @@ fn test_suggest_row_hues() {
     let rows = frame_list(&mut c, &cmds, 80, 20).rows;
     assert_eq!(
         rows[0],
-        format!("  {CYAN}› status{RESET}   {FAINT}Provider, tokens, tools{RESET}")
+        format!(" {CYAN}› status{RESET}   {FAINT}Provider, tokens, tools{RESET}")
     );
     assert_eq!(
         rows[1],
-        format!("    {FAINT}session{RESET}  {FAINT}Resume or delete{RESET}")
+        format!("   {FAINT}session{RESET}  {FAINT}Resume or delete{RESET}")
     );
     assert!(!plain(&rows).iter().any(|r| r.contains("/status")));
 }

@@ -1,6 +1,6 @@
 //! The in-composer completion (`TUI_DESIGN` §6; suggest.go until the full screen): the
 //! `match_suggestions` whole-line prefix filter, the completion cycle, and the candidate LIST the
-//! frame draws below the composer.
+//! frame draws above the composer.
 //!
 //! The list is a single-select picker in the fzf / Claude Code shape, in two columns: the label,
 //! then — at one column for every match, [`GAP`] past the longest label (capped at
@@ -27,8 +27,8 @@ pub(crate) const DESC_MEASURE: usize = 72;
 /// The most lines a description takes; the last one ends in `…` when there was more.
 pub(crate) const DESC_LINES: usize = 2;
 
-/// Where a label starts: a two-column margin, then the pointer's two.
-const LABEL_INDENT: usize = 4;
+/// Where a label starts: a one-column margin, then the pointer's two.
+const LABEL_INDENT: usize = 3;
 
 /// The widest the label column gets; a longer label is cut with `…`. Command and skill names are
 /// short — 30 is generous.
@@ -167,9 +167,9 @@ pub(crate) fn label_column(ms: &[&Suggestion], width: usize) -> usize {
 pub(crate) fn item_rows(s: &Suggestion, selected: bool, col: usize, width: usize) -> Vec<String> {
     let label = truncate_ansi(suggest_label(s), col, "…");
     let head = if selected {
-        format!("  {CYAN}› {label}{RESET}")
+        format!(" {CYAN}› {label}{RESET}")
     } else {
-        format!("    {FAINT}{label}{RESET}")
+        format!("   {FAINT}{label}{RESET}")
     };
     // A description is prose: its own breaks and runs of spaces are not layout.
     let desc = s.desc.split_whitespace().collect::<Vec<_>>().join(" ");

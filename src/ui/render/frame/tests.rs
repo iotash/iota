@@ -225,13 +225,14 @@ fn frame_order_with_empty_composer_and_slot_swap() {
         "composer cursor must hide while a surface is open"
     );
 
-    // The completion list hangs under the lower separator, above the status row, which keeps
-    // its own content (no description borrows it any more); the map says where the list is.
+    // The completion list sits directly above the upper separator — above the composer, which
+    // is above the status row; the map says where the list is, and the composer's cursor row
+    // counts the list's rows above it.
     let case = Case {
         surface: None,
         list: vec![
-            format!("  {CYAN}› model{RESET}"),
-            format!("      {FAINT}Pick a model{RESET}"),
+            format!(" {CYAN}› model{RESET}"),
+            format!("         {FAINT}Pick a model{RESET}"),
         ],
         ..case
     };
@@ -241,17 +242,29 @@ fn frame_order_with_empty_composer_and_slot_swap() {
     assert_eq!(seps.len(), 2);
     let item = find(&rows, |r| r.contains("› model")).expect("list row");
     let desc = find(&rows, |r| r.contains("Pick a model")).expect("desc row");
+    let composer = find(&rows, |r| r.contains('❯')).expect("composer row");
     let status = find(&rows, |r| r.contains("gpt-4o · ")).expect("status row");
     assert!(
-        seps[1] < item && item + 1 == desc && desc < status,
-        "the list must sit between the lower separator and the status row (sep={seps:?} item={item} desc={desc} status={status}):\n{rows:#?}"
+        item + 1 == desc
+            && desc + 1 == seps[0]
+            && seps[0] < composer
+            && composer < seps[1]
+            && seps[1] < status,
+        "list, upper separator, composer, lower separator, status — in that order (sep={seps:?} item={item} desc={desc} composer={composer} status={status}):\n{rows:#?}"
+    );
+    assert!(
+        rows[item - 1].contains("queued"),
+        "the queue stays above the list:\n{rows:#?}"
     );
     assert_eq!(status, rows.len() - 1, "status stays the frame's last row");
+    assert_eq!(v.map.composer, composer);
+    assert_eq!(v.cursor.map(|(_, y)| usize::from(y)), Some(composer));
     assert_eq!((v.map.list, v.map.list_rows), (Some(item), 2));
 }
 
 /// One CONSTANT blank row separates the content side from everything input-side —
-/// directly above the queue when one shows, directly above the top separator otherwise.
+/// directly above the queue when one shows, else above the completion list when one shows,
+/// directly above the top separator otherwise.
 #[test]
 fn spacer_above_input_zone() {
     let v = view(&Case::default());

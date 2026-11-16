@@ -481,7 +481,7 @@ mod tests {
             "status not restored after the surface closed"
         );
 
-        // The completion list hangs under the lower separator, one row per item with its
+        // The completion list sits above the upper separator, one row per item with its
         // description beside it, and the status row keeps its slot throughout.
         m.apply(UiMsg::Commands(vec![Suggestion {
             value: "/model".to_owned(),
@@ -491,18 +491,22 @@ mod tests {
         type_text(&mut m, "/m");
         let rows = plain(&mut m);
         let seps = separator_indices(&rows);
-        let item = find(&rows, |r| r == "    model  Pick a model").expect("list item row");
+        let item = find(&rows, |r| r == "   model  Pick a model").expect("list item row");
+        let composer_row = find(&rows, |r| r.contains('❯')).expect("composer row");
         let status = find(&rows, |r| r.contains("gpt-4o · ")).expect("status row");
         assert!(
-            seps.len() == 2 && seps[1] < item && item + 1 == status,
-            "the list must sit between the lower separator and the status row (item={item} sep={seps:?} status={status}):\n{rows:#?}"
+            seps.len() == 2
+                && item + 1 == seps[0]
+                && seps[0] < composer_row
+                && seps[1] + 1 == status,
+            "the list must sit directly above the upper separator (item={item} sep={seps:?} status={status}):\n{rows:#?}"
         );
 
         // Selecting one highlights it; the status row stays where and what it was.
         m.handle_key(key(KeyCode::Tab));
         let rows = plain(&mut m);
         assert!(
-            rows.iter().any(|r| r == "  › model  Pick a model"),
+            rows.iter().any(|r| r == " › model  Pick a model"),
             "{rows:#?}"
         );
         assert!(

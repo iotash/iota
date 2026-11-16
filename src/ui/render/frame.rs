@@ -2,7 +2,7 @@
 //! (internal/ui/model.go:914-1193).
 //!
 //! Builds the pinned bottom frame as raw ANSI rows in the FIXED stacking order
-//! `[call preview][spacer][queue] ┄sep┄ [composer] ┄sep┄ [completion list]
+//! `[call preview][spacer][queue][completion list] ┄sep┄ [composer] ┄sep┄
 //! [surface | status]`, tracking `rows_above`
 //! for the real-cursor offset. Every appended row is exactly one visual line (the
 //! one-entry-one-row law) or the cursor desyncs. Above the composer the frame only ever
@@ -106,8 +106,7 @@ impl TurnClock {
     }
 }
 
-/// What occupies the bottom-zone slot below the second separator (and the completion list)
-/// (surface > status — model.go:1049-1058).
+/// What occupies the bottom-zone slot below the second separator (surface > status — model.go:1049-1058).
 pub(crate) enum BottomZone<'a> {
     /// The status line (the default resident).
     Status,
@@ -135,8 +134,8 @@ pub(crate) struct FrameInput<'a> {
     /// The composer cursor as (column incl. the 2-col prompt, row within the composer
     /// block); `None` while a surface owns (and hides) the cursor.
     pub(crate) composer_cursor: Option<(u16, u16)>,
-    /// The completion list's rows (pre-rendered by suggest; empty = none), below the lower
-    /// separator and above the bottom zone.
+    /// The completion list's rows (pre-rendered by suggest; empty = none), directly above the
+    /// upper separator: it grows upward, into the conversation's rows.
     pub(crate) list: &'a [String],
     /// The bottom-zone occupant.
     pub(crate) bottom: BottomZone<'a>,
@@ -185,7 +184,8 @@ impl FrameMap {
     /// How many of a `rows`-row frame's top rows a `height`-row screen leaves out: none while it
     /// fits; with a surface open the frame's BOTTOM is kept — the surface (an approval dialog) must
     /// be on the screen, the previews and the composer above it yield; otherwise the rows above the
-    /// composer yield first, so the composer and what sits under it (the completion list) stay on.
+    /// composer yield — the completion list's top among them — so the composer and the status row
+    /// under it stay on.
     pub(crate) fn cut_for(&self, rows: usize, height: usize) -> usize {
         let over = rows.saturating_sub(height);
         if self.surface.is_some() {
@@ -277,16 +277,16 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
         }
     }
 
-    // The composer sits between TWO separators; the completion list hangs under the lower
-    // one, above the bottom zone.
+    // The completion list sits directly above the composer's upper separator, so it grows
+    // upward and the composer never moves; the composer sits between TWO separators.
+    let list_at = rows.len();
+    rows.extend(fi.list.iter().cloned());
     let w = if fi.width < 1 { 80 } else { fi.width as usize };
     let sep = format!("{FAINT}{}{RESET}", SEPARATOR_GLYPH.repeat(w));
     rows.push(sep.clone());
     let rows_above = rows.len(); // frame rows above the composer = the cursor Y offset
     rows.extend(fi.composer_rows.iter().cloned());
     rows.push(sep);
-    let list_at = rows.len();
-    rows.extend(fi.list.iter().cloned());
 
     // The bottom zone holds exactly ONE of surface | status; swapping is a content change,
     // never a composer move (model.go:1049-1058).

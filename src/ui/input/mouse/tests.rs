@@ -293,7 +293,8 @@ fn a_lost_release_is_ended_by_a_key_focus_loss_or_a_resize() {
 }
 
 /// A click anywhere in a completion item's rows — its label row or its second description line — highlights
-/// that item, over items of different heights; the rows below the list stay frame chrome.
+/// that item, over items of different heights; the separator under the list is frame chrome, the
+/// composer under that the composer.
 #[test]
 fn a_click_on_a_completion_item_highlights_it() {
     let mut m = test_model();
@@ -335,6 +336,11 @@ fn a_click_on_a_completion_item_highlights_it() {
     assert_eq!(
         target(top + 4, m.view_h, &m.frame_map, false, false),
         Target::Frame,
-        "the status row under the list"
+        "the composer's upper separator, under the list"
+    );
+    assert_eq!(
+        target(top + 5, m.view_h, &m.frame_map, false, false),
+        Target::Composer(0),
+        "the composer, under the list, is still the composer"
     );
 }
