@@ -149,7 +149,16 @@ pub(crate) struct FrameInput<'a> {
     pub(crate) now: Instant,
     /// A moment's notice in the status row's place (what a selection copied), while it lasts.
     pub(crate) notice: Option<&'a str>,
+    /// How many of the frame's [`SHED_ORDER`] rows a screen too short for the completion list's
+    /// highlighted item leaves out (0 = all drawn).
+    pub(crate) shed: usize,
 }
+
+/// What gives way, in this order, when the screen is too short for the composer and the completion
+/// list's highlighted item: the lower separator, the upper separator, then the status row (or the
+/// notice in its place). The separators are chrome; the status row goes before the highlighted
+/// item loses a row.
+pub(crate) const SHED_ORDER: usize = 3;
 
 /// The built frame: one string per visual row (raw ANSI, no trailing newlines) and the
 /// real-cursor target relative to the frame origin.
@@ -184,8 +193,9 @@ impl FrameMap {
     /// How many of a `rows`-row frame's top rows a `height`-row screen leaves out: none while it
     /// fits; with a surface open the frame's BOTTOM is kept — the surface (an approval dialog) must
     /// be on the screen, the previews and the composer above it yield; otherwise the rows above the
-    /// composer yield — the completion list's top among them — so the composer and the status row
-    /// under it stay on.
+    /// completion list and the composer yield. The list itself is never cut here: the loop sizes
+    /// the frame so it fits, shedding chrome ([`SHED_ORDER`]) and the highlighted item's
+    /// description rows before its label.
     pub(crate) fn cut_for(&self, rows: usize, height: usize) -> usize {
         let over = rows.saturating_sub(height);
         if self.surface.is_some() {
@@ -283,16 +293,21 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
     rows.extend(fi.list.iter().cloned());
     let w = if fi.width < 1 { 80 } else { fi.width as usize };
     let sep = format!("{FAINT}{}{RESET}", SEPARATOR_GLYPH.repeat(w));
-    rows.push(sep.clone());
+    if fi.shed < 2 {
+        rows.push(sep.clone());
+    }
     let rows_above = rows.len(); // frame rows above the composer = the cursor Y offset
     rows.extend(fi.composer_rows.iter().cloned());
-    rows.push(sep);
+    if fi.shed < 1 {
+        rows.push(sep);
+    }
 
     // The bottom zone holds exactly ONE of surface | status; swapping is a content change,
     // never a composer move (model.go:1049-1058).
     let bottom_at = rows.len();
     match fi.bottom {
         BottomZone::Surface(surface_rows) => rows.extend(surface_rows.iter().cloned()),
+        BottomZone::Status if fi.shed >= SHED_ORDER => {}
         BottomZone::Status if fi.notice.is_some() => rows.push(format!(
             "  {GREEN}{FAINT}{}{RESET}",
             truncate_ansi(fi.notice.unwrap_or_default(), budget(fi.width, 2), "…")

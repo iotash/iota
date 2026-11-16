@@ -1668,40 +1668,33 @@ fn the_composer_holds_still_while_the_list_grows() {
     );
 }
 
-/// On a 4-row terminal the composer and the status row stay on the screen: the frame's rows
-/// above the composer yield — the spacer, then the list from its top. The layout still holds the
-/// highlighted item alone; at 4 rows none of it is left on the screen.
+/// On a short terminal the highlighted item beats everything but the composer: the rows above the
+/// list (the spacer) go first, then the lower and the upper separator, then the status row, then
+/// the item's description from the bottom — its label row and the composer stay.
 #[test]
-fn a_four_row_terminal_keeps_the_composer_and_the_status_row() {
+fn a_short_terminal_keeps_the_composer_and_the_highlighted_item() {
     let mut m = skills_model("/skills ");
     for _ in 0..4 {
         crate::ui::input::suggest::tab_complete(&mut m.composer, &m.commands);
     }
-    let rows = shown(&mut m, 80, 4);
-    println!("--- 80x4 ---\n{}", rows.join("\n"));
-    assert_eq!(
-        rows,
-        vec![
-            "┄".repeat(80),
-            "❯ /skills investigate".to_owned(),
-            "┄".repeat(80),
-            "  claude-opus-5-5".to_owned(),
-        ]
-    );
-    assert_eq!(m.list_items, vec![3, 3], "the highlighted item alone");
-    // Two rows more and the highlighted item's rows come back, bottom first.
-    let rows = shown(&mut m, 80, 6);
-    println!("--- 80x6 ---\n{}", rows.join("\n"));
-    assert_eq!(
-        rows[..2],
-        [
-            " › investigate  Systematic debugging with root cause investigation: reproduce,"
-                .to_owned(),
-            "                analyze, hypothesize, then fix".to_owned(),
-        ]
-    );
-    assert_eq!(rows[3], "❯ /skills investigate");
-    assert_eq!(rows[5], "  claude-opus-5-5");
+    let label = " › investigate  Systematic debugging with root cause investigation: reproduce,";
+    let desc = "                analyze, hypothesize, then fix";
+    let composer = "❯ /skills investigate";
+    let status = "  claude-opus-5-5";
+    let sep = "┄".repeat(80);
+    let screens: [(u16, Vec<&str>); 5] = [
+        (6, vec![label, desc, &sep, composer, &sep, status]),
+        (5, vec![label, desc, &sep, composer, status]),
+        (4, vec![label, desc, composer, status]),
+        (3, vec![label, desc, composer]),
+        (2, vec![label, composer]),
+    ];
+    for (lines, want) in screens {
+        let rows = shown(&mut m, 80, lines);
+        println!("--- 80x{lines} ---\n{}", rows.join("\n"));
+        assert_eq!(rows, want, "80x{lines}");
+        assert_eq!(m.list_items.first(), Some(&3), "the highlighted item alone");
+    }
 }
 
 // --- the interaction cap: half the screen or 15 rows ---------------------------

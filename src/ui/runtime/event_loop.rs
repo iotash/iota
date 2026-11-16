@@ -44,7 +44,7 @@ use crate::ui::input::mouse::{self, MouseState};
 use crate::ui::input::paste;
 use crate::ui::input::suggest::{self, ListView};
 use crate::ui::render::frame::{
-    BottomZone, BusyView, FrameInput, FrameMap, FrameView, TurnClock, build_frame,
+    BottomZone, BusyView, FrameInput, FrameMap, FrameView, SHED_ORDER, TurnClock, build_frame,
 };
 use crate::ui::render::region::RegionSnapshot;
 use crate::ui::surface::tabbed::SURFACE_MIN_ROWS;
@@ -974,6 +974,7 @@ impl Model {
         } else {
             0
         };
+        let mut shed = 0;
         let list = if self.surface.is_none()
             && !suggest::matches_for(&self.composer, &self.commands).is_empty()
         {
@@ -984,7 +985,19 @@ impl Model {
             let room = screen
                 .saturating_sub(others)
                 .min(crate::ui::interaction_rows(screen));
-            suggest::frame_list(&mut self.composer, &self.commands, fw, room)
+            let mut list = suggest::frame_list(&mut self.composer, &self.commands, fw, room);
+            // A screen too short for the highlighted item alone: the rows above the list go first
+            // (the screen cuts them off the top), then the chrome (`SHED_ORDER`), then the item's
+            // description rows from the bottom — never its label, never the composer.
+            let above = others - composer_rows.len() - SHED_ORDER;
+            let over = (others + list.rows.len())
+                .saturating_sub(screen)
+                .saturating_sub(above);
+            shed = over.min(SHED_ORDER);
+            let keep = list.rows.len().saturating_sub(over - shed).max(1);
+            list.rows.truncate(keep);
+            list.items.truncate(keep);
+            list
         } else {
             ListView::default()
         };
@@ -1030,6 +1043,7 @@ impl Model {
             jobs: &self.running_jobs,
             now,
             notice,
+            shed,
         });
         self.frame_map = view.map;
         self.list_items = list.items;
@@ -1061,6 +1075,7 @@ impl Model {
             jobs: &self.running_jobs,
             now,
             notice: None,
+            shed: 0,
         })
         .rows
         .len()

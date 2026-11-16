@@ -88,6 +88,7 @@ fn view(c: &Case) -> FrameView {
         jobs: &c.jobs,
         now: c.now,
         notice: None,
+        shed: 0,
     })
 }
 
