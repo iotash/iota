@@ -220,14 +220,26 @@ async fn walks_under_an_extra_root_are_anchored_on_it() {
         .map(|t| (t.def().name, t))
         .collect();
     let ext_s = ext.to_str().expect("utf-8");
-    let abs = |rel: &str| ext.join(rel).display().to_string();
+    // The walk names a hit by joining each component onto the root, so on Windows every separator
+    // is `\` — `ext.join("src/a.rs")` would keep the `/` and spell it differently.
+    let abs = |rel: &str| {
+        rel.split('/')
+            .fold(ext.clone(), |p, c| p.join(c))
+            .display()
+            .to_string()
+    };
 
     let out = call(&tools, "grep", json!({"pattern": "needle", "path": ext_s})).await;
     assert!(!out.is_error, "{}", out.text);
     let files: Vec<&str> = out
         .text
         .lines()
-        .map(|l| l.split_once(':').map_or(l, |(f, _)| f))
+        // `<path>:<line>: <text>` taken apart from the right: a Windows path has a colon of its own.
+        .map(|l| {
+            l.rsplit_once(": ")
+                .and_then(|(head, _)| head.rsplit_once(':'))
+                .map_or(l, |(f, _)| f)
+        })
         .collect();
     assert_eq!(files, [abs("b.log"), abs("src/a.rs")], "{}", out.text);
 
