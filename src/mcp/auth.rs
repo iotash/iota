@@ -547,9 +547,16 @@ pub enum LoginError {
     /// The loopback listener could not be bound or read.
     #[error("loopback listener: {0}")]
     Listener(#[from] std::io::Error),
-    /// rmcp's own failure text (discovery, registration, the exchange).
+    /// rmcp's own failure text (discovery, registration, the exchange). Boxed: rmcp's `AuthError` carries
+    /// URLs in some variants, and unboxed it would make every `Result` up to `CliError` large.
     #[error("{0}")]
-    Auth(#[from] AuthError),
+    Auth(#[source] Box<AuthError>),
+}
+
+impl From<AuthError> for LoginError {
+    fn from(e: AuthError) -> Self {
+        Self::Auth(Box::new(e))
+    }
 }
 
 /// The whole flow (module doc). The store is written by the exchange; the outcome reads it back.
