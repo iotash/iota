@@ -588,6 +588,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 |n| d.presentation(n) == crate::tool::Presentation::Surface,
                 usize::from(ui.width()),
                 img_dir.as_deref(),
+                dark,
             );
             ui.print(blocks);
         }

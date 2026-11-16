@@ -193,6 +193,7 @@ pub(crate) fn echo_rounds(
     interactive: impl Fn(&str) -> bool,
     width: usize,
     img_dir: Option<&Path>,
+    dark: bool,
 ) -> Vec<Block> {
     let mut w = Echo::default();
     // Assistant attachment names in this window: a user attachment with the same name is
@@ -221,7 +222,7 @@ pub(crate) fn echo_rounds(
                 flush_tools(&mut w, &mut tool_results);
                 w.extend([Block::laid(UserBlock {
                     text: msg.content.clone(),
-                    reverse: crate::app::color::enabled(),
+                    dark,
                 })]);
                 // Named per-file lines instead of a bare count; canvas copies are
                 // suppressed (see `rendered`).
@@ -412,7 +413,7 @@ mod tests {
         use crate::ui::facade::Layout as _;
         crate::ui::facade::UserBlock {
             text: display.to_owned(),
-            reverse: crate::app::color::enabled(),
+            dark: true,
         }
         .lines(width)
     }
@@ -550,7 +551,7 @@ mod tests {
             user("second question"),
             assistant("partial reply").with_interrupted(true),
         ];
-        let out = plain(&echo_rounds(&msgs, no_ask, 80, None));
+        let out = plain(&echo_rounds(&msgs, no_ask, 80, None, true));
 
         for want in [
             "first question",
@@ -578,7 +579,7 @@ mod tests {
     #[test]
     fn test_echo_rounds_trailing_tool_results() {
         let msgs = vec![user("do the thing"), calls("f"), tool("f", "out")];
-        let out = plain(&echo_rounds(&msgs, no_ask, 80, None));
+        let out = plain(&echo_rounds(&msgs, no_ask, 80, None, true));
         assert!(out.contains("◇ ran 1 tool"), "{out}");
     }
 
@@ -593,7 +594,7 @@ mod tests {
             tool("shell", "out"),
             assistant("done"),
         ];
-        let out = plain(&echo_rounds(&msgs, |n| n == "choose", 80, None));
+        let out = plain(&echo_rounds(&msgs, |n| n == "choose", 80, None, true));
         for want in ["? Auth: JWT", "  Lib: chi", "◇ ran 1 tool"] {
             assert!(out.contains(want), "missing {want:?} in:\n{out}");
         }
@@ -614,7 +615,7 @@ mod tests {
             tool("choose", "boom").with_error(true),
             tool("confirm", "  \n"),
         ];
-        let blocks = echo_rounds(&msgs, |_| true, 80, None);
+        let blocks = echo_rounds(&msgs, |_| true, 80, None, true);
         let lines = rendered(&blocks);
         let styled_first = crate::repl::render::group::ask_record_lines("boom", true)
             .first()
@@ -632,7 +633,7 @@ mod tests {
 
     // Go: chat/replay_test.go:224 TestPrintUserBlockMultiline — one row per embedded line, the
     // "▌ " gutter on row 0 and a two-space indent after, every row padded to the SAME display
-    // width (that is what makes the reversed background a block).
+    // width (that is what makes the bubble a block).
     #[test]
     fn test_print_user_block_multiline() {
         let rows = print_user_block("first line\nsecond line\nthird", 40);
@@ -699,7 +700,7 @@ mod tests {
                 }
             },
         ];
-        let out = plain(&echo_rounds(&msgs, no_ask, 100, None));
+        let out = plain(&echo_rounds(&msgs, no_ask, 100, None, true));
         assert!(out.contains('▀'), "no half-block rows in echo:\n{out}");
         assert!(out.contains("🖼 image-1.png"), "caption missing:\n{out}");
 
@@ -716,7 +717,7 @@ mod tests {
                 ..Message::default()
             }
         }];
-        let out = plain(&echo_rounds(&broken, no_ask, 100, None));
+        let out = plain(&echo_rounds(&broken, no_ask, 100, None, true));
         assert!(
             !out.contains('▀') && out.contains("🖼 broken.png"),
             "a broken image must fall back to the caption line:\n{out}"
@@ -796,7 +797,7 @@ mod tests {
             }, // the /edit turn
             assistant_with(&gen2),
         ];
-        let out = plain(&echo_rounds(&msgs, no_ask, 100, None));
+        let out = plain(&echo_rounds(&msgs, no_ask, 100, None, true));
         assert!(
             !out.contains('📎'),
             "the canvas copy must be suppressed:\n{out}"
@@ -810,7 +811,7 @@ mod tests {
             },
             assistant_with(&gen2),
         ];
-        let out = plain(&echo_rounds(&msgs, no_ask, 100, None));
+        let out = plain(&echo_rounds(&msgs, no_ask, 100, None, true));
         assert!(
             out.contains("📎 gen-1.png"),
             "a cut-off canvas must keep its marker:\n{out}"
@@ -848,6 +849,22 @@ mod tests {
         std::fs::write(&f, b"1").expect("write");
         assert!(super::file_exists(&f));
         assert!(!super::file_exists(Path::new("/definitely/not/here")));
+    }
+
+    /// The echo lays a user message out as the very bubble the live block draws, in the tone it
+    /// is handed (light here: the 254 gray), whatever the chat side's colour decision — the
+    /// frame's one gate is what drops the colours under `NO_COLOR`.
+    #[test]
+    fn the_echo_draws_the_live_bubble_in_the_given_tone() {
+        use crate::ui::facade::Layout as _;
+        let blocks = echo_rounds(&[user("q")], no_ask, 80, None, false);
+        let live = crate::ui::facade::UserBlock {
+            text: "q".to_owned(),
+            dark: false,
+        }
+        .lines(80);
+        assert_eq!(rendered(&blocks)[..1], live[..]);
+        assert!(live[0].contains("\x1b[48;5;254m"), "{live:?}");
     }
 
     /// New (no Go equivalent — Go measured the terminal inside the function): the block wraps

@@ -48,6 +48,11 @@ pub(crate) const SEARCH_HIT: &str = "\x1b[7m";
 /// Current search hit: reverse + yellow (`TUI_CONTRACTS` §9).
 pub(crate) const SEARCH_CUR: &str = "\x1b[7;33m";
 
+/// The user block's `▌` bar: a mid gray one step further from the terminal background than the
+/// bubble ([`input_bg`]) on both tones — #8a8a8a reads brighter than 236 on a dark terminal and
+/// darker than 254 on a light one, so one constant serves both.
+pub(crate) const USER_BAR: &str = "\x1b[38;5;245m";
+
 /// The input field's background for a dark or light terminal: one gray step off the
 /// terminal background — distinguishable, not loud. Text renders in the default foreground
 /// on top of it; the placeholder adds faint (theme.go:47-52).

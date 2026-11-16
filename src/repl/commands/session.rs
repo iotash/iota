@@ -290,6 +290,7 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
             |n| dispatch.presentation(n) == crate::tool::Presentation::Surface,
             usize::from(repl.handles.ui.width()),
             img_dir.as_deref(),
+            repl.handles.dark,
         );
         repl.handles.tr.echo(&lines);
     }
