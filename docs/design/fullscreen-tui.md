@@ -8,7 +8,7 @@ Status: **已实现，唯一的终端（S1–S7；S5 删除了 inline 终端，S
 
 **布局**：自上而下 `[对话视口][帧]`。帧是 `FrameView` 的行（预览、分隔线、composer、状态行、补全列表、surface；`render/frame.rs` 沿用 inline 时代的帧，只加了补全列表的槽位、矮终端的让行 `shed` 和命中测试用的 `FrameMap`），固定在屏幕底部；视口占其余全部，对话贴着帧（内容少时空行在顶部）。
 
-**composer 和用户块**（owner 2026-11-16）：composer 没有提示符——输入的文字从第 0 列开始，续行也从第 0 列开始，真实光标（IME 锚点）就在文字所在的列，折行宽度是整个终端宽度（`input/composer.rs`）；上下两条分隔线已经把它和对话分开。提交后的用户块：首行以 `▌ ` 开头，折出来的行以两个空格开头，文字对齐在第 2 列；这两列在反显区**之外**，用终端自己的前景/背景色（`▌` 若在反显区内会变成背景色，看起来是亮条上的一个暗缺口，而不是一条竖线），反显从第 2 列开始、文字补空格到 width − 2，所以整块仍是满宽（`block.rs` `UserBlock`；owner 2026-11-16 第二次）。状态行也从第 0 列开始——原来的两格缩进是为了对齐旧的 `❯ ` 提示符。`❯` 只剩 `/model` 组合框输入框自己的边（`surface/panels.rs`），与 composer 无关。
+**composer 和用户块**（owner 2026-11-16）：composer 没有提示符——输入的文字从第 0 列开始，续行也从第 0 列开始，真实光标（IME 锚点）就在文字所在的列，折行宽度是整个终端宽度（`input/composer.rs`）；上下两条分隔线已经把它和对话分开。提交后的用户块：首行以 `▌ ` 开头，折出来的行以两个空格开头，文字对齐在第 2 列；用户块是一个**气泡**，不是反显（owner 2026-11-16 第三次）：这两列是 bar，前景 `38;5;245`（中灰，深浅两种终端上都比气泡离背景更远一档：深色上比 236 亮，浅色上比 254 暗），无背景；从第 2 列起是气泡——背景就是输入框的 `input_bg(dark)`（深 `48;5;236` / 浅 `48;5;254`），文字不设前景、用终端默认色，补空格到 width − 2，所以整块仍是满宽（`block.rs` `UserBlock { text, dark }`）。live 块从 handle 记下的 tone 取 `dark`（`set_dark_background` 同时更新它和事件循环），resume 回放从 `run.rs` 的 `dark`（`/resume` 用 `repl.handles.dark`）取——两者是同一个气泡。`NO_COLOR` 下用户块不写任何转义：它的行是会话文本，退出时 `write_out` 原样写到主屏、不经过 spans 的颜色闸门，所以只剩 `▌ ` + 文字 + 补白，由 `▌` 这个字符标出块。状态行也从第 0 列开始——原来的两格缩进是为了对齐旧的 `❯ ` 提示符。`❯` 只剩 `/model` 组合框输入框自己的边（`surface/panels.rs`），与 composer 无关。
 
 **每帧路径**：一次循环迭代 = 布局 → `Buffer::diff` → 一次写。X-55 的规则不变，只是从 `InlineTerminal::commit` 移到了 backend 之下的 `SyncOut::commit`：一次写超过 `SYNC_MIN`（1024 B）就包成一个 DEC 2026 同步块，小的裸发。循环外的一次绘制（会话选择器）也是一次写。
 
@@ -29,7 +29,7 @@ Status: **已实现，唯一的终端（S1–S7；S5 删除了 inline 终端，S
 宽度变化时，对话从**源**重新布局，不再把别的宽度的行盲折。owner 的原话："拖放窗口时，输出区域元素的重绘：启动的 banner、表格、列表的左部换行对齐缩进、代码块、引用块"。
 
 - **三种块**。`Block::Row(String)`：一条逻辑行，原样提交——段落行、标题、通知、活动行、分隔空行。它不依赖宽度：比视口宽就由屏幕折行（`wrap_ansi`），不宽就整行显示，所以变宽时段落会重新展开。`Block::Laid(Arc<dyn Layout>)`：带着源，`Layout::lines(width)` 在画的宽度下布局。`Block::Live`（S7b）：一个还在写的布局块，带一个 `LiveId`，见下节"实时块"。
-- **块的种类就是源的类型**（`Layout` 的实现），下游没有任何代码按种类分支，所以不另带标签：助手 markdown 的五种缓冲块是 `markdown::Fragment`（代码、表格、列表、引用、行间公式）；用户块（`runtime/handle.rs` 的 `UserBlock`、回放的 `EchoUser`）；banner（`repl/render/banner.rs` 的 `Banner`）；文件改动的 diff 列表（`repl/render/group.rs` 的 `DiffListing`）；结构化错误（`transcript.rs` 的 `ErrorRows`）。图片仍是行：半块像素画按提交时的宽度缩放，不重排。
+- **块的种类就是源的类型**（`Layout` 的实现），下游没有任何代码按种类分支，所以不另带标签：助手 markdown 的五种缓冲块是 `markdown::Fragment`（代码、表格、列表、引用、行间公式）；用户块（`block.rs` 的 `UserBlock`，live 块和回放共用）；banner（`repl/render/banner.rs` 的 `Banner`）；文件改动的 diff 列表（`repl/render/group.rs` 的 `DiffListing`）；结构化错误（`transcript.rs` 的 `ErrorRows`）。图片仍是行：半块像素画按提交时的宽度缩放，不重排。
 - **提交接口**：`Ui::print(Vec<Block>)`（原 `print_lines(Vec<String>)`）。markdown 的 `Writer` 自己不再按宽度布局任何东西：缓冲块关闭时以 `Fragment` 交给 sink（`Sink::write_block`）；文本 sink 按自己的宽度渲染写出。生产环境里唯一的文本 sink 是引用块的子文档（`blocks/quote.rs` 的 `BufSink`），另外就是测试用的 `new_writer_to`。终端的 sink（`repl/render/uisink.rs`）和回放的 sink（`replay.rs`）保留源。
 - **缓存与惰性**：缓冲在第一次需要某个宽度时调用 `Layout`，结果连同宽度缓存在块上；宽度一变，下一次画只重新布局它碰到的块（视口里的、滚动经过的），其余的等视图到达它们时再说。一次提交一大批块时（几万个），第一次画也只布局视口里那几块：`take_fresh` 从尾部数新行，数到视口高度就停。从来没被画到的块，由第一次需要它的搜索布局一次，之后就有了搜索文本。
 - **搜索**：命中记为（块号, 块内第 k 次出现）。搜的文本与宽度无关：行块用它的原文（折行不会切断匹配）；布局块用它**第一次**布局时、在那个宽度下的纯文本行，以 `\n` 连起来，存下后不再变。所以 resize 既不重扫，也不为搜索布局任何块。跳转只布局落点那一块和它周围一屏，在新宽度下数出第 k 次出现在哪一行。搜索开着时 resize，视图会回到当前命中。代价有两个：布局块多存一份纯文本；表格在新宽度下如果把一个词折断，第 k 次出现可能数不到，这时跳到块的第一行。

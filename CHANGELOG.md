@@ -38,6 +38,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **Your messages sit in a gray bubble.** A message you send is no longer a
+  reverse-video bar: its text keeps the terminal's own colour on a soft gray
+  (the input field's), behind a `▌` a shade brighter, and a resumed
+  session's messages look exactly the same. With `NO_COLOR` the gray goes and
+  the `▌` alone marks your message.
 - **The two rules around the composer are solid again.** The faint dashed
   line (`┄`) is a faint solid one (`─`). Same hue, same width, same place.
 - **Code blocks, tables, lists, quotes and formulas appear line by line.**
