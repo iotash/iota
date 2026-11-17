@@ -1357,3 +1357,83 @@ fn a_selection_over_a_hyperlink_copies_its_text_alone() {
     select(&mut s, SelectOp::Release);
     assert_eq!(s.take_copied().as_deref(), Some("see doc"));
 }
+
+// --- a frame floating over the conversation (the completion list's area) ----------------------
+
+/// [`frame`] with an area of `k` floating rows under its top rule — the completion list's.
+fn floating(w: usize, k: usize) -> FrameView {
+    let mut f = frame(w);
+    for i in 0..k {
+        f.rows.insert(1 + i, format!("  item-{i}"));
+    }
+    f.cursor = Some((0, u16::try_from(1 + k).unwrap()));
+    f.float = k;
+    f
+}
+
+/// The floating rows cover the conversation's last rows and move none of it: the rows above them
+/// are what the screen shows with no area; the scrolled-back view's way back to the tail is on the
+/// last row NOT covered; the conversation's scroll keys still measure its whole rectangle.
+#[test]
+fn a_floating_area_covers_the_last_rows_and_the_way_back_stays_visible() {
+    let (mut s, buf) = screen(40, 12);
+    s.push(rows_of(&rows(40)));
+    s.draw_frame(&frame(40), None).unwrap();
+    let closed = grid(&replay(&buf, 12, 40));
+    s.draw_frame(&floating(40, 3), None).unwrap();
+    let open = grid(&replay(&buf, 12, 40));
+    assert_eq!(&open[..5], &closed[..5], "{open:#?}");
+    assert_eq!(open[5], "─".repeat(40), "the area's top edge: {open:#?}");
+    assert_eq!(open[6], "  item-0");
+    assert_eq!(s.view_height(), 5, "the rows above the frame");
+    s.view(ViewOp::HalfUp).unwrap();
+    s.draw_frame(&floating(40, 3), None).unwrap();
+    let back = grid(&replay(&buf, 12, 40));
+    assert_eq!(back[0], "line-028", "half of the 8-row rectangle: {back:#?}");
+    assert!(back[4].contains("Ctrl+End"), "the way back is visible: {back:#?}");
+    assert_eq!(back[5], "─".repeat(40), "{back:#?}");
+}
+
+/// A selection never reaches the floating rows: a drag down onto them selects to the end of the
+/// last visible line, and nothing on the area is drawn reversed.
+#[test]
+fn a_selection_is_never_drawn_on_the_floating_rows() {
+    let (mut s, buf) = mouse_screen(40, 12);
+    s.push(rows_of(&rows(8)));
+    s.draw_frame(&floating(40, 3), None).unwrap();
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 0,
+            row: 2,
+            clicks: 1,
+        },
+    );
+    select(&mut s, SelectOp::Drag { col: 3, row: 6 });
+    s.draw_frame(&floating(40, 3), None).unwrap();
+    let p = replay(&buf, 12, 40);
+    let inv = |row, col| p.screen().cell(row, col).is_some_and(vt100::Cell::inverse);
+    assert!(inv(2, 0) && inv(4, 7), "drawn reversed above the area");
+    assert!((5..12).all(|r| (0..40).all(|c| !inv(r, c))), "on the frame");
+    select(&mut s, SelectOp::Release);
+    let copied = s.take_copied().unwrap();
+    assert_eq!(copied, "line-002\nline-003\nline-004", "to the last visible line");
+}
+
+/// Streaming under a floating area scrolls only the rows above it: the region ends at the last
+/// visible row, and the area is not rewritten.
+#[test]
+fn following_output_under_a_floating_area_scrolls_the_visible_rows_only() {
+    let (mut s, buf) = screen(40, 12);
+    s.push(rows_of(&rows(30)));
+    s.draw_frame(&floating(40, 3), None).unwrap();
+    let mark = buf.bytes().len();
+    s.push(rows_of(&rows(1)));
+    s.draw_frame(&floating(40, 3), None).unwrap();
+    let out = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
+    assert!(out.contains("\u{1b}[1;5r\u{1b}[1S"), "{out:?}");
+    assert!(!out.contains("item-"), "the area was rewritten: {out:?}");
+    let g = grid(&replay(&buf, 12, 40));
+    assert_eq!(g[4], "line-027", "the covered rows came up: {g:#?}");
+    assert_eq!(g[6], "  item-0", "{g:#?}");
+}

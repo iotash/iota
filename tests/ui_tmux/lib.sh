@@ -402,13 +402,29 @@ _snap() { if [ "$#" -gt 0 ]; then printf '%s\n' "$1"; else cap; fi; }
 frame_top() { _snap "$@" | grep -n '^───' | tail -2 | head -1 | cut -d: -f1; }
 frame_bot() { _snap "$@" | grep -n '^───' | tail -1 | cut -d: -f1; }
 
-# Everything between the separators: the composer rows.
+# _composer_at <capture> <top> <bot> — the 1-based pane row of the composer's first row. Between
+# the separators an open completion list comes first (its area's blank rows, then its `▸ ` / `  `
+# rows), the composer under it; the list is open only on a line that starts with `/`, and no list
+# row does, so the composer starts at the first `/` row when every row above it is the list's.
+_composer_at() {
+    printf '%s\n' "$1" | awk -v t="$2" -v b="$3" '
+        NR <= t || NR >= b { next }
+        /^\// { print NR; exit }
+        /^[[:space:]]*$/ || /^▸ / || /^  / { next }
+        { print t + 1; exit }
+        END { }' | head -1 | grep . || echo $(($2 + 1))
+}
+
+# Everything between the separators under the completion list: the composer rows.
 composer_block() {
-    local s t b
+    local s t b c
     s="$(_snap "$@")"
     t="$(frame_top "$s")"
     b="$(frame_bot "$s")"
-    if [ -n "$t" ] && [ -n "$b" ] && [ "$b" -gt "$t" ]; then printf '%s\n' "$s" | sed -n "$((t + 1)),$((b - 1))p"; fi
+    if [ -n "$t" ] && [ -n "$b" ] && [ "$b" -gt "$t" ]; then
+        c="$(_composer_at "$s" "$t" "$b")"
+        printf '%s\n' "$s" | sed -n "${c},$((b - 1))p"
+    fi
 }
 
 # Whether the frame is up: a separator pair with the composer between it.
@@ -428,7 +444,7 @@ composer_row() {
     s="$(cap)"
     t="$(frame_top "$s")"
     b="$(frame_bot "$s")"
-    if [ -n "$t" ] && [ -n "$b" ] && [ "$b" -gt $((t + 1)) ]; then echo $((t + 1)); fi
+    if [ -n "$t" ] && [ -n "$b" ] && [ "$b" -gt $((t + 1)) ]; then _composer_at "$s" "$t" "$b"; fi
 }
 
 # composer_line <n> [capture] — the composer's <n>th row, trailing blanks dropped.
@@ -480,15 +496,16 @@ bottom_zone() {
     [ -n "$bot" ] && printf '%s\n' "$s" | sed -n "$((bot + 1))p"
 }
 
-# The completion list: the rows directly above the UPPER separator, up to the frame's blank
-# spacer row (the queue's `» ` rows, between the two, are left out).
+# The completion list: the rows under the UPPER separator (the list area's top edge) and above the
+# composer, the area's blank rows left out.
 list_block() {
-    local s top
+    local s t b c
     s="$(_snap "$@")"
-    top="$(frame_top "$s")"
-    [ -n "$top" ] && [ "$top" -gt 1 ] && printf '%s\n' "$s" | sed -n "1,$((top - 1))p" |
-        awk '/^[[:space:]]*$/ { n = 0; next } { r[++n] = $0 } END { for (i = 1; i <= n; i++) print r[i] }' |
-        grep -v '^» '
+    t="$(frame_top "$s")"
+    b="$(frame_bot "$s")"
+    [ -n "$t" ] && [ -n "$b" ] && [ "$b" -gt "$t" ] || return 0
+    c="$(_composer_at "$s" "$t" "$b")"
+    [ "$c" -gt $((t + 1)) ] && printf '%s\n' "$s" | sed -n "$((t + 1)),$((c - 1))p" | grep -v '^[[:space:]]*$'
 }
 
 # count_list <item label> [capture] — the list's items with that label (highlighted or not), the
