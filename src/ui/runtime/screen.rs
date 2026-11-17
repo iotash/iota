@@ -278,7 +278,9 @@ impl<W: Write> Screen<W> {
     pub(crate) fn view(&mut self, op: ViewOp) -> io::Result<()> {
         let width = usize::from(self.size().width.max(1));
         let h = usize::from(self.view_h);
-        let half = (h / 2).max(1);
+        // Half of what is SEEN: under the list's area the rectangle is taller than the screen
+        // shows, and half of it would page past a line never shown.
+        let half = usize::from(self.vis_h / 2).max(1);
         match op {
             ViewOp::HalfUp => self.conv.scroll_up(half, width, h),
             ViewOp::HalfDown => self.conv.scroll_down(half, width, h),

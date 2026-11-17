@@ -1759,9 +1759,15 @@ impl Floated {
         }
     }
 
+    /// One loop iteration's draw: the view keys first, then the frame with the search line.
     fn draw(&mut self, m: &mut Model) -> (Vec<Vec<u8>>, Vec<String>) {
+        for op in std::mem::take(&mut m.view_ops) {
+            self.term.view(op).unwrap();
+        }
         let view = m.frame_view();
-        self.term.draw_frame(&view, None).unwrap();
+        let prompt = m.search_prompt();
+        self.term.draw_frame(&view, prompt.as_ref()).unwrap();
+        m.vis_h = self.term.view_height();
         let (cols, lines) = self.size;
         let parser = parse_sized(&self.buf, cols, lines);
         let screen = parser.screen();
@@ -1817,15 +1823,21 @@ fn a_narrowing_match_moves_nothing_above_the_list() {
         "the area keeps the narrowed rows blank:\n{narrow_txt:#?}"
     );
     // Closing gives the covered rows back: the screen reads as it did before the list opened (the
-    // rewritten rows' blank cells are written spaces now, so the text is compared, not the bytes).
+    // rewritten rows' blank cells are written spaces now, so the text is compared, not the bytes),
+    // and the rows the area never covered are byte for byte what they were.
     m.composer.set_value("");
-    let (_, shut) = t.draw(&mut m);
+    let (shut_b, shut) = t.draw(&mut m);
     assert_eq!(shut, closed_txt, "closing the list restores the screen");
+    assert_eq!(
+        shut_b[..o.sep - 1],
+        closed[..o.sep - 1],
+        "the rows never covered changed bytes"
+    );
 }
 
 /// A conversation shorter than the screen: the blank rows above it take the list's area, so
-/// nothing is covered. The text moves once, when the list opens — not when the matches narrow —
-/// and goes back when it closes.
+/// nothing is covered. The text moves when the list opens and when its area grows (fewer rows are
+/// left above it), never while the matches narrow, and goes back when the list closes.
 #[test]
 fn a_short_conversation_gives_its_blank_rows_to_the_list() {
     let mut m = skills_model("");
@@ -1856,6 +1868,40 @@ fn a_short_conversation_gives_its_blank_rows_to_the_list() {
         assert_eq!(narrow[y], open[y], "row {y} moved when the matches narrowed");
     }
     assert_eq!(at(&shut), at(&closed), "closing puts the text back");
+}
+
+/// A search over an open list: the list is not drawn while the search is on (as under a surface),
+/// so the hit lands on a row the screen shows — the area would have covered the half-height row
+/// the search puts it on — and the search line is on the last visible row.
+#[test]
+fn a_search_over_an_open_list_shows_its_hit() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut m = skills_model("");
+    let conv = Block::rows((0..60).map(|i| format!("conv-{i:02}")));
+    // 80×16: the 6-row list leaves 5 visible rows of an 11-row rectangle; the search puts its hit
+    // half-way down the rectangle, row 5 — under the area, were it drawn.
+    let mut t = Floated::new(&mut m, conv, 80, 16);
+    t.draw(&mut m);
+    crate::ui::testutil::type_text(&mut m, "/skills ");
+    let (_, open) = t.draw(&mut m);
+    assert_eq!(order(&open).list.clone().count(), 6, "{open:#?}");
+    m.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    t.draw(&mut m);
+    crate::ui::testutil::type_text(&mut m, "conv-10");
+    let (_, rows) = t.draw(&mut m);
+    println!("--- Ctrl+R conv-10 over /skills␠ ---\n{}", rows.join("\n"));
+    let edge = rows
+        .iter()
+        .position(|r| r.starts_with('─'))
+        .expect("separator");
+    let hit = rows.iter().position(|r| r == "conv-10").expect("the hit is on screen");
+    // The last visible row (over the frame's spacer) is the search line; the hit is above it.
+    assert!(hit < edge - 2, "the hit is above the search line: {rows:#?}");
+    assert!(rows[edge - 2].starts_with("/conv-10"), "the search line: {rows:#?}");
+    assert!(
+        !rows.iter().any(|r| r.starts_with("  brain-page")),
+        "no list during the search: {rows:#?}"
+    );    assert_eq!(m.list_mark, 0, "the list's area is closed during a search");
 }
 
 // --- the interaction cap: half the screen or 15 rows ---------------------------

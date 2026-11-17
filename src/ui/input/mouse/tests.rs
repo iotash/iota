@@ -99,7 +99,7 @@ fn ev(kind: MouseEventKind, col: u16, row: u16) -> Event {
 /// The model after a frame, as the loop leaves it: the frame laid out, the viewport above it.
 fn laid_out(m: &mut Model) {
     let view = m.frame_view();
-    m.view_h = 24 - u16::try_from(view.rows.len()).unwrap();
+    m.vis_h = 24 - u16::try_from(view.rows.len()).unwrap();
 }
 
 /// A click on the composer puts the cursor under the pointer — the text starts at column 0, no
@@ -109,7 +109,7 @@ fn a_click_on_the_composer_places_its_cursor() {
     let mut m = test_model();
     type_text(&mut m, "hello 中文 world");
     laid_out(&mut m);
-    let row = m.view_h + u16::try_from(m.frame_map.composer).unwrap();
+    let row = m.vis_h + u16::try_from(m.frame_map.composer).unwrap();
     m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 0, row));
     assert_eq!(
         m.composer.cursor_pos(80),
@@ -146,7 +146,7 @@ fn a_surface_row_takes_the_cursor_then_a_second_click_chooses_it() {
         reply: tx,
     });
     laid_out(&mut m);
-    let top = m.view_h + u16::try_from(m.frame_map.surface.unwrap()).unwrap();
+    let top = m.vis_h + u16::try_from(m.frame_map.surface.unwrap()).unwrap();
     // Row 0 is the title chip; the items follow.
     let gamma = top + 3;
     m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 4, gamma));
@@ -172,7 +172,7 @@ fn a_surface_row_takes_the_cursor_then_a_second_click_chooses_it() {
 fn the_conversation_takes_the_wheel_and_the_selection() {
     let mut m = test_model();
     laid_out(&mut m);
-    let composer = m.view_h + u16::try_from(m.frame_map.composer).unwrap();
+    let composer = m.vis_h + u16::try_from(m.frame_map.composer).unwrap();
     m.handle_event(ev(MouseEventKind::ScrollUp, 0, 3));
     m.handle_event(ev(MouseEventKind::ScrollDown, 0, composer));
     assert_eq!(
@@ -235,7 +235,7 @@ fn the_search_line_and_the_way_back_row_answer_a_click() {
     type_text(&mut m, "needle");
     m.handle_key(key(KeyCode::Enter));
     m.view_ops.clear();
-    let last = m.view_h - 1;
+    let last = m.vis_h - 1;
     m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 3, last));
     type_text(&mut m, "s");
     assert_eq!(
@@ -323,7 +323,7 @@ fn a_click_on_a_completion_item_highlights_it() {
     type_text(&mut m, "/");
     laid_out(&mut m);
     assert_eq!(m.list_items, vec![0, 1, 1, 2]);
-    let top = m.view_h + u16::try_from(m.frame_map.list.unwrap()).unwrap();
+    let top = m.vis_h + u16::try_from(m.frame_map.list.unwrap()).unwrap();
     // The second description line of /beta.
     m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 10, top + 2));
     assert_eq!(m.composer.value(), "/beta");
@@ -337,12 +337,12 @@ fn a_click_on_a_completion_item_highlights_it() {
         "the list still filters by what was typed"
     );
     assert_eq!(
-        target(top - 1, m.view_h, &m.frame_map, false, false),
+        target(top - 1, m.vis_h, &m.frame_map, false, false),
         Target::Frame,
         "the composer's upper separator, the list area's top edge"
     );
     assert_eq!(
-        target(top + 4, m.view_h, &m.frame_map, false, false),
+        target(top + 4, m.vis_h, &m.frame_map, false, false),
         Target::Composer(0),
         "the composer, under the list, is still the composer"
     );

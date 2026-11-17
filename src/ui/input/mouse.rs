@@ -72,7 +72,8 @@ impl MouseState {
     }
 }
 
-/// What screen row `row` is, for a frame laid out under a `view_h`-row viewport.
+/// What screen row `row` is, for a frame laid out under `vis_h` visible conversation rows (the
+/// rows above the frame).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Target {
     /// The conversation.
@@ -93,15 +94,15 @@ pub(crate) enum Target {
 
 /// Hit-tests a screen row (`search`: a search line is shown; `paused`: the view is scrolled
 /// back, its last row the way back).
-pub(crate) fn target(row: u16, view_h: u16, map: &FrameMap, search: bool, paused: bool) -> Target {
-    if row < view_h {
-        return match (row + 1 == view_h, search, paused) {
+pub(crate) fn target(row: u16, vis_h: u16, map: &FrameMap, search: bool, paused: bool) -> Target {
+    if row < vis_h {
+        return match (row + 1 == vis_h, search, paused) {
             (true, true, _) => Target::SearchLine,
             (true, false, true) => Target::WayBack,
             _ => Target::View,
         };
     }
-    let fr = usize::from(row - view_h) + map.cut;
+    let fr = usize::from(row - vis_h) + map.cut;
     if let Some(top) = map.surface.filter(|&top| fr >= top) {
         return Target::Surface(fr - top);
     }
@@ -119,8 +120,8 @@ pub(crate) fn target(row: u16, view_h: u16, map: &FrameMap, search: bool, paused
 
 /// Whether a drag at screen row `row` is at the viewport's edge (its top row, its last row, or
 /// below it), where it scrolls.
-pub(crate) fn at_edge(row: u16, view_h: u16) -> bool {
-    row == 0 || row + 1 >= view_h
+pub(crate) fn at_edge(row: u16, vis_h: u16) -> bool {
+    row == 0 || row + 1 >= vis_h
 }
 
 /// Routes one mouse report (module docs for the table).
@@ -133,7 +134,7 @@ pub(crate) fn update_mouse(m: &mut Model, ev: MouseEvent) {
     let (col, row) = (ev.column, ev.row);
     let at = target(
         row,
-        m.view_h,
+        m.vis_h,
         &m.frame_map,
         m.search.is_some(),
         m.view_paused,
@@ -166,8 +167,8 @@ pub(crate) fn update_mouse(m: &mut Model, ev: MouseEvent) {
         MouseEventKind::Drag(MouseButton::Left) => {
             if m.mouse.held.is_some() {
                 m.mouse.held = Some((col, row));
-                if !at_edge(row, m.view_h) || m.mouse.last_step.is_none() {
-                    m.mouse.last_step = at_edge(row, m.view_h).then(Instant::now);
+                if !at_edge(row, m.vis_h) || m.mouse.last_step.is_none() {
+                    m.mouse.last_step = at_edge(row, m.vis_h).then(Instant::now);
                     m.view_ops.push(ViewOp::Select(SelectOp::Drag { col, row }));
                 }
             }
@@ -239,7 +240,7 @@ pub(crate) fn tick_edge(m: &mut Model, now: Instant) {
     let Some((col, row)) = m.mouse.held else {
         return;
     };
-    if !at_edge(row, m.view_h) {
+    if !at_edge(row, m.vis_h) {
         return;
     }
     if m.mouse
@@ -256,7 +257,7 @@ pub(crate) fn tick_edge(m: &mut Model, now: Instant) {
 /// When the edge step is next due, while a drag is held at the edge.
 pub(crate) fn edge_due(m: &Model, now: Instant) -> Option<Duration> {
     let (_, row) = m.mouse.held?;
-    at_edge(row, m.view_h).then(|| {
+    at_edge(row, m.vis_h).then(|| {
         m.mouse.last_step.map_or(Duration::ZERO, |at| {
             EDGE_STEP.saturating_sub(now.saturating_duration_since(at))
         })

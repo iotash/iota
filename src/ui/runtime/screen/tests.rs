@@ -1389,7 +1389,7 @@ fn a_floating_area_covers_the_last_rows_and_the_way_back_stays_visible() {
     s.view(ViewOp::HalfUp).unwrap();
     s.draw_frame(&floating(40, 3), None).unwrap();
     let back = grid(&replay(&buf, 12, 40));
-    assert_eq!(back[0], "line-028", "half of the 8-row rectangle: {back:#?}");
+    assert_eq!(back[0], "line-030", "half of the 5 visible rows: {back:#?}");
     assert!(back[4].contains("Ctrl+End"), "the way back is visible: {back:#?}");
     assert_eq!(back[5], "─".repeat(40), "{back:#?}");
 }
@@ -1436,4 +1436,26 @@ fn following_output_under_a_floating_area_scrolls_the_visible_rows_only() {
     let g = grid(&replay(&buf, 12, 40));
     assert_eq!(g[4], "line-027", "the covered rows came up: {g:#?}");
     assert_eq!(g[6], "  item-0", "{g:#?}");
+}
+
+/// Under a floating area PgDn and PgUp page by half of what is SEEN, so no line is skipped: the
+/// first line after a page down was on the screen before it (the last visible row being the way
+/// back to the tail), and a page up comes back to where it started.
+#[test]
+fn paging_under_a_floating_area_skips_no_line() {
+    let (mut s, buf) = screen(40, 12);
+    s.push(rows_of(&rows(40)));
+    s.draw_frame(&floating(40, 3), None).unwrap();
+    s.view(ViewOp::Top).unwrap();
+    s.draw_frame(&floating(40, 3), None).unwrap();
+    let before = grid(&replay(&buf, 12, 40));
+    assert_eq!(&before[..4], &["line-000", "line-001", "line-002", "line-003"]);
+    assert!(before[4].contains("Ctrl+End"), "{before:#?}");
+    s.view(ViewOp::HalfDown).unwrap();
+    s.draw_frame(&floating(40, 3), None).unwrap();
+    let after = grid(&replay(&buf, 12, 40));
+    assert_eq!(after[0], "line-002", "half of 5 visible rows: {after:#?}");
+    s.view(ViewOp::HalfUp).unwrap();
+    s.draw_frame(&floating(40, 3), None).unwrap();
+    assert_eq!(grid(&replay(&buf, 12, 40))[0], "line-000");
 }

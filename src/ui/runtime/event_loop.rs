@@ -302,8 +302,9 @@ pub(crate) struct Model {
     pub(crate) pending_eof: bool,
     /// The mouse between reports (`input/mouse.rs`).
     pub(crate) mouse: MouseState,
-    /// The viewport's height at the last draw: the screen rows above the frame.
-    pub(crate) view_h: u16,
+    /// The conversation rows visible at the last draw: the screen rows above the frame (the
+    /// screen's own `view_h` is the conversation's whole rectangle, the area floats over).
+    pub(crate) vis_h: u16,
     /// Where the last frame's composer and surface rows were.
     pub(crate) frame_map: FrameMap,
     /// The match each completion-list row of the last frame belongs to (where a click lands).
@@ -412,7 +413,7 @@ impl Model {
             #[cfg(unix)]
             suspend: false,
             mouse: MouseState::default(),
-            view_h: 0,
+            vis_h: 0,
             frame_map: FrameMap::default(),
             list_items: Vec::new(),
             list_mark: 0,
@@ -967,7 +968,7 @@ impl Model {
         // the frame's own rows leave — the viewport yields them while it is open — but a panel
         // with no `height` stays under the interaction cap (`interaction_rows`). The completion
         // list takes rows the same way, under the same cap, from the conversation and never from
-        // the composer; it is not drawn while a surface owns the keys.
+        // the composer; it is not drawn while a surface owns the keys or a search is on.
         let room = if self.surface.is_some() {
             let others =
                 self.rows_besides(&composer_rows, BottomZone::Surface(&[]), busy.as_ref(), now);
@@ -980,7 +981,10 @@ impl Model {
             0
         };
         let mut shed = 0;
+        // No list during a search either: the search line and its hit need the rows the area
+        // would cover.
         let list = if self.surface.is_none()
+            && self.search.is_none()
             && !suggest::matches_for(&self.composer, &self.commands).is_empty()
         {
             let others = self.rows_besides(&composer_rows, BottomZone::Status, busy.as_ref(), now);
@@ -1235,7 +1239,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             // taller than the screen are what a click on the frame counts from.
             m.frame_map.cut = term.draw_frame(&view, prompt.as_ref())?;
             m.view_paused = term.view_paused();
-            m.view_h = term.view_height();
+            m.vis_h = term.view_height();
             m.copy_pending = term.copy_pending();
             m.dirty = false;
         }
