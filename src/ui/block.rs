@@ -224,9 +224,9 @@ impl Tab {
         const LEAD: usize = 2;
         let label = self.label(width - LEAD - 1);
         if color {
-            let painted = crate::repl::render::styles::paint_label_segments(
+            let painted = crate::ui::render::label::paint_label_segments(
                 &label,
-                &crate::repl::render::styles::TAB_INK,
+                &crate::ui::render::label::TAB_INK,
             );
             let cols = LEAD + crate::text::width::str_width(&label.unbracketed()) + 1;
             crate::text::ansi::paint_row(&format!("  {painted}"), USER_BAR, cols.min(width))

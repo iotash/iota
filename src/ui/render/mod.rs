@@ -4,6 +4,7 @@
 
 pub(crate) mod debug;
 pub(crate) mod frame;
+pub(crate) mod label;
 pub(crate) mod region;
 pub(crate) mod selection;
 pub(crate) mod sink;

@@ -18,7 +18,7 @@ pub(crate) const TOOL_HEADER_MAX_VALUE: usize = 15;
 pub(crate) const TOOL_RESULT_MAX_LINES: usize = 3;
 
 /// A call label's structure: the name and one of the label shapes (docs/design/tool-label-style.md).
-/// Every cut is made here, on rune boundaries — the painter (`repl::render::styles::paint_label`)
+/// Every cut is made here, on rune boundaries — the painter (`ui::render::label::paint_label`)
 /// only colors the finished segments, so a truncation never meets an escape. Its [`Display`] is the
 /// plain label, byte for byte the text the screen shows.
 ///
