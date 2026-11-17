@@ -7,6 +7,13 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **Typing a slash command no longer moves the conversation.** The
+  completion list now opens over the bottom of the conversation instead of
+  pushing it up, and it keeps its height while it is open: typing more letters
+  shortens the list inside the same space, so neither the conversation nor the
+  list's top line moves as you type. A short conversation moves up into the
+  empty space above it rather than being covered. The line that separated the
+  list from what you type now sits on top of the list.
 - **Every list marks its current row the same way.** The completion list,
   the pickers and the selection lists in `/model`, `/tools`, `/jobs`,
   `/session` and the rest now shade the whole current row, put a `▸` in front

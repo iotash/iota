@@ -367,8 +367,10 @@ The shape of `src/ui/runtime/` in one page; the design is `docs/design/fullscree
 point: `tui-terminal-contract`.
 
 **The design.** iota owns the screen: the alternate screen, entered at the first frame and left at the
-exit (DIVERGENCES X-97). The screen is two rectangles — the conversation viewport on top, the frame
-(the composer, separators, status, a preview, a surface; `render/frame.rs`) pinned to the bottom rows.
+exit (DIVERGENCES X-97). The screen is the conversation's rectangle with the frame
+(the composer, separators, status, a preview, a surface; `render/frame.rs`) pinned to the bottom rows
+over its last rows: the rectangle is what the frame leaves without the completion list, whose area
+floats over it (`FrameView::float`), so the list never moves the conversation.
 This replaced (2026-11, tui-plan S1–S5) the inline viewport under the terminal's native scrollback that
 this section used to describe; it predicted the step itself: "If 'zero residuals' ever outranks native
 scrollback, the answer is an alt-screen pager and the design changes wholesale … not another round of
