@@ -165,7 +165,7 @@ pub trait Host: Send + Sync {
 /// keeps it byte for byte, and so does a `<hc>` snippet anywhere but in herdr-core.
 pub trait MessageEnvelope: Send + Sync {
     /// The element name the host wraps its own messages in.
-    fn element(&self) -> &str;
+    fn element(&self) -> &'static str;
 }
 
 /// Speaks to the terminal IN BAND — escape sequences on the chat's own tty, not a socket or a CLI — and

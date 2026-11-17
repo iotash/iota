@@ -187,7 +187,7 @@ impl Host for HcHost {
 /// herdr-core hands a sub-agent's message to the conversation as `<hc from="…">…</hc>`: the user
 /// block shows the inner text under an `hc from:…` tab (DIVERGENCES X-107).
 impl MessageEnvelope for HcHost {
-    fn element(&self) -> &str {
+    fn element(&self) -> &'static str {
         "hc"
     }
 }
@@ -535,7 +535,11 @@ mod tests {
         let ansi =
             || Some(Box::new(AnsiHost::new(Arc::clone(&ui) as Arc<dyn Ui>)) as Box<dyn Host>);
         let hc = HcHost::with_writer("t4", Box::new(Recorder::default()));
-        assert_eq!(hc.as_message_envelope().map(|e| e.element()), Some("hc"));
+        assert_eq!(
+            hc.as_message_envelope()
+                .map(crate::host::MessageEnvelope::element),
+            Some("hc")
+        );
         let p = Presenter::over(Some(Box::new(hc)), ansi(), false);
         assert_eq!(p.message_element(), Some("hc"));
 
