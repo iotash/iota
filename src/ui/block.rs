@@ -224,7 +224,10 @@ impl Tab {
         const LEAD: usize = 2;
         let label = self.label(width - LEAD - 1);
         if color {
-            let painted = crate::repl::render::styles::paint_label_segments(&label);
+            let painted = crate::repl::render::styles::paint_label_segments(
+                &label,
+                &crate::repl::render::styles::TAB_INK,
+            );
             let cols = LEAD + crate::text::width::str_width(&label.unbracketed()) + 1;
             crate::text::ansi::paint_row(&format!("  {painted}"), USER_BAR, cols.min(width))
         } else {
@@ -329,7 +332,7 @@ mod tests {
     }
 
     /// A message that is one element: the tab is the block's first row — the bar's gray from
-    /// column 0, the label's segments from column 2 (the gray re-asserted after each of their
+    /// column 0, the label's segments in the tab's dark ink from column 2 (the gray re-asserted after each of their
     /// resets), one trailing gray space, reset — and the block below shows the inner text alone.
     #[test]
     fn a_tagged_message_gets_a_tab_row_above_its_inner_text() {
@@ -341,7 +344,7 @@ mod tests {
         assert_eq!(
             rows[0],
             format!(
-                "{g}  \x1b[1;36m{g}hc\x1b[0m{g} \x1b[2m{g}from:\x1b[0m{g}\x1b[36m{g}worker-2\x1b[0m{g} \x1b[36m{g}urgent\x1b[0m{g} \x1b[0m"
+                "{g}  \x1b[1;38;5;16m{g}hc\x1b[0m{g} \x1b[2;38;5;16m{g}from:\x1b[0m{g}\x1b[38;5;16m{g}worker-2\x1b[0m{g} \x1b[38;5;16m{g}urgent\x1b[0m{g} \x1b[0m"
             )
         );
         assert_eq!(strip_sgr(&rows[0]), "  hc from:worker-2 urgent ");

@@ -26,13 +26,32 @@ fn sgr_if(on: bool, params: &str, s: &str) -> String {
     }
 }
 
-/// A tool-call label's name: bold cyan.
-const LABEL_NAME: &str = "1;36";
-/// A label's values — a positional argument, a keyed argument's value, a phrase: cyan, the color
-/// the status row's job segment gives the same command.
-const LABEL_VALUE: &str = "36";
-/// A label's frame and annotations — the brackets, `key:`, `… +N args`, the composing `…`: faint.
-const LABEL_MARK: &str = "2";
+/// The SGR of a label's three kinds of segment.
+pub(crate) struct LabelInk {
+    /// The name.
+    name: &'static str,
+    /// The values — a positional argument, a keyed argument's value, a phrase.
+    value: &'static str,
+    /// The frame and annotations — the brackets, `key:`, `… +N args`, the composing `…`.
+    mark: &'static str,
+}
+
+/// A tool-call label's ink: a bold cyan name, cyan values (the color the status row's job segment
+/// gives the same command), faint marks.
+const LABEL_INK: LabelInk = LabelInk {
+    name: "1;36",
+    value: "36",
+    mark: "2",
+};
+
+/// A user block's tab (`ui::block::Tab`): the label's segments in one dark ink (`38;5;16`) — a
+/// bold name, faint keys, plain values — because the tab's fill is the bar's mid gray, on which
+/// the label's cyan and faint read weakly.
+pub(crate) const TAB_INK: LabelInk = LabelInk {
+    name: "1;38;5;16",
+    value: "38;5;16",
+    mark: "2;38;5;16",
+};
 
 /// Paints a call label in segments (docs/design/tool-label-style.md §2.2): every segment is
 /// self-contained SGR around text [`ToolLabel`] already cut, so stripping the SGR gives back its
@@ -46,23 +65,28 @@ pub(crate) fn paint_label(l: &crate::tool::fmt::ToolLabel) -> String {
 
 /// [`paint_label`] with the decision passed in.
 fn paint_label_if(on: bool, l: &crate::tool::fmt::ToolLabel) -> String {
-    let mark = |s: &str| sgr_if(on, LABEL_MARK, s);
-    format!("{}{}{}", mark("["), paint_segments_if(on, l), mark("]"))
+    let mark = |s: &str| sgr_if(on, LABEL_INK.mark, s);
+    format!(
+        "{}{}{}",
+        mark("["),
+        paint_segments_if(on, l, &LABEL_INK),
+        mark("]")
+    )
 }
 
-/// The label's segments without the brackets — `name k:v k:v … +N args`, painted exactly as
-/// inside [`paint_label`]: a tagged user message's tab (`ui::block::UserBlock`). Strips back to
+/// The label's segments without the brackets — `name k:v k:v … +N args`, painted as inside
+/// [`paint_label`] in `ink`: a tagged user message's tab (`ui::block::UserBlock`). Strips back to
 /// [`ToolLabel::unbracketed`](crate::tool::fmt::ToolLabel::unbracketed).
-pub(crate) fn paint_label_segments(l: &crate::tool::fmt::ToolLabel) -> String {
-    paint_segments_if(crate::app::color::enabled(), l)
+pub(crate) fn paint_label_segments(l: &crate::tool::fmt::ToolLabel, ink: &LabelInk) -> String {
+    paint_segments_if(crate::app::color::enabled(), l, ink)
 }
 
 /// The name and the body, each segment self-contained SGR.
-fn paint_segments_if(on: bool, l: &crate::tool::fmt::ToolLabel) -> String {
+fn paint_segments_if(on: bool, l: &crate::tool::fmt::ToolLabel, ink: &LabelInk) -> String {
     use crate::tool::fmt::LabelBody;
-    let mark = |s: &str| sgr_if(on, LABEL_MARK, s);
-    let value = |s: &str| sgr_if(on, LABEL_VALUE, s);
-    let mut out = sgr_if(on, LABEL_NAME, &l.name);
+    let mark = |s: &str| sgr_if(on, ink.mark, s);
+    let value = |s: &str| sgr_if(on, ink.value, s);
+    let mut out = sgr_if(on, ink.name, &l.name);
     // A body with no text is the bare name, exactly as the plain label drops its blank.
     let body = if l.body.detail().is_empty() {
         &LabelBody::Phrase(String::new())
@@ -336,6 +360,34 @@ mod tests {
         assert_eq!(
             paint(&label("delegate", LabelBody::Phrase("go on".to_owned()))),
             format!("{}{} {}{}", d("["), n("delegate"), c("go on"), d("]"))
+        );
+    }
+
+    // The tab paints the same segments without the brackets, in its one dark ink: a bold name,
+    // faint keys and tail, plain values — and strips back to the unbracketed label.
+    #[test]
+    fn the_tab_ink_paints_the_label_segments_without_brackets() {
+        let l = label(
+            "hc",
+            args(&[(Some("from"), "worker-2"), (None, "urgent")], 2),
+        );
+        let k = |p: &str, s: &str| format!("\x1b[{p}m{s}\x1b[0m");
+        let painted = super::paint_segments_if(true, &l, &super::TAB_INK);
+        assert_eq!(
+            painted,
+            format!(
+                "{} {}{} {} {}",
+                k("1;38;5;16", "hc"),
+                k("2;38;5;16", "from:"),
+                k("38;5;16", "worker-2"),
+                k("38;5;16", "urgent"),
+                k("2;38;5;16", "… +2 args")
+            )
+        );
+        assert_eq!(crate::text::ansi::strip_sgr(&painted), l.unbracketed());
+        assert_eq!(
+            super::paint_segments_if(false, &l, &super::TAB_INK),
+            l.unbracketed()
         );
     }
 

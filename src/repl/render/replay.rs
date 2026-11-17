@@ -870,4 +870,17 @@ mod tests {
             )]
         );
     }
+
+    /// A tagged message replays with its tab, the same rows the live block drew: the tab first,
+    /// then the inner text alone.
+    #[test]
+    fn the_echo_draws_a_tagged_message_with_its_tab() {
+        let msg = r#"<hc from="worker-2">done</hc>"#;
+        let blocks = echo_rounds(&[user(msg)], no_ask, 80, None);
+        let live = print_user_block(msg, 80);
+        assert_eq!(live.len(), 2);
+        assert_eq!(rendered(&blocks)[..2], live[..]);
+        assert_eq!(strip_sgr(&live[0]), "  hc from:worker-2 ");
+        assert!(strip_sgr(&live[1]).starts_with("▌ done "));
+    }
 }

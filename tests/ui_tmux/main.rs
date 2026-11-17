@@ -81,6 +81,7 @@
 //! | `48-fullscreen-relayout.sh` | tui-plan S7a | — (a table, a nested list, a code block and a quote laid out again at 80, 160 and 60 columns: the box whole and inside the window, long cells on one row only at 160, wrapped list rows hanging under the item text, code wrapping under its gutter, the quote's bar on every row, the blank rows unchanged)
 //! | `49-fullscreen-grow.sh` | tui-plan S7b | — (a code block and a table streamed with holds mid-block: the arrived lines on screen and no metered counter, the code re-laid-out under its gutter at 50 columns mid-stream, the table's rows boxed as they arrive, each line once in the history) |
 //! | `50-list-overlay.sh` | sel-float, sel-top | — (a fresh session: the banner on the first rows, unchanged byte for byte while `/` opens the list under it, `d` narrows it and it closes; over a full screen, `/` opens the list and `d` narrows it: the rows above the area unchanged byte for byte through both, the top edge coming down with the narrowed list onto it and the rows it gave back showing the conversation, the list one blank row over the composer, the gap row blank in raw bytes; closing gives the screen back) |
+//! | `51-xml-tab.sh` | xml-tab | — (a message that is one XML element: the tag a gray tab directly above the block, the inner text alone in it, `NO_COLOR` plain, both written out on exit) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -731,6 +732,12 @@ fn tmux_fullscreen_grow() {
 #[test]
 fn tmux_list_overlay() {
     run_scenario("50-list-overlay.sh");
+}
+
+/// xml-tab: a message that is one XML element shows its tag as a tab above the inner text.
+#[test]
+fn tmux_xml_tab() {
+    run_scenario("51-xml-tab.sh");
 }
 
 /// M2 (tui-plan §7) — a measurement, not a check: the bytes the tmux iota runs in sends to its own
