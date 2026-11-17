@@ -1438,7 +1438,7 @@ fn following_output_under_a_floating_area_scrolls_the_visible_rows_only() {
     assert_eq!(g[6], "  item-0", "{g:#?}");
 }
 
-/// Under a floating area PgDn and PgUp page by half of what is SEEN, so no line is skipped: the
+/// Under a floating area `PgDn` and `PgUp` page by half of what is SEEN, so no line is skipped: the
 /// first line after a page down was on the screen before it (the last visible row being the way
 /// back to the tail), and a page up comes back to where it started.
 #[test]
