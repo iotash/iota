@@ -140,7 +140,7 @@ Facade shape decisions from the adversarial review:
   flush ordering (close preview BEFORE committing the rendered block) is
   preserved by construction.
 - **Frame stacking order is fixed and ui-owned** (user-confirmed final):
-  `[call preview] [spacer] [queue] ─sep─ [blank] [completion list]
+  `[call preview] [spacer] [queue] ─sep─ [completion list]
   [composer] ─sep─ [status | surface]` over the conversation's viewport (the staging tail and
   the stream preview were deleted in tui-plan S7b; the list since the full screen,
   above the composer since 2026-11-16: `fullscreen-tui.md` "补全列表"). One constant blank spacer row separates
@@ -153,9 +153,10 @@ Facade shape decisions from the adversarial review:
   of the status line or an open interaction surface (surface > status) —
   swapping them is a content change plus below-composer growth, never a composer move; the
   completion list, while the line is a slash command, grows upward from the composer, over the
-  conversation's last rows (an overlay: the conversation keeps its rectangle), in an area that keeps
-  its tallest height while open — the upper separator is its top edge — so it never moves the
-  composer or the conversation either. A block still being
+  conversation's last rows (an overlay: the conversation keeps its rectangle), in an area exactly
+  as tall as the list — the upper separator is its top edge and moves with it — so it never moves
+  the composer or the conversation either; a conversation shorter than its rectangle starts at the
+  top, so the list covers it only once it fills the rows above the list. A block still being
   written grows in the conversation itself (tui-plan S7b), so the frame holds only the call
   preview; the busy indicator is a status-line segment. Layout laws: the frame is pinned to the
   bottom of the full screen and the conversation's viewport takes the rows it leaves, so a
