@@ -175,6 +175,38 @@ pub fn truncate_ansi(s: &str, max: usize, tail: &str) -> String {
     out
 }
 
+/// `s` with `sgr` re-asserted after every SGR escape inside it, so a style laid over a styled
+/// string survives the string's own resets (`\x1b[0m` would otherwise end it). Other escapes (OSC
+/// 8 hyperlinks, non-SGR CSI) are copied untouched.
+pub fn reassert_sgr(s: &str, sgr: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len() + 8);
+    let mut i = 0;
+    while let Some(j) = s[i..].find('\x1b') {
+        let at = i + j;
+        out.push_str(&s[i..at]);
+        let n = escape_len_at(b, at).max(1);
+        let seq = &s[at..at + n];
+        out.push_str(seq);
+        if seq.starts_with("\x1b[") && seq.ends_with('m') {
+            out.push_str(sgr);
+        }
+        i = at + n;
+    }
+    out.push_str(&s[i..]);
+    out
+}
+
+/// `row` painted across exactly `width` cells on the background `bg`: cut with `…` first when it
+/// is wider (a wide character is never split — the cell it leaves becomes pad), `bg` re-asserted
+/// after every SGR escape in it ([`reassert_sgr`]), padded by display width, then reset. The
+/// row's own foreground and attributes are kept.
+pub fn paint_row(row: &str, bg: &str, width: usize) -> String {
+    let row = truncate_ansi(row, width, "…");
+    let pad = width.saturating_sub(ansi_width(&row));
+    format!("{bg}{}{}\x1b[0m", reassert_sgr(&row, bg), " ".repeat(pad))
+}
+
 /// Visible cols `[start, start+width)`: escapes always kept; a wide rune straddling a
 /// boundary dropped (clip.go clipLine — the v1 promptui viewer implementation, ported
 /// for the View panel's horizontal pan).

@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-use crate::text::ansi::{ansi_width, clip_line, truncate_ansi, wrap_ansi};
+use crate::text::ansi::{ansi_width, clip_line, paint_row, truncate_ansi, wrap_ansi};
 
 use super::field::input_field;
 use super::search::{SearchMode, highlight_line};
@@ -15,7 +15,10 @@ use super::tabbed::{
     PICKER_GUTTER, PICKER_ROWS, PanelState, Room, SurfaceState, clamp, combo_hint, panel_height,
     picker_preview_cols, scroll_percent, search_typing_hint, surface_hint,
 };
-use super::theme::{CYAN, ERR_PREFIX, FAINT, GREEN, RESET, REV_ON, input_bg};
+use super::theme::{
+    BOX_OFF, BOX_ON, CURSOR_MARK, CYAN, ERR_PREFIX, FAINT, GREEN, RESET, REV_ON, emphasize,
+    input_bg, row_bg,
+};
 use super::{Hit, Rendered};
 use crate::ui::facade::{Panel, PanelKind};
 
@@ -87,14 +90,14 @@ pub(crate) fn render_rows(st: &mut SurfaceState, width: u16) -> Rendered {
         PanelKind::List | PanelKind::Multi => {
             render_list(p, ps, w, &mut rows, &mut cursor, dark);
         }
-        PanelKind::Picker => render_picker(p, ps, w, &mut rows),
+        PanelKind::Picker => render_picker(p, ps, w, &mut rows, dark),
         PanelKind::Slider => render_slider(p, ps, w, &mut rows),
         PanelKind::Switch => render_switch(ps, &mut rows),
         PanelKind::Input => render_input(p, ps, w, &mut rows, &mut cursor, dark),
         PanelKind::View => render_view(p, ps, w, &mut rows),
         PanelKind::Browser => {
             body += 1 + usize::from(!ps.error_text.is_empty());
-            render_browser(p, ps, w, &mut rows);
+            render_browser(p, ps, w, &mut rows, dark);
         }
     }
     hits.resize(rows.len(), Hit::None);
@@ -128,15 +131,20 @@ pub(crate) fn render_rows(st: &mut SurfaceState, width: u16) -> Rendered {
     Rendered { rows, cursor, hits }
 }
 
-/// One truncated row body with the v1 cursor-highlight semantics: the cursor row's
-/// TEXT goes cyan when the row is plain; rows carrying their own ANSI keep it, with
-/// just the cyan marker (tabbed.go:539-546).
-fn styled_item(label: &str, is_cursor: bool, w: usize) -> String {
-    let item = truncate_ansi(label, w.saturating_sub(6).max(4), "…");
-    if is_cursor && !item.contains("\x1b[") {
-        format!("{CYAN}{item}{RESET}")
+/// One list row: the gutter (`▸ ` on the current row, two spaces otherwise), the box column of a
+/// multi-select, then the label cut with `…` to what the row leaves it. The current row is
+/// painted across the whole `w` on [`row_bg`] with its label bold ([`emphasize`]); a label's own
+/// colours are kept either way.
+fn list_row(label: &str, boxed: &str, is_cursor: bool, w: usize, dark: bool) -> String {
+    let label = truncate_ansi(label, w.saturating_sub(2 + ansi_width(boxed)).max(4), "…");
+    if is_cursor {
+        paint_row(
+            &format!("{CURSOR_MARK}{boxed}{}", emphasize(&label)),
+            row_bg(dark),
+            w,
+        )
     } else {
-        item
+        format!("  {boxed}{label}")
     }
 }
 
@@ -153,16 +161,12 @@ fn render_list(
     ps.scroll_to(h);
     let offset = ps.offset;
     for &i in ps.view.iter().skip(offset).take(h) {
-        let marker = if i == ps.cursor {
-            format!("{CYAN}▸ {RESET}")
-        } else {
-            "  ".to_owned()
-        };
-        let box_prefix = if p.kind() == PanelKind::Multi {
+        let is_cursor = i == ps.cursor;
+        let boxed = if p.kind() == PanelKind::Multi {
             if ps.checked.contains(&i) {
-                format!("{GREEN}[x] {RESET}")
+                format!("{BOX_ON} ")
             } else {
-                format!("{FAINT}[ ] {RESET}")
+                format!("{BOX_OFF} ")
             }
         } else {
             String::new()
@@ -171,17 +175,14 @@ fn render_list(
             // The `use "…" as typed` row: the field's own text offered as a row, so Enter on it
             // is as unambiguous as Enter on any other (see `PanelState::typed_row`).
             let label = format!("use {:?} as typed", ps.search_draft().trim());
-            rows.push(format!(
-                "{marker}{box_prefix}{}",
-                styled_item(&label, i == ps.cursor, w)
-            ));
+            rows.push(list_row(&label, &boxed, is_cursor, w, dark));
             continue;
         }
         if p.custom() && i == p.items().len() {
             // The "Other…" row: an inline editor while editing, the saved text once
             // entered, the plain affordance otherwise (tabbed.go:502-538).
             if ps.editing {
-                let prefix_cols = if p.kind() == PanelKind::Multi { 6 } else { 2 };
+                let prefix_cols = 2 + ansi_width(&boxed);
                 let box_w = clamp(40, 4, w.saturating_sub(prefix_cols + 4).max(4));
                 let (mut field, cur_col) = input_field(&ps.input, &mut ps.input_offset, box_w);
                 if ps.input.value().is_empty() {
@@ -190,12 +191,21 @@ fn render_list(
                 let pad = box_w.saturating_sub(ansi_width(&field));
                 *cursor = Some(cursor_at(prefix_cols + cur_col, rows.len()));
                 // No leading padding column: the field's first text cell sits exactly
-                // where the option labels start (only a trailing pad closes the shade).
+                // where the option labels start (only a trailing pad closes the shade). The
+                // editing row is the current one: its gutter and the cells past the field wear
+                // the row tint, the field its own shade one step off it.
                 let bg = input_bg(dark);
-                rows.push(format!(
-                    "{marker}{box_prefix}{bg}{field}{RESET}{bg}{} {RESET}",
-                    " ".repeat(pad)
-                ));
+                let field = format!("{bg}{field}{RESET}{bg}{} {RESET}", " ".repeat(pad));
+                rows.push(if is_cursor {
+                    let tint = row_bg(dark);
+                    format!(
+                        "{}{field}{}",
+                        paint_row(&format!("{CURSOR_MARK}{boxed}"), tint, prefix_cols),
+                        paint_row("", tint, w.saturating_sub(prefix_cols + box_w + 1)),
+                    )
+                } else {
+                    format!("  {boxed}{field}")
+                });
                 continue;
             }
             let v = ps.input.value().trim().to_owned();
@@ -204,16 +214,10 @@ fn render_list(
             } else {
                 format!("Other: {v}")
             };
-            rows.push(format!(
-                "{marker}{box_prefix}{}",
-                styled_item(&label, i == ps.cursor, w)
-            ));
+            rows.push(list_row(&label, &boxed, is_cursor, w, dark));
             continue;
         }
-        rows.push(format!(
-            "{marker}{box_prefix}{}",
-            styled_item(&ps.items[i], i == ps.cursor, w)
-        ));
+        rows.push(list_row(&ps.items[i], &boxed, is_cursor, w, dark));
     }
 }
 
@@ -223,7 +227,7 @@ fn render_list(
 /// Rows are composed cell by cell: every preview row is padded to the pane width by DISPLAY
 /// width, so the list column starts at the same screen column on every row regardless of the SGR
 /// the preview carries (imgterm rows are dense with it).
-fn render_picker(p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<String>) {
+fn render_picker(p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<String>, dark: bool) {
     // The list window follows the item count; the preview gets its own row budget (a 3-item list
     // must still show a legible thumbnail), clamped to the room the viewport yields.
     let h = panel_height(p, ps.view.len(), ps.room);
@@ -271,17 +275,18 @@ fn render_picker(p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<String
         if r < h
             && let Some(&i) = ps.view.get(offset + r)
         {
-            let mut item = truncate_ansi(&ps.items[i], list_cols, "…");
-            let marker = if i == ps.cursor {
-                if !item.contains("\x1b[") {
-                    item = format!("{CYAN}{item}{RESET}");
-                }
-                format!("{CYAN}▸ {RESET}")
+            let item = truncate_ansi(&ps.items[i], list_cols, "…");
+            if i == ps.cursor {
+                // The tint covers the list column alone, never the preview pane.
+                line.push_str(&paint_row(
+                    &format!("{CURSOR_MARK}{}", emphasize(&item)),
+                    row_bg(dark),
+                    list_cols + 2,
+                ));
             } else {
-                "  ".to_owned()
-            };
-            line.push_str(&marker);
-            line.push_str(&item);
+                line.push_str("  ");
+                line.push_str(&item);
+            }
         }
         rows.push(line.trim_end_matches(' ').to_owned());
     }
@@ -446,7 +451,7 @@ fn render_view(p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<String>)
     }
 }
 
-fn render_browser(p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<String>) {
+fn render_browser(p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<String>, dark: bool) {
     rows.push(format!(
         "{FAINT}{}{RESET}",
         truncate_ansi(&ps.dir.to_string_lossy(), w, "…")
@@ -459,19 +464,20 @@ fn render_browser(p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<Strin
     ps.scroll_to(h);
     let offset = ps.offset;
     for &i in ps.view.iter().skip(offset).take(h) {
-        let marker = if i == ps.cursor {
-            format!("{CYAN}▸ {RESET}")
-        } else {
-            "  ".to_owned()
-        };
         let Some(e) = ps.entries.get(i) else { continue };
         let mut name = truncate_ansi(&e.name, w.saturating_sub(4).max(4), "…");
-        if i == ps.cursor {
-            name = format!("{CYAN}{name}{RESET}");
-        } else if e.is_dir {
+        if e.is_dir {
             name = format!("{FAINT}{name}{RESET}");
         }
-        rows.push(format!("{marker}{name}"));
+        if i == ps.cursor {
+            rows.push(paint_row(
+                &format!("{CURSOR_MARK}{}", emphasize(&name)),
+                row_bg(dark),
+                w,
+            ));
+        } else {
+            rows.push(format!("  {name}"));
+        }
     }
 }
 

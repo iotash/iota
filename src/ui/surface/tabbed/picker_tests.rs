@@ -11,7 +11,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::text::ansi::strip_sgr;
+use crate::text::ansi::{ansi_width, strip_sgr};
 use crate::text::width::str_width;
 use crate::ui::facade::Panel;
 use crossterm::event::KeyCode;
@@ -149,6 +149,20 @@ fn the_list_column_starts_at_the_same_screen_column_on_every_row() {
     for c in &cols[1..] {
         assert_eq!(*c, cols[0], "list column drifts across rows: {cols:?}");
     }
+
+    // The cursor row's tint covers the list column alone: it opens where the column starts,
+    // never under the preview, and runs to the terminal's edge.
+    let content = s.content();
+    let row = content
+        .lines()
+        .find(|l| l.contains("alpha"))
+        .expect("cursor row");
+    let at = row
+        .find("\x1b[48;5;237m")
+        .expect("the cursor row is tinted");
+    assert_eq!(str_width(&strip_sgr(&row[..at])), cols[0], "{row:?}");
+    assert!(row[at..].starts_with("\x1b[48;5;237m\x1b[36m"), "{row:?}");
+    assert_eq!(ansi_width(row), 100, "{row:?}");
 }
 
 /// The preview budget is clamped to the interaction cap and the room the viewport yields the

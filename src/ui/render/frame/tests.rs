@@ -19,7 +19,7 @@ use crate::ui::render::frame::{
     BottomZone, BusyView, FrameInput, FrameView, build_frame, status_line,
 };
 use crate::ui::render::region::RegionSnapshot;
-use crate::ui::render::theme::{CYAN, FAINT, GREEN, RED, RESET, YELLOW};
+use crate::ui::render::theme::{BOLD, CYAN, FAINT, GREEN, RED, RESET, YELLOW};
 use crate::ui::testutil::SPINNER_GLYPHS;
 use ratatui::style::{Color, Modifier};
 
@@ -232,7 +232,7 @@ fn frame_order_with_empty_composer_and_slot_swap() {
     let case = Case {
         surface: None,
         list: vec![
-            format!("{CYAN}› model{RESET}"),
+            format!("{CYAN}▸{RESET} {BOLD}model{RESET}"),
             format!("         {FAINT}Pick a model{RESET}"),
         ],
         ..case
@@ -241,7 +241,7 @@ fn frame_order_with_empty_composer_and_slot_swap() {
     let rows = plain(&v);
     let seps = separator_indices(&rows);
     assert_eq!(seps.len(), 2);
-    let item = find(&rows, |r| r.contains("› model")).expect("list row");
+    let item = find(&rows, |r| r.contains("▸ model")).expect("list row");
     let desc = find(&rows, |r| r.contains("Pick a model")).expect("desc row");
     let composer = find(&rows, |r| r == "draft").expect("composer row");
     let status = find(&rows, |r| r.contains("gpt-4o · ")).expect("status row");

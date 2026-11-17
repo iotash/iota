@@ -3,7 +3,8 @@
 
 use iota::markdown::hyperlink;
 use iota::text::ansi::{
-    ansi_len, ansi_width, clip_line, sgr_carry, strip_sgr, truncate_ansi, wrap_ansi, wrap_by_width,
+    ansi_len, ansi_width, clip_line, paint_row, reassert_sgr, sgr_carry, strip_sgr, truncate_ansi,
+    wrap_ansi, wrap_by_width,
 };
 use iota::text::width::{graphemes, rune_width, str_width, truncate_cols, truncate_middle};
 
@@ -170,5 +171,30 @@ fn the_escape_scanners_count_sgr_and_treat_osc_8_as_zero_width() {
     assert!(
         stripped.contains("\x1b]8;;"),
         "strip_sgr must keep OSC: {stripped:?}"
+    );
+}
+
+// `paint_row` lays a background over a styled row: the bg is re-asserted after the row's own
+// escapes (its reset would end it), the pad is by DISPLAY width, and a wide CJK character that
+// does not fit is dropped whole — `…` and a painted pad cell take its place, never half of it.
+#[test]
+fn paint_row_tints_a_styled_row_to_the_width_and_never_splits_a_wide_char() {
+    const BG: &str = "\x1b[48;5;237m";
+    assert_eq!(
+        paint_row("a\x1b[0mb", BG, 5),
+        format!("{BG}a\x1b[0m{BG}b   \x1b[0m")
+    );
+    // `漢字漢` is 6 cells; at 5 the third glyph cannot fit beside `…`: 4 + 1 = 5, no pad.
+    let cut = paint_row("漢字漢", BG, 5);
+    assert_eq!(cut, format!("{BG}漢字…\x1b[0m"));
+    assert_eq!(ansi_width(&cut), 5);
+    // At 4, `漢` + `…` is 3 cells: the leftover cell is pad, the second glyph is not split.
+    let cut = paint_row("漢字漢", BG, 4);
+    assert_eq!(cut, format!("{BG}漢… \x1b[0m"));
+    assert_eq!(ansi_width(&cut), 4);
+    // An OSC 8 hyperlink is copied untouched — only SGR escapes re-assert.
+    assert_eq!(
+        reassert_sgr("\x1b]8;;u\x07x\x1b]8;;\x07\x1b[1my", BG),
+        format!("\x1b]8;;u\x07x\x1b]8;;\x07\x1b[1m{BG}y")
     );
 }

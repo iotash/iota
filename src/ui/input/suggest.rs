@@ -12,12 +12,12 @@
 //! one fully visible; with no room for more it holds the highlighted item alone.
 
 use crate::markdown::blocks::table::word_wrap_ansi;
-use crate::text::ansi::truncate_ansi;
+use crate::text::ansi::{paint_row, truncate_ansi};
 use crate::text::width::str_width;
 use crate::ui::facade::Suggestion;
 
 use super::composer::Composer;
-use crate::ui::render::theme::{BOLD, CYAN, FAINT, RESET};
+use crate::ui::render::theme::{BOLD, CURSOR_MARK, FAINT, RESET, emphasize, row_bg};
 
 /// A description's measure, in columns: 72, the classic line length of terminal prose (a commit
 /// body, a man page). A wide terminal keeps a description a short block beside its label instead
@@ -158,21 +158,40 @@ pub(crate) fn label_column(ms: &[&Suggestion], width: usize) -> usize {
         .max(1)
 }
 
-/// The rows of one item at `width` with a label column `col` wide. The first row is the label —
-/// bold, and with a cyan `›` and cyan label when `selected`, cut with `…` past `col` — then, [`GAP`]
-/// past the column, the description's first line, faint; its further lines start at the same
-/// column. The description wraps at `min(width - its column, DESC_MEASURE)`, at most
-/// [`DESC_LINES`] lines, the last cut with `…` when the text runs on. An item with no description
-/// is its label row.
-pub(crate) fn item_rows(s: &Suggestion, selected: bool, col: usize, width: usize) -> Vec<String> {
+/// The rows of one item at `width` with a label column `col` wide. The first row is the label,
+/// bold and cut with `…` past `col`, then, [`GAP`] past the column, the description's first line,
+/// faint; its further lines start at the same column. The description wraps at
+/// `min(width - its column, DESC_MEASURE)`, at most [`DESC_LINES`] lines, the last cut with `…`
+/// when the text runs on. An item with no description is its label row. A `selected` item is the
+/// current row of every list: the cyan `▸` in the gutter and EVERY row of it, continuation lines
+/// included, painted across `width` on [`row_bg`] for the `dark` or light terminal, so the item
+/// reads as one object.
+pub(crate) fn item_rows(
+    s: &Suggestion,
+    selected: bool,
+    col: usize,
+    width: usize,
+    dark: bool,
+) -> Vec<String> {
     let label = truncate_ansi(suggest_label(s), col, "…");
+    let rows = item_text(&label, &s.desc, selected, col, width);
+    if !selected {
+        return rows;
+    }
+    rows.into_iter()
+        .map(|r| paint_row(&r, row_bg(dark), width))
+        .collect()
+}
+
+/// [`item_rows`] before the current row's tint.
+fn item_text(label: &str, desc: &str, selected: bool, col: usize, width: usize) -> Vec<String> {
     let head = if selected {
-        format!("{CYAN}› {BOLD}{label}{RESET}")
+        format!("{CURSOR_MARK}{}", emphasize(label))
     } else {
         format!("  {BOLD}{label}{RESET}")
     };
     // A description is prose: its own breaks and runs of spaces are not layout.
-    let desc = s.desc.split_whitespace().collect::<Vec<_>>().join(" ");
+    let desc = desc.split_whitespace().collect::<Vec<_>>().join(" ");
     if desc.is_empty() {
         return vec![head];
     }
@@ -185,7 +204,7 @@ pub(crate) fn item_rows(s: &Suggestion, selected: bool, col: usize, width: usize
             *last = format!("{}…", truncate_ansi(last, measure - 1, "").trim_end());
         }
     }
-    let gap = " ".repeat(col - str_width(&label) + GAP);
+    let gap = " ".repeat(col - str_width(label) + GAP);
     let indent = " ".repeat(at);
     lines
         .into_iter()
@@ -211,12 +230,13 @@ pub(crate) fn layout(
     top: usize,
     width: usize,
     room: usize,
+    dark: bool,
 ) -> (ListView, usize) {
     let col = label_column(ms, width);
     let items: Vec<Vec<String>> = ms
         .iter()
         .enumerate()
-        .map(|(i, s)| item_rows(s, cur == Some(i), col, width))
+        .map(|(i, s)| item_rows(s, cur == Some(i), col, width, dark))
         .collect();
     let span = |from: usize, to: usize| items[from..to].iter().map(Vec::len).sum::<usize>();
     let (mut top, at) = match cur {
@@ -241,12 +261,13 @@ pub(crate) fn layout(
 }
 
 /// The list for the composer's line in `room` rows (empty with no matches), its window kept on
-/// the composer for the next draw.
+/// the composer for the next draw; `dark` picks the current row's tint.
 pub(crate) fn frame_list(
     c: &mut Composer,
     commands: &[Suggestion],
     width: u16,
     room: usize,
+    dark: bool,
 ) -> ListView {
     let ms = matches_for(c, commands);
     let cur = if c.suggestion_base.is_empty() {
@@ -257,7 +278,7 @@ pub(crate) fn frame_list(
     let (view, top) = if ms.is_empty() {
         (ListView::default(), 0)
     } else {
-        layout(&ms, cur, c.suggestion_top, usize::from(width), room)
+        layout(&ms, cur, c.suggestion_top, usize::from(width), room, dark)
     };
     c.suggestion_top = top;
     view

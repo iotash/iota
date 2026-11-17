@@ -6,11 +6,13 @@
 //!
 //! - bold   — weight: the strong column of a two-column list (the completion list's labels)
 //! - faint  — chrome and secondary text: separators, hints, placeholders
-//! - cyan   — the accent: cursor rows, markers, prompt, spinner
+//! - cyan   — the accent: the cursor marker, prompt, spinner (never a list label)
 //! - green  — positive: checked boxes, command highlight
+//! - row bg — the current row of a list ([`row_bg`]): tint + [`CURSOR_MARK`] + bold label
 //! - yellow — warning: a figure heading somewhere the user should notice
 //! - red    — alerts ([`ERR_PREFIX`])
-//! - revOn  — strong emphasis: focused tab chips, user blocks
+//! - revOn  — strong emphasis, "this is yours / this is focused": user blocks, focused tab chips,
+//!   search hits
 //!
 //! Chat-side TEXT colors live in `crate::repl::render::styles`; markdown/code rendering owns its
 //! own theme in `crate::markdown::style`. One home per layer.
@@ -66,4 +68,37 @@ pub(crate) fn input_bg(dark: bool) -> &'static str {
     } else {
         "\x1b[48;5;254m"
     }
+}
+
+/// The current row's background in a list, the completion list and every panel list alike: one
+/// gray step past [`input_bg`] (237 vs 236 dark, 253 vs 254 light), so the "Other…" field being
+/// edited on the current row stays visible against it. Painted across the whole row by
+/// `crate::text::ansi::paint_row`; under `NO_COLOR` it drops and [`CURSOR_MARK`] and the bold
+/// label ([`emphasize`]) carry the row.
+pub(crate) fn row_bg(dark: bool) -> &'static str {
+    if dark {
+        "\x1b[48;5;237m"
+    } else {
+        "\x1b[48;5;253m"
+    }
+}
+
+/// The current row's gutter: a cyan `▸` and one space, the one cursor glyph of every list. The
+/// foreground closes with SGR 39 alone, so the row's background runs on.
+pub(crate) const CURSOR_MARK: &str = "\x1b[36m▸\x1b[39m ";
+
+/// A multi-select row's checked box: bold green `[x]`. ASCII on purpose — `✓` is ambiguous-width
+/// in CJK locales and would shift the label column. Bold survives `NO_COLOR`.
+pub(crate) const BOX_ON: &str = "\x1b[1;32m[x]\x1b[22;39m";
+/// A multi-select row's unchecked box: faint `[ ]`.
+pub(crate) const BOX_OFF: &str = "\x1b[2m[ ]\x1b[22m";
+
+/// The current row's label: bold, re-asserted after every SGR escape inside it, so a label
+/// carrying its own colours (`/tools`, `/jobs`) is as emphasized as a plain one. The label keeps
+/// its own colours; it is never recoloured.
+pub(crate) fn emphasize(label: &str) -> String {
+    format!(
+        "{BOLD}{}\x1b[22m",
+        crate::text::ansi::reassert_sgr(label, BOLD)
+    )
 }

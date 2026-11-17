@@ -27,7 +27,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifi
 use crate::ui::testutil::{Surf, ch, closed, ctrl, key};
 
 use crate::ui::INTERACTION_MAX_ROWS;
-use crate::ui::render::theme::{CYAN, FAINT, GREEN, RESET, REV_ON, input_bg};
+use crate::ui::render::theme::{BOLD, CYAN, FAINT, RESET, REV_ON, input_bg};
 use crate::ui::surface::field::{Field, input_field};
 use crate::ui::surface::tabbed::{
     PanelState, Room, SURFACE_MIN_ROWS, base_hint, panel_height, scroll_percent, surface_hint,
@@ -238,8 +238,23 @@ fn the_other_row_opens_an_inline_editor_whose_text_is_the_answer() {
         s.ps(0).editing,
         "Enter on Other must open the inline editor"
     );
-    // The editor renders in place, with its own hint row.
+    // The editor renders in place, with its own hint row. It is the current row: the gutter and
+    // the cells past the field wear the row tint (237), the field its own shade (236) one step off
+    // it, and the row still spans the 80 columns.
     assert!(s.plain().contains("your answer"), "{}", s.plain());
+    let row = s
+        .rows()
+        .into_iter()
+        .find(|r| strip_sgr(r).contains("your answer"))
+        .expect("editing row");
+    assert!(row.starts_with("\x1b[48;5;237m\x1b[36m"), "{row:?}");
+    let field = row.find(input_bg(true)).expect("the field's shade");
+    assert_eq!(strip_sgr(&row[..field]), "▸ ", "{row:?}");
+    assert!(
+        row[field..].contains("\x1b[48;5;237m"),
+        "the tint resumes past the field: {row:?}"
+    );
+    assert_eq!(ansi_width(&row), 80, "{row:?}");
     assert_eq!(s.hint(), "Tab switch · Enter confirm · Esc back to options");
 
     // ESC closes JUST the editor.
@@ -538,10 +553,12 @@ fn a_list_pages_by_its_visible_height() {
     assert_eq!(r.panels[0].cursor, 6, "→ moves the cursor one visible page");
 }
 
-/// A plain cursor row is recoloured cyan; a row carrying its own SGR keeps it (marker
-/// only); the tab-bar width is identical across focus switches.
+/// The cursor row is ONE affordance whatever its label carries: tinted across the full 80 columns
+/// on `row_bg`, the cyan `▸` gutter, the label bold — never recoloured. A label's own `\x1b[0m`
+/// would end both the tint and the bold, so each is re-asserted after it; the label's own green
+/// stays. The tab-bar width is identical across focus switches.
 #[test]
-fn the_cursor_row_is_recoloured_unless_it_carries_its_own_sgr() {
+fn the_cursor_row_is_tinted_and_bold_whatever_its_label_carries() {
     let mut s = Surf::open(vec![
         Panel::list(
             "A".to_owned(),
@@ -553,20 +570,39 @@ fn the_cursor_row_is_recoloured_unless_it_carries_its_own_sgr() {
         Panel::view("B".to_owned(), vec!["x".to_owned()]),
     ]);
 
-    let c = s.content();
-    assert!(
-        c.contains(&format!("{CYAN}plain-row{RESET}")),
-        "plain cursor row not highlighted:\n{c:?}"
+    const BG: &str = "\x1b[48;5;237m";
+    let rows = s.rows();
+    // `▸ ` + `plain-row` = 11 cells, 69 cells of tinted pad to the 80-column edge.
+    assert_eq!(
+        rows[1],
+        format!(
+            "{BG}{CYAN}{BG}▸\x1b[39m{BG} {BOLD}{BG}plain-row\x1b[22m{BG}{}{RESET}",
+            " ".repeat(69)
+        ),
+        "plain cursor row"
+    );
+    assert_eq!(
+        rows[2], "  \x1b[32mstyled\x1b[0m-row",
+        "a non-cursor row is untouched"
     );
     s.tap(key(KeyCode::Down));
-    assert!(
-        !s.content().contains(&format!("{CYAN}\x1b[32mstyled")),
-        "a styled row must keep its own colours, marker only"
+    let rows = s.rows();
+    assert_eq!(
+        rows[2],
+        format!(
+            "{BG}{CYAN}{BG}▸\x1b[39m{BG} {BOLD}{BG}\x1b[32m{BG}{BOLD}{BG}styled\x1b[0m{BG}{BOLD}{BG}\
+             -row\x1b[22m{BG}{}{RESET}",
+            " ".repeat(68)
+        ),
+        "a styled cursor row keeps its green, and the tint and bold outlive its reset"
     );
-    assert!(
-        s.content().contains(&format!("{CYAN}▸ {RESET}")),
-        "the cursor marker is missing"
-    );
+    assert_eq!(rows[1], "  plain-row");
+    assert!(!s.content().contains(&format!("{CYAN}plain-row")));
+
+    // The light theme's tint is one step past `input_bg`'s 254.
+    s.st.set_dark(false);
+    assert!(s.rows()[2].starts_with("\x1b[48;5;253m"));
+    s.st.set_dark(true);
 
     // The tab-bar width is focus-invariant (both chip states carry " title " padding).
     let bar_width = |s: &mut Surf| str_width(&strip_sgr(&s.rows()[0]));
@@ -584,7 +620,8 @@ fn the_cursor_row_is_recoloured_unless_it_carries_its_own_sgr() {
 /// Chips and checkboxes, byte-exact (tabbed.go:460-472, 493-499): a multi-panel bar
 /// joins `" Title "` chips with the faint `" │ "`, the focused one reverse-video; a
 /// single-panel surface renders its title as a lone FOCUSED chip (no faint dashes);
-/// Multi rows carry faint `"[ ] "` / green `"[x] "`.
+/// Multi rows carry a faint `"[ ] "` / bold green `"[x] "` box in their own column after the
+/// gutter, so a row both current and checked shows both.
 #[test]
 fn chips_and_checkbox_glyphs_are_byte_exact() {
     let mut s = Surf::open(vec![list("Temperature", &["a"])]);
@@ -599,9 +636,17 @@ fn chips_and_checkbox_glyphs_are_byte_exact() {
         s.rows()[0],
         format!("{REV_ON} Flags {RESET}{FAINT} │ {RESET}{FAINT} B {RESET}")
     );
-    assert!(s.content().contains(&format!("{FAINT}[ ] {RESET}")));
+    assert_eq!(s.rows()[2], "  \x1b[2m[ ]\x1b[22m y");
     s.tap(ch(' '));
-    assert!(s.content().contains(&format!("{GREEN}[x] {RESET}")));
+    const BG: &str = "\x1b[48;5;237m";
+    // `▸ ` + `[x] ` + `x` = 7 cells, 73 of tinted pad.
+    assert_eq!(
+        s.rows()[1],
+        format!(
+            "{BG}{CYAN}{BG}▸\x1b[39m{BG} \x1b[1;32m{BG}[x]\x1b[22;39m{BG} {BOLD}{BG}x\x1b[22m{BG}{}{RESET}",
+            " ".repeat(73)
+        )
+    );
     s.tap(key(KeyCode::Tab));
     assert_eq!(
         s.rows()[0],

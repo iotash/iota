@@ -501,7 +501,7 @@ mod tests {
         m.handle_key(key(KeyCode::Tab));
         let rows = plain(&mut m);
         assert!(
-            rows.iter().any(|r| r == "› model  Pick a model"),
+            rows.iter().any(|r| r.trim_end() == "▸ model  Pick a model"),
             "{rows:#?}"
         );
         assert!(

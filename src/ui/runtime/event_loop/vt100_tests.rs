@@ -1565,7 +1565,7 @@ fn order(rows: &[String]) -> Order {
     let conv = rows.iter().position(|r| r == CONV_LAST);
     let first = rows[..sep]
         .iter()
-        .position(|r| r.starts_with("› ") || r.starts_with("  "))
+        .position(|r| r.starts_with("▸ ") || r.starts_with("  "))
         .expect("list row");
     Order {
         conv,
@@ -1629,7 +1629,7 @@ fn the_completion_list_on_screen_at_80_and_160_columns() {
         assert_eq!(rows[13], "", "{w}: only the spacer between:\n{dump}");
         let list = &rows[*o.list.start()..=*o.list.end()];
         assert!(list[0].starts_with("  brain-page   Read"), "{w}:\n{dump}");
-        assert!(list[1].starts_with("› code-review  Review"), "{w}:\n{dump}");
+        assert!(list[1].starts_with("▸ code-review  Review"), "{w}:\n{dump}");
         assert_eq!(
             list[3], "  release",
             "{w}: no description, one row:\n{dump}"
@@ -1698,7 +1698,7 @@ fn a_short_terminal_keeps_the_composer_and_the_highlighted_item() {
     for _ in 0..4 {
         crate::ui::input::suggest::tab_complete(&mut m.composer, &m.commands);
     }
-    let label = "› investigate  Systematic debugging with root cause investigation: reproduce,";
+    let label = "▸ investigate  Systematic debugging with root cause investigation: reproduce,";
     let desc = "               analyze, hypothesize, then fix";
     let composer = "/skills investigate";
     let status = "claude-opus-5-5";
@@ -1884,7 +1884,7 @@ fn the_completion_list_takes_the_interaction_cap() {
     println!("--- /c 80x40 ---\n{}", rows.join("\n"));
     let list = |rows: &[String]| {
         rows.iter()
-            .filter(|r| r.starts_with("  c") || r.starts_with("› c"))
+            .filter(|r| r.starts_with("  c") || r.starts_with("▸ c"))
             .count()
     };
     assert_eq!(list(&rows), 15, "{}", rows.join("\n"));
@@ -1900,7 +1900,7 @@ fn the_completion_list_takes_the_interaction_cap() {
     println!("--- /c 80x40, ↑ ---\n{}", rows.join("\n"));
     assert_eq!(list(&rows), 15);
     assert_eq!(m.list_items, (25..40).collect::<Vec<_>>());
-    assert!(rows.iter().any(|r| r == "› c39"), "{}", rows.join("\n"));
+    assert!(rows.iter().any(|r| r == "▸ c39"), "{}", rows.join("\n"));
     // ↓ wraps to the first, and walking down 39 more reaches the last again.
     for _ in 0..40 {
         m.handle_key(KeyEvent::from(KeyCode::Down));

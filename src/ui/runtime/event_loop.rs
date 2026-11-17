@@ -985,7 +985,7 @@ impl Model {
             let room = screen
                 .saturating_sub(others)
                 .min(crate::ui::interaction_rows(screen));
-            let mut list = suggest::frame_list(&mut self.composer, &self.commands, fw, room);
+            let mut list = suggest::frame_list(&mut self.composer, &self.commands, fw, room, dark);
             // A screen too short for the highlighted item alone: the rows above the list go first
             // (the screen cuts them off the top), then the chrome (`SHED_ORDER`), then the item's
             // description rows from the bottom — never its label, never the composer.
