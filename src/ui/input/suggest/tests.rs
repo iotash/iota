@@ -420,13 +420,13 @@ fn test_skill_rows_hide_until_a_space_then_show_bare_names() {
 #[test]
 fn test_suggest_row_hues() {
     let rows = hue_rows();
-    const BG: &str = "\x1b[48;5;237m";
+    let bg = "\x1b[48;5;237m";
     // `▸ status   Provider, tokens, tools` is 34 cells; 46 of pad.
     assert_eq!(
         rows[0],
         format!(
-            "{BG}{CYAN}{BG}▸\x1b[39m{BG} {BOLD}{BG}status\x1b[22m{BG}   {FAINT}{BG}\
-             Provider, tokens, tools{RESET}{BG}{}{RESET}",
+            "{bg}{CYAN}{bg}▸\x1b[39m{bg} {BOLD}{bg}status\x1b[22m{bg}   {FAINT}{bg}\
+             Provider, tokens, tools{RESET}{bg}{}{RESET}",
             " ".repeat(46)
         )
     );

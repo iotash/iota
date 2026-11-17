@@ -496,7 +496,7 @@ list_block() {
 count_list() {
     local f="$1"
     shift
-    list_block "$@" | grep -cE -- "^(› |  )$f(  |\$)" | tr -d ' '
+    list_block "$@" | grep -cE -- "^(▸ |  )$f(  |\$)" | tr -d ' '
 }
 
 # The status row's MODEL segment alone — everything before the first " · " joiner.

@@ -570,13 +570,13 @@ fn the_cursor_row_is_tinted_and_bold_whatever_its_label_carries() {
         Panel::view("B".to_owned(), vec!["x".to_owned()]),
     ]);
 
-    const BG: &str = "\x1b[48;5;237m";
+    let bg = "\x1b[48;5;237m";
     let rows = s.rows();
     // `▸ ` + `plain-row` = 11 cells, 69 cells of tinted pad to the 80-column edge.
     assert_eq!(
         rows[1],
         format!(
-            "{BG}{CYAN}{BG}▸\x1b[39m{BG} {BOLD}{BG}plain-row\x1b[22m{BG}{}{RESET}",
+            "{bg}{CYAN}{bg}▸\x1b[39m{bg} {BOLD}{bg}plain-row\x1b[22m{bg}{}{RESET}",
             " ".repeat(69)
         ),
         "plain cursor row"
@@ -590,8 +590,8 @@ fn the_cursor_row_is_tinted_and_bold_whatever_its_label_carries() {
     assert_eq!(
         rows[2],
         format!(
-            "{BG}{CYAN}{BG}▸\x1b[39m{BG} {BOLD}{BG}\x1b[32m{BG}{BOLD}{BG}styled\x1b[0m{BG}{BOLD}{BG}\
-             -row\x1b[22m{BG}{}{RESET}",
+            "{bg}{CYAN}{bg}▸\x1b[39m{bg} {BOLD}{bg}\x1b[32m{bg}{BOLD}{bg}styled\x1b[0m{bg}{BOLD}{bg}\
+             -row\x1b[22m{bg}{}{RESET}",
             " ".repeat(68)
         ),
         "a styled cursor row keeps its green, and the tint and bold outlive its reset"
@@ -638,12 +638,12 @@ fn chips_and_checkbox_glyphs_are_byte_exact() {
     );
     assert_eq!(s.rows()[2], "  \x1b[2m[ ]\x1b[22m y");
     s.tap(ch(' '));
-    const BG: &str = "\x1b[48;5;237m";
+    let bg = "\x1b[48;5;237m";
     // `▸ ` + `[x] ` + `x` = 7 cells, 73 of tinted pad.
     assert_eq!(
         s.rows()[1],
         format!(
-            "{BG}{CYAN}{BG}▸\x1b[39m{BG} \x1b[1;32m{BG}[x]\x1b[22;39m{BG} {BOLD}{BG}x\x1b[22m{BG}{}{RESET}",
+            "{bg}{CYAN}{bg}▸\x1b[39m{bg} \x1b[1;32m{bg}[x]\x1b[22;39m{bg} {BOLD}{bg}x\x1b[22m{bg}{}{RESET}",
             " ".repeat(73)
         )
     );

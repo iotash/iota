@@ -157,6 +157,9 @@ key Enter
 wait_vis 'Enter select' || miss "NO_COLOR: the /model combo never opened"
 settle || miss "NO_COLOR: the combo never settled"
 check "NO_COLOR: the surface keeps its ▸ cursor marker" "$(count_vis '▸ fake [m] (current)')" 1
+# …and its label's bold: the row tint is a colour and drops, the weight is an attribute and stays.
+check "NO_COLOR: the cursor row's label stays bold" \
+    "$(tm capture-pane -e -pt s 2>/dev/null | grep -F '▸ ' | LC_ALL=C grep -ca $'\e\\[1m' | tr -d ' ')" 1
 check "NO_COLOR: the combo field keeps its placeholder" "$(count_vis 'model name (e.g. gpt-4o)')" 1
 check "NO_COLOR: …behind a ❯ edge of its own (the field's alone: the composer has no glyph)" "$(cap | grep -c '^❯' | tr -d ' ')" 1
 if raw_has_color; then
