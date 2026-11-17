@@ -514,8 +514,8 @@ NO_COLOR=1 target/release/iota          # then the same session with TERM=dumb
 - [ ] **8c.3 A diff is legible without its shading.** Run a tool that edits a file: the `+`/`-`
       rows arrive as `NNN + code` / `NNN - code` with no background block, aligned as before.
 - [x] 自动化：scenario 16 **8c.4 The surfaces still show their cursor.** `/model`, `/tools`, `/session`: the cursor
-      row keeps its `▸` marker and a focused tab chip is still reverse video, so every surface
-      is navigable with no cyan anywhere.
+      row keeps its `▸` marker and its bold label (the row tint drops with the colours) and a
+      focused tab chip is still reverse video, so every surface is navigable with no cyan anywhere.
 - [x] 自动化：scenario 16 **8c.5 The input field has an edge.** `/model`'s combo field and `/file`'s field have no
       background tint now; the `❯` and the hint must still make the field's extent obvious.
 - [ ] **8c.6 Images keep their pixels.** An image reply renders its half-blocks in color — the

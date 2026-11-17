@@ -3,6 +3,19 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Changed
+
+- **Every list marks its current row the same way.** The completion list,
+  the pickers and the selection lists in `/model`, `/tools`, `/jobs`,
+  `/session` and the rest now shade the whole current row, put a `▸` in front
+  of it and set its label in bold. Rows whose labels have colours of their own
+  (`/tools`, `/jobs`) used to show only the `▸`; they now get the full
+  highlight too. A checked item in a multi-select keeps its `[x]`, in bold
+  green, beside the `▸`. With `NO_COLOR` the shading goes and the `▸` and the
+  bold stay.
+
 ## 0.10.0 - 2026-11-16
 
 ### Added
