@@ -308,6 +308,10 @@ pub(crate) struct Model {
     pub(crate) frame_map: FrameMap,
     /// The match each completion-list row of the last frame belongs to (where a click lands).
     pub(crate) list_items: Vec<usize>,
+    /// The completion list's area while it is open: the most list rows any frame has drawn since it
+    /// opened (0 = closed). A narrowing match leaves blank rows inside it, so the area's top edge
+    /// holds still.
+    pub(crate) list_mark: usize,
     /// What the status row says for a moment after a selection was copied, and since when.
     pub(crate) copied: Option<(String, Instant)>,
     /// The key that hands a drag to the terminal's own selection (`Shift`; `Option` in iTerm2).
@@ -411,6 +415,7 @@ impl Model {
             view_h: 0,
             frame_map: FrameMap::default(),
             list_items: Vec::new(),
+            list_mark: 0,
             copied: None,
             native: "Shift",
             copy_pending: false,
@@ -986,21 +991,27 @@ impl Model {
                 .saturating_sub(others)
                 .min(crate::ui::interaction_rows(screen));
             let mut list = suggest::frame_list(&mut self.composer, &self.commands, fw, room, dark);
+            // The area keeps the tallest list it has held since it opened (within the room), so a
+            // narrowing match leaves blank rows instead of moving the area's top edge.
+            let area = list.rows.len().max(self.list_mark.min(room));
             // A screen too short for the highlighted item alone: the rows above the list go first
             // (the screen cuts them off the top), then the chrome (`SHED_ORDER`), then the item's
             // description rows from the bottom — never its label, never the composer.
             let above = others - composer_rows.len() - SHED_ORDER;
-            let over = (others + list.rows.len())
-                .saturating_sub(screen)
-                .saturating_sub(above);
+            let over = (others + area).saturating_sub(screen).saturating_sub(above);
             shed = over.min(SHED_ORDER);
-            let keep = list.rows.len().saturating_sub(over - shed).max(1);
+            let len = list.rows.len();
+            let keep = len.saturating_sub(over - shed).max(1);
             list.rows.truncate(keep);
             list.items.truncate(keep);
+            // A list that does not fit has no blank rows (`area` is its length then).
+            self.list_mark = area - (len - keep);
             list
         } else {
+            self.list_mark = 0;
             ListView::default()
         };
+        let list_blank = self.list_mark.saturating_sub(list.rows.len());
         let surface = self.surface.as_mut().map(|s| {
             s.st.set_room(room, self.height);
             s.st.set_dark(dark);
@@ -1037,6 +1048,7 @@ impl Model {
             composer_rows: &composer_rows,
             composer_cursor: cursor,
             list: &list.rows,
+            list_blank,
             bottom,
             status: &self.status,
             busy: busy.as_ref(),
@@ -1069,6 +1081,7 @@ impl Model {
             composer_rows,
             composer_cursor: None,
             list: &[],
+            list_blank: 0,
             bottom,
             status: &self.status,
             busy,

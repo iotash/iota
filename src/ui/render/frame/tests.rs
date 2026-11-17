@@ -63,6 +63,11 @@ impl Default for Case {
 /// Builds the frame for a case with a one-row composer holding `draft` (no prompt glyph: the
 /// text at column 0, the cursor right after it at column 5).
 fn view(c: &Case) -> FrameView {
+    view_blank(c, 0)
+}
+
+/// [`view`] with `list_blank` blank rows kept above the list.
+fn view_blank(c: &Case, list_blank: usize) -> FrameView {
     let composer_rows = vec!["draft".to_owned()];
     let bottom = if let Some(s) = &c.surface {
         BottomZone::Surface(s)
@@ -83,6 +88,7 @@ fn view(c: &Case) -> FrameView {
             Some((5, 0))
         },
         list: &c.list,
+        list_blank,
         bottom,
         status: &c.status,
         busy: c.busy.as_ref(),
@@ -227,9 +233,9 @@ fn frame_order_with_empty_composer_and_slot_swap() {
         "composer cursor must hide while a surface is open"
     );
 
-    // The completion list sits directly above the upper separator — above the composer, which
-    // is above the status row; the map says where the list is, and the composer's cursor row
-    // counts the list's rows above it.
+    // The completion list sits under the upper separator — the area's top edge — directly on the
+    // composer, which is above the status row; the map says where the list is, the composer's
+    // cursor row counts the list's rows above it, and the list's rows float over the conversation.
     // A real highlighted item, two rows tall: its description wraps once at 80 columns.
     let list = item_rows(
         &Suggestion {
@@ -259,21 +265,41 @@ fn frame_order_with_empty_composer_and_slot_swap() {
     let composer = find(&rows, |r| r == "draft").expect("composer row");
     let status = find(&rows, |r| r.contains("gpt-4o · ")).expect("status row");
     assert!(
-        item + 1 == desc
-            && desc + 1 == seps[0]
-            && seps[0] < composer
+        seps[0] + 1 == item
+            && item + 1 == desc
+            && desc + 1 == composer
             && composer < seps[1]
             && seps[1] < status,
-        "list, upper separator, composer, lower separator, status — in that order (sep={seps:?} item={item} desc={desc} composer={composer} status={status}):\n{rows:#?}"
+        "upper separator, list, composer, lower separator, status — in that order (sep={seps:?} item={item} desc={desc} composer={composer} status={status}):\n{rows:#?}"
     );
     assert!(
-        rows[item - 1].contains("queued"),
-        "the queue stays above the list:\n{rows:#?}"
+        rows[seps[0] - 1].contains("queued"),
+        "the queue stays above the area's top edge:\n{rows:#?}"
     );
     assert_eq!(status, rows.len() - 1, "status stays the frame's last row");
     assert_eq!(v.map.composer, composer);
     assert_eq!(v.cursor.map(|(_, y)| usize::from(y)), Some(composer));
     assert_eq!((v.map.list, v.map.list_rows), (Some(item), 2));
+    assert_eq!(v.float, 2, "the list's rows float");
+
+    // A narrowed list keeps its area: the blank rows go between the edge and the list, which stays
+    // on the composer; they float too.
+    let mut fi_rows = case.list.clone();
+    fi_rows.truncate(1);
+    let narrowed = Case {
+        list: fi_rows,
+        ..case
+    };
+    let w = view_blank(&narrowed, 3);
+    let rows = plain(&w);
+    let seps = separator_indices(&rows);
+    let item = find(&rows, |r| r.contains("▸ model")).expect("list row");
+    assert!(
+        rows[seps[0] + 1..item].iter().all(String::is_empty) && item == seps[0] + 4,
+        "three blank rows under the edge:\n{rows:#?}"
+    );
+    assert_eq!(rows[item + 1], "draft", "the list sits on the composer");
+    assert_eq!((w.map.list, w.map.list_rows, w.float), (Some(item), 1, 4));
 }
 
 /// One CONSTANT blank row separates the content side from everything input-side —
@@ -1063,8 +1089,8 @@ fn the_turn_clock_takes_the_waits_out() {
 /// The separators are the faint solid rule, one cell per column at every width — odd ones too,
 /// under a completion row of double-width characters (at an odd width it ends one column short
 /// of the edge, where the next wide cell would straddle it) —
-/// and the rows around them stay where they were: the list row directly above the upper
-/// separator, the prompt between the two, the status row under the lower one.
+/// and the rows around them stay where they were: the list row directly under the upper
+/// separator, on the prompt, the status row under the lower one.
 #[test]
 fn the_separators_are_a_faint_solid_rule_the_width_of_the_frame() {
     for w in [21u16, 40, 79, 80, 160] {
@@ -1085,16 +1111,16 @@ fn the_separators_are_a_faint_solid_rule_the_width_of_the_frame() {
         }
         let [top, bot] = [seps[0], seps[1]];
         assert_eq!(
-            rows[top - 1],
+            rows[top + 1],
             wide,
-            "{w}: the list row sits on the upper separator"
+            "{w}: the list row sits under the upper separator"
         );
         assert_eq!(
-            rows[top + 1],
+            rows[top + 2],
             "draft",
-            "{w}: the composer between the separators"
+            "{w}: the composer on the list, between the separators"
         );
-        assert_eq!(bot, top + 2, "{w}: one composer row");
+        assert_eq!(bot, top + 3, "{w}: one list row, one composer row");
         assert_eq!(
             bot + 1,
             rows.len() - 1,
@@ -1102,6 +1128,6 @@ fn the_separators_are_a_faint_solid_rule_the_width_of_the_frame() {
         );
         let grid = render_plain(&v.rows, w, u16::try_from(rows.len()).unwrap());
         assert_eq!(grid[top], rule, "{w}: the cell grid");
-        assert_eq!(grid[top - 1], wide, "{w}: the wide row's cells");
+        assert_eq!(grid[top + 1], wide, "{w}: the wide row's cells");
     }
 }

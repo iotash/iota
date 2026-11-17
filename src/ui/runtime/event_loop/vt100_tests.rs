@@ -299,6 +299,7 @@ fn snapshot_implies_draw_and_cursor_restored() {
 /// The four-row idle frame with `draft` typed, the cursor after it.
 fn composer(draft: &str) -> crate::ui::render::frame::FrameView {
     crate::ui::render::frame::FrameView {
+        float: 0,
         rows: vec![
             "─".repeat(80),
             draft.to_owned(),
@@ -365,6 +366,7 @@ fn a_write_is_one_synchronized_update_exactly_when_it_is_longer_than_sync_min() 
     use crate::ui::runtime::screen::SYNC_MIN;
     let (mut t, buf) = direct_term();
     let view = |rows: Vec<String>, cursor: (u16, u16)| crate::ui::render::frame::FrameView {
+        float: 0,
         rows,
         cursor: Some(cursor),
         map: crate::ui::render::frame::FrameMap::default(),
@@ -461,6 +463,7 @@ fn a_write_is_one_synchronized_update_exactly_when_it_is_longer_than_sync_min() 
 fn a_frame_that_shrinks_leaves_no_ghost() {
     let (mut t, buf) = direct_term();
     let tall = crate::ui::render::frame::FrameView {
+        float: 0,
         rows: (0..10)
             .map(|i| {
                 if i == 5 {
@@ -1214,6 +1217,7 @@ fn a_resize_with_a_surface_open_leaves_one_whole_frame() {
     let history: Vec<String> = (0..6).map(|i| format!("hist-{i}")).collect();
     t.push(rows_of(&history));
     let view = |w: usize| crate::ui::render::frame::FrameView {
+        float: 0,
         rows: [
             String::new(),
             "─".repeat(w),
@@ -1537,18 +1541,21 @@ fn shown(m: &mut Model, cols: u16, lines: u16) -> Vec<String> {
         .collect()
 }
 
-/// Where the screen's blocks are, top to bottom: the conversation's last line, the list's first
-/// and last rows, the upper separator, the composer, the status row.
+/// Where the screen's blocks are, top to bottom: the conversation's last line, the upper
+/// separator (the list area's top edge), the list's first and last rows, the composer, the lower
+/// separator, the status row.
 #[derive(Debug, PartialEq, Eq)]
 struct Order {
     conv: Option<usize>,
-    list: std::ops::RangeInclusive<usize>,
     sep: usize,
+    list: std::ops::RangeInclusive<usize>,
     composer: usize,
+    lower: usize,
     status: usize,
 }
 
-/// The [`Order`] of `rows` (the list is the rows between the frame's spacer and the separator).
+/// The [`Order`] of `rows` (the list is the rows from the first one written under the upper
+/// separator down to the composer; the area's blank rows are above it).
 fn order(rows: &[String]) -> Order {
     let sep = rows
         .iter()
@@ -1558,20 +1565,25 @@ fn order(rows: &[String]) -> Order {
         .iter()
         .position(|r| r.starts_with("/skills"))
         .expect("composer");
+    let lower = composer + 1;
+    assert!(rows[lower].starts_with('─'), "lower separator: {rows:#?}");
     let status = rows
         .iter()
         .position(|r| r.contains("claude-opus-5-5"))
         .expect("status");
     let conv = rows.iter().position(|r| r == CONV_LAST);
-    let first = rows[..sep]
-        .iter()
-        .position(|r| r.starts_with("▸ ") || r.starts_with("  "))
-        .expect("list row");
+    let first = sep
+        + 1
+        + rows[sep + 1..composer]
+            .iter()
+            .position(|r| r.starts_with("▸ ") || r.starts_with("  "))
+            .expect("list row");
     Order {
         conv,
-        list: first..=sep - 1,
         sep,
+        list: first..=composer - 1,
         composer,
+        lower,
         status,
     }
 }
@@ -1595,8 +1607,8 @@ fn skills_model(typed: &str) -> Model {
 }
 
 /// The completion list as a terminal shows it, at 80 and 160 columns, ABOVE the composer: the
-/// conversation's last line, the frame's one spacer row, the list, the upper separator, the
-/// composer, the lower separator, the status row — in that order. Two columns: the labels at
+/// conversation's last line, the frame's one spacer row, the upper separator (the list area's top
+/// edge), the list, the composer, the lower separator, the status row — in that order. Two columns: the labels at
 /// column 2 (the marker at 0, under the composer's text) and — two past the longest label — the descriptions, at the same column on every
 /// row; at 160 columns a description still wraps at the 72-column measure, and is cut with `…`
 /// after two lines; an item with no description is its label alone. Run with `--nocapture` to
@@ -1619,9 +1631,10 @@ fn the_completion_list_on_screen_at_80_and_160_columns() {
             o,
             Order {
                 conv: Some(12),
-                list: 14..=19,
-                sep: 20,
+                sep: 14,
+                list: 15..=20,
                 composer: 21,
+                lower: 22,
                 status: 23,
             },
             "{w}:\n{dump}"
@@ -1657,8 +1670,10 @@ fn the_completion_list_on_screen_at_80_and_160_columns() {
 }
 
 /// The list grows UPWARD: one more character that matches more items — `/skills` offers the
-/// command alone, `/skills ` its whole catalog — adds rows at the list's top, and the composer, the separators and the status row keep their rows; the
-/// conversation gives the rows up.
+/// command alone, `/skills ` its whole catalog — adds rows at the list's top, the area's top edge
+/// (the upper separator) rises with it, and the composer, the lower separator and the status row
+/// keep their rows; a two-line conversation sits on the frame, so its blank rows take the area
+/// (nothing is covered).
 #[test]
 fn the_composer_holds_still_while_the_list_grows() {
     let mut m = skills_model("/skills");
@@ -1672,25 +1687,25 @@ fn the_composer_holds_still_while_the_list_grows() {
     let a = order(&after);
     assert_eq!(a.list.clone().count(), 6, "{after:#?}");
     assert_eq!(
-        (a.sep, a.composer, a.status),
-        (b.sep, b.composer, b.status),
+        (a.composer, a.lower, a.status),
+        (b.composer, b.lower, b.status),
         "the composer moved:\n{after:#?}"
     );
     assert_eq!(a.list.end(), b.list.end(), "the list's bottom moved");
     assert_eq!(
-        *a.list.start() + 5,
-        *b.list.start(),
-        "the list's top is what moves"
+        (*a.list.start() + 5, a.sep + 5),
+        (*b.list.start(), b.sep),
+        "the list's top and the area's edge are what move"
     );
     assert_eq!(
         a.conv.map(|c| c + 5),
         b.conv,
-        "the conversation gives up the rows"
+        "the blank rows above the conversation take the area"
     );
 }
 
 /// On a short terminal the highlighted item beats everything but the composer: the rows above the
-/// list (the spacer) go first, then the lower and the upper separator, then the status row, then
+/// area (the spacer) go first, then the lower and the upper separator (the area's top edge), then the status row, then
 /// the item's description from the bottom — its label row and the composer stay.
 #[test]
 fn a_short_terminal_keeps_the_composer_and_the_highlighted_item() {
@@ -1704,8 +1719,8 @@ fn a_short_terminal_keeps_the_composer_and_the_highlighted_item() {
     let status = "claude-opus-5-5";
     let sep = "─".repeat(80);
     let screens: [(u16, Vec<&str>); 5] = [
-        (6, vec![label, desc, &sep, composer, &sep, status]),
-        (5, vec![label, desc, &sep, composer, status]),
+        (6, vec![&sep, label, desc, composer, &sep, status]),
+        (5, vec![&sep, label, desc, composer, status]),
         (4, vec![label, desc, composer, status]),
         (3, vec![label, desc, composer]),
         (2, vec![label, composer]),
@@ -1716,6 +1731,131 @@ fn a_short_terminal_keeps_the_composer_and_the_highlighted_item() {
         assert_eq!(rows, want, "80x{lines}");
         assert_eq!(m.list_items.first(), Some(&3), "the highlighted item alone");
     }
+}
+
+// --- the list floats over the conversation -------------------------------------
+
+/// One terminal kept across frames, the model's frame drawn over `conv`: each [`Floated::draw`]
+/// is what the terminal shows after that frame, one row each, as its bytes and as plain text.
+struct Floated {
+    term: Term<SharedBuf>,
+    buf: SharedBuf,
+    size: (u16, u16),
+}
+
+impl Floated {
+    fn new(m: &mut Model, conv: Vec<Block>, cols: u16, lines: u16) -> Self {
+        m.width = cols;
+        m.height = lines;
+        let buf = SharedBuf::default();
+        let wtr = buf.clone();
+        let mut term =
+            Term::headless(Box::new(move || wtr.clone()), Size::new(cols, lines), false).unwrap();
+        term.push(conv);
+        Self {
+            term,
+            buf,
+            size: (cols, lines),
+        }
+    }
+
+    fn draw(&mut self, m: &mut Model) -> (Vec<Vec<u8>>, Vec<String>) {
+        let view = m.frame_view();
+        self.term.draw_frame(&view, None).unwrap();
+        let (cols, lines) = self.size;
+        let parser = parse_sized(&self.buf, cols, lines);
+        let screen = parser.screen();
+        (
+            screen.rows_formatted(0, cols).collect(),
+            screen.rows(0, cols).map(|r| r.trim_end().to_owned()).collect(),
+        )
+    }
+}
+
+/// The owner's ask: over a conversation that fills the screen, the completion list is an
+/// overlay. Opening it, and a keystroke that narrows the matches, leave every conversation row
+/// above it byte for byte as it was with no list — the conversation keeps its rectangle and the
+/// frame is drawn over its last rows — and the narrowing leaves the area's top edge (the upper
+/// separator) byte for byte where it was: the list shortens inside the area, blank rows above it.
+#[test]
+fn a_narrowing_match_moves_nothing_above_the_list() {
+    let mut m = skills_model("");
+    let conv = Block::rows((0..60).map(|i| format!("conv-{i:02}")));
+    let mut t = Floated::new(&mut m, conv, 80, 24);
+    let (closed, closed_txt) = t.draw(&mut m);
+    println!("--- closed ---\n{}", closed_txt.join("\n"));
+    crate::ui::testutil::type_text(&mut m, "/skills ");
+    let (open, open_txt) = t.draw(&mut m);
+    println!("--- /skills␠ ---\n{}", open_txt.join("\n"));
+    crate::ui::testutil::type_text(&mut m, "c");
+    let (narrow, narrow_txt) = t.draw(&mut m);
+    println!("--- /skills c ---\n{}", narrow_txt.join("\n"));
+    let o = order(&open_txt);
+    let n = order(&narrow_txt);
+    assert_eq!(o.list.clone().count(), 6, "{open_txt:#?}");
+    assert_eq!(n.list.clone().count(), 2, "{narrow_txt:#?}");
+    // The conversation filled the screen: its rows run to the area's edge, the spacer between.
+    assert_eq!(open_txt[o.sep - 2], "conv-53", "{open_txt:#?}");
+    assert_eq!(open_txt[o.sep - 1], "", "the spacer");
+    for y in 0..o.sep - 1 {
+        assert_eq!(open[y], closed[y], "row {y} moved when the list opened");
+    }
+    for y in 0..=o.sep {
+        assert_eq!(narrow[y], open[y], "row {y} moved when the matches narrowed");
+    }
+    assert_eq!(n.sep, o.sep, "the area's top edge moved:\n{narrow_txt:#?}");
+    assert_eq!(narrow[n.sep], open[o.sep], "the top edge's bytes changed");
+    assert_eq!(
+        (n.list.end(), n.composer, n.lower, n.status),
+        (o.list.end(), o.composer, o.lower, o.status),
+        "the list sits on the composer"
+    );
+    assert!(
+        narrow_txt[o.sep + 1..*n.list.start()]
+            .iter()
+            .all(String::is_empty),
+        "the area keeps the narrowed rows blank:\n{narrow_txt:#?}"
+    );
+    // Closing gives the covered rows back: the screen reads as it did before the list opened (the
+    // rewritten rows' blank cells are written spaces now, so the text is compared, not the bytes).
+    m.composer.set_value("");
+    let (_, shut) = t.draw(&mut m);
+    assert_eq!(shut, closed_txt, "closing the list restores the screen");
+}
+
+/// A conversation shorter than the screen: the blank rows above it take the list's area, so
+/// nothing is covered. The text moves once, when the list opens — not when the matches narrow —
+/// and goes back when it closes.
+#[test]
+fn a_short_conversation_gives_its_blank_rows_to_the_list() {
+    let mut m = skills_model("");
+    let conv = Block::rows(["a first line", CONV_LAST]);
+    let mut t = Floated::new(&mut m, conv, 80, 24);
+    let at = |rows: &[String]| {
+        let first = rows.iter().position(|r| r == "a first line");
+        let last = rows.iter().position(|r| r == CONV_LAST);
+        (first, last)
+    };
+    let (_, closed) = t.draw(&mut m);
+    crate::ui::testutil::type_text(&mut m, "/skills ");
+    let (open, open_txt) = t.draw(&mut m);
+    crate::ui::testutil::type_text(&mut m, "c");
+    let (narrow, narrow_txt) = t.draw(&mut m);
+    println!("--- /skills c ---\n{}", narrow_txt.join("\n"));
+    m.composer.set_value("");
+    let (_, shut) = t.draw(&mut m);
+    let o = order(&open_txt);
+    assert_eq!(at(&closed), (Some(17), Some(18)), "{closed:#?}");
+    assert_eq!(
+        at(&open_txt),
+        (Some(o.sep - 3), Some(o.sep - 2)),
+        "the conversation sits on the area, nothing covered:\n{open_txt:#?}"
+    );
+    assert_eq!(at(&narrow_txt), at(&open_txt), "the text moved on narrowing");
+    for y in 0..=o.sep {
+        assert_eq!(narrow[y], open[y], "row {y} moved when the matches narrowed");
+    }
+    assert_eq!(at(&shut), at(&closed), "closing puts the text back");
 }
 
 // --- the interaction cap: half the screen or 15 rows ---------------------------

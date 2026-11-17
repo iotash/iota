@@ -4,8 +4,14 @@
 //! with ratatui's own [`Terminal`] in [`Viewport::Fullscreen`]: the alternate screen has no
 //! history and no reflow, so every byte may name a row.
 //!
-//! The screen is two rectangles, top to bottom: the conversation viewport and the frame (the
-//! loop's [`FrameView`] rows, pinned to the bottom). The conversation is a buffer of committed
+//! The screen is the conversation's rectangle with the frame (the loop's [`FrameView`] rows,
+//! pinned to the bottom) drawn over its last rows. The rectangle is what the frame leaves with no
+//! completion list open; the list's area ([`FrameView::float`]) floats over it, so opening,
+//! narrowing or closing the list never moves the conversation. The VISIBLE rows are the ones above
+//! the frame: only they are drawn, marked for the selection and the mouse, and scrolled; a covered
+//! row is laid out and followed like any other but has no mark. A conversation shorter than its
+//! rectangle sits on the frame, so its blank rows take the area before any of its lines is
+//! covered. The conversation is a buffer of committed
 //! BLOCKS ([`Conversation`], `ui::block`): fixed rows, and blocks laid out from their source at
 //! the width of the draw. A block's display lines are computed when a draw first needs them at a
 //! width and cached with it (a row wider than the screen is hard-wrapped by `wrap_ansi`), and
@@ -120,8 +126,11 @@ pub(crate) const TRANSCRIPT_MARK: &str = "┈┈┈┈ iota transcript ┈┈┈
 pub(crate) struct Screen<W: Write> {
     term: Terminal<Out<W>>,
     conv: Conversation,
-    /// The viewport's height at the last draw (what half a screen is).
+    /// The conversation's rectangle at the last draw (what half a screen is): the rows above the
+    /// frame without its floating rows.
     view_h: u16,
+    /// The rows above the frame at the last draw: the conversation's rows not covered.
+    vis_h: u16,
     /// The open batches' depth, shared with the [`SyncOut`] under the backend.
     batch: Arc<AtomicUsize>,
     /// The last frame drawn, while it is what the screen shows (a clear or a resize forgets it).
@@ -150,8 +159,9 @@ pub(crate) struct Screen<W: Write> {
     /// Whether the button that made [`Screen::sel`] is still down, and whether it has moved (a
     /// word or a row counts as moved: it copies on release).
     drag: Option<bool>,
-    /// What each viewport row showed at the last draw, top to bottom: (row number, line), `None`
-    /// for a blank row, the trimmed marker, the search line or the way back to the tail.
+    /// What each visible row showed at the last draw, top to bottom: (row number, line), `None`
+    /// for a blank row, the trimmed marker, the search line or the way back to the tail. A row
+    /// the frame covers has no mark.
     marks: Vec<Option<(u64, usize)>>,
     /// The text the last release selected, until the loop copies it.
     copied: Option<String>,
@@ -175,6 +185,10 @@ enum Place {
 struct Shown {
     buf: Buffer,
     view_h: u16,
+    /// The visible rows.
+    vis: u16,
+    /// The screen row under the conversation's last line.
+    bottom: u16,
     following: bool,
 }
 
@@ -204,6 +218,7 @@ impl<W: Write> Screen<W> {
             term,
             conv: Conversation::new(),
             view_h: size.height,
+            vis_h: size.height,
             batch,
             last: None,
             place: Place::Main,
@@ -237,9 +252,9 @@ impl<W: Write> Screen<W> {
         self.conv.release();
     }
 
-    /// The viewport's height at the last draw (the rows above the frame).
+    /// The rows above the frame at the last draw (the conversation's visible rows).
     pub(crate) fn view_height(&self) -> u16 {
-        self.view_h
+        self.vis_h
     }
 
     /// The text the last release selected, once (the loop hands it to the clipboard).
@@ -376,15 +391,15 @@ impl<W: Write> Screen<W> {
         }
     }
 
-    /// Whether the viewport's last row is the way back to the tail: scrolled back — but not a view
+    /// Whether the last visible row is the way back to the tail: scrolled back — but not a view
     /// a drag holds at the bottom with nothing new below it.
     fn way_back_shown(&self) -> bool {
         !self.conv.following() && (!self.conv.held() || self.conv.unseen() > 0)
     }
 
-    /// The buffer cell under screen cell (`col`, `row`), held to the shown lines: above the first
-    /// one it is that line's start, below the last one (the frame, the way back to the tail) that
-    /// line's end.
+    /// The buffer cell under screen cell (`col`, `row`), held to the visible lines: above the first
+    /// one it is that line's start, below the last one (the frame — the completion list over a
+    /// covered line too — the way back to the tail) that line's end.
     fn point_near(&self, col: u16, row: u16, width: usize) -> Option<Point> {
         let first = self.marks.iter().position(Option::is_some)?;
         let last = self.marks.iter().rposition(Option::is_some)?;
@@ -400,13 +415,14 @@ impl<W: Write> Screen<W> {
         Some(Point { row: n, line, col })
     }
 
-    /// Records what each viewport row shows for the view as it is now — the conversation sits on
-    /// the frame, the search line or the way back to the tail on the viewport's last row.
+    /// Records what each visible row shows for the view as it is now ([`Screen::view_lines`]'s
+    /// rows) — the search line or the way back to the tail on the last one.
     fn mark_view(&mut self, width: usize) {
-        let h = usize::from(self.view_h);
+        let (h, vis) = (usize::from(self.view_h), usize::from(self.vis_h));
         let shown = self.conv.view_marks(width, h);
-        let mut marks = vec![None; h.saturating_sub(shown.len())];
+        let mut marks = vec![None; sits_at(shown.len(), vis, h)];
         marks.extend(shown);
+        marks.resize(vis, None);
         if (self.search.is_some() || self.way_back_shown())
             && let Some(last) = marks.last_mut()
         {
@@ -601,8 +617,13 @@ impl<W: Write> Screen<W> {
         let frame_h = u16::try_from(view.rows.len())
             .unwrap_or(u16::MAX)
             .min(height);
-        let view_h = height - frame_h;
+        let float = u16::try_from(view.float).unwrap_or(u16::MAX).min(frame_h);
+        // The conversation keeps the rectangle the frame leaves without its floating rows; the
+        // frame is drawn over that rectangle's last `float` rows.
+        let view_h = height - (frame_h - float);
+        let vis = height - frame_h;
         self.view_h = view_h;
+        self.vis_h = vis;
         if let Some(s) = &mut self.search {
             s.catch_up(&mut self.conv, usize::from(width));
             // A resize re-lays-out the block the walk is on: the view goes back to its hit.
@@ -613,19 +634,17 @@ impl<W: Write> Screen<W> {
                     .jump_to(hit, s.query(), usize::from(width), usize::from(view_h));
             }
         }
-        let lines = self.view_lines(usize::from(width), usize::from(view_h), prompt);
+        let (lines, bottom) = self.view_lines(usize::from(width), prompt);
         let fresh = self
             .conv
             .take_fresh(usize::from(width), usize::from(view_h));
-        if let Some(n) = self.scrolled_by(fresh, view_h) {
-            self.scroll_region(n, view_h)?;
+        if let Some(n) = self.scrolled_by(fresh, bottom) {
+            self.scroll_region(n, vis)?;
         }
-        let shown = u16::try_from(lines.len()).unwrap_or(view_h).min(view_h);
         self.mark_view(usize::from(width));
-        let lit = self.selected_cells(&lines, view_h);
-        // The conversation sits on the frame: a short one leaves the blank rows at the top.
-        let conv = Rect::new(0, view_h - shown, width, shown);
-        let frame = Rect::new(0, view_h, width, frame_h);
+        let lit = self.selected_cells(&lines);
+        let conv = Rect::new(0, 0, width, vis);
+        let frame = Rect::new(0, vis, width, frame_h);
         // A frame taller than the screen leaves rows out at its top (`FrameMap::cut_for`).
         let cut = view.map.cut_for(view.rows.len(), usize::from(frame_h));
         let frame_lines: Vec<Line<'static>> =
@@ -637,19 +656,19 @@ impl<W: Write> Screen<W> {
             .as_ref()
             .and(prompt)
             .and_then(|p| p.cursor)
-            .filter(|_| view_h > 0);
+            .filter(|_| vis > 0);
         let cursor = match typing {
             Some(col) => Some(Position::new(
                 u16::try_from(col + 1)
                     .unwrap_or(u16::MAX)
                     .min(width.saturating_sub(1)),
-                view_h - 1,
+                vis - 1,
             )),
             None => view.cursor.and_then(|(x, y)| {
                 let y = y.checked_sub(u16::try_from(cut).unwrap_or(u16::MAX))?;
                 Some(Position::new(
                     x.min(width.saturating_sub(1)),
-                    view_h.saturating_add(y.min(frame_h.saturating_sub(1))),
+                    vis.saturating_add(y.min(frame_h.saturating_sub(1))),
                 ))
             }),
         };
@@ -670,26 +689,24 @@ impl<W: Write> Screen<W> {
         self.last = Some(Shown {
             buf: done.buffer.clone(),
             view_h,
+            vis,
+            bottom,
             following: self.conv.following(),
         });
         Ok(cut)
     }
 
     /// The cells the selection covers on this draw, as (screen row, from column, to column):
-    /// `lines` are the viewport's lines, sitting on the frame (`view_h` rows), and
-    /// [`Screen::marks`] says where each came from.
-    fn selected_cells(&self, lines: &[Line<'_>], view_h: u16) -> Vec<(u16, u16, u16)> {
+    /// `lines` are the visible rows, and [`Screen::marks`] says where each came from — a covered
+    /// row has no mark, so the selection is never painted onto the frame.
+    fn selected_cells(&self, lines: &[Line<'_>]) -> Vec<(u16, u16, u16)> {
         let Some(sel) = self.sel else {
             return Vec::new();
         };
-        let top = usize::from(view_h).saturating_sub(lines.len());
         let mut out = Vec::new();
         for (y, mark) in self.marks.iter().enumerate() {
             let Some((n, line)) = *mark else { continue };
-            let cols = y
-                .checked_sub(top)
-                .and_then(|i| lines.get(i))
-                .map_or(0, Line::width);
+            let cols = lines.get(y).map_or(0, Line::width);
             if let Some((from, to)) = sel.span(n, line, cols) {
                 let cell = |v: usize| u16::try_from(v).unwrap_or(u16::MAX);
                 out.push((cell(y), cell(from), cell(to)));
@@ -698,33 +715,38 @@ impl<W: Write> Screen<W> {
         out
     }
 
-    /// How far the viewport's content moved up since the last frame, when that is one scroll:
-    /// the tail followed then and now, the screen and the viewport the same size, and fewer new
-    /// lines than the viewport holds (more is a whole new viewport anyway).
-    fn scrolled_by(&self, fresh: usize, view_h: u16) -> Option<u16> {
+    /// How far the visible rows' content moved up since the last frame, when that is one scroll:
+    /// the tail followed then and now, the screen, the conversation's rectangle and its visible
+    /// rows the same size, its last line on the same screen row (`bottom`: a short conversation
+    /// lifted into its blank rows grows under the frame instead), and fewer new lines than the
+    /// visible rows hold (more is a whole new viewport anyway).
+    fn scrolled_by(&self, fresh: usize, bottom: u16) -> Option<u16> {
         let last = self.last.as_ref()?;
         let n = u16::try_from(fresh).ok()?;
         (last.following
             && self.conv.following()
             && last.buf.area.as_size() == self.size()
-            && last.view_h == view_h
+            && last.view_h == self.view_h
+            && last.vis == self.vis_h
+            && last.bottom == bottom
             && n > 0
-            && n < view_h)
+            && n < self.vis_h)
             .then_some(n)
     }
 
-    /// Scrolls the viewport's rows up by `n` with ONE operation — `DECSTBM` over the viewport,
+    /// Scrolls the visible rows up by `n` with ONE operation — `DECSTBM` over them (never over
+    /// the frame, which may float over the conversation's last rows),
     /// `SU n`, the margins reset — where a cell diff would rewrite every row that moved (tui-plan
     /// S2; S1 streamed 3.4× inline's bytes for that). ratatui keeps its previous frame to itself,
     /// so it is handed the same scroll first: the last frame shifted up by `n`, applied with the
     /// backend muted, becomes the previous frame the next draw diffs against — that draw then
     /// writes the `n` new lines and whatever else changed.
-    fn scroll_region(&mut self, n: u16, view_h: u16) -> io::Result<()> {
+    fn scroll_region(&mut self, n: u16, vis: u16) -> io::Result<()> {
         let Some(Shown { mut buf, .. }) = self.last.take() else {
             return Ok(());
         };
         let width = usize::from(buf.area.width);
-        let region = usize::from(view_h) * width;
+        let region = usize::from(vis) * width;
         let moved = usize::from(n) * width;
         buf.content[..region].rotate_left(moved);
         for cell in &mut buf.content[region - moved..region] {
@@ -735,22 +757,25 @@ impl<W: Write> Screen<W> {
         let applied = self.term.apply_buffer().map(|_| ());
         self.term.backend_mut().mute = false;
         applied?;
-        write!(self.out(), "\x1b[1;{view_h}r\x1b[{n}S\x1b[r")
+        write!(self.out(), "\x1b[1;{vis}r\x1b[{n}S\x1b[r")
     }
 
-    /// The viewport's lines as spans, the search's matches highlighted. The last line is the
-    /// search line while a search is on — the viewport padded to its full height for it — and,
-    /// otherwise, the way back to the tail when the view is anchored.
-    fn view_lines(
-        &mut self,
-        width: usize,
-        h: usize,
-        prompt: Option<&Prompt>,
-    ) -> Vec<Line<'static>> {
+    /// The visible rows as spans, top to bottom, the search's matches highlighted, and the
+    /// screen row under the conversation's last line: the conversation is laid out in its
+    /// rectangle ([`sits_at`] places it) and only the rows above the frame are kept. The last
+    /// visible row is the search line while a search is on and, otherwise, the way back to the
+    /// tail when the view is anchored.
+    fn view_lines(&mut self, width: usize, prompt: Option<&Prompt>) -> (Vec<Line<'static>>, u16) {
+        let (h, vis) = (usize::from(self.view_h), usize::from(self.vis_h));
         let hl = self.search.as_ref().and_then(Search::highlight);
-        let mut lines = self.conv.view_lines(width, h, hl.as_ref());
+        let shown = self.conv.view_lines(width, h, hl.as_ref());
+        let top = sits_at(shown.len(), vis, h);
+        let bottom = u16::try_from(top + shown.len()).unwrap_or(u16::MAX);
+        let mut lines = vec![String::new(); top];
+        lines.extend(shown);
+        lines.resize(vis, String::new());
         if let (Some(s), Some(p)) = (&self.search, prompt)
-            && h > 0
+            && vis > 0
         {
             let hint = if p.cursor.is_some() {
                 "Enter walks the hits · Esc goes back"
@@ -760,9 +785,6 @@ impl<W: Write> Screen<W> {
             let status = s.status();
             let sep = if status.is_empty() { "" } else { " · " };
             let line = format!("/{}  {FAINT}{status}{sep}{hint}{RESET}", p.text);
-            while lines.len() < h {
-                lines.insert(0, String::new());
-            }
             if let Some(last) = lines.last_mut() {
                 *last = line;
             }
@@ -775,7 +797,7 @@ impl<W: Write> Screen<W> {
                 n => format!("{REV_ON} ↓ {n} new lines · Ctrl+End {RESET}"),
             };
         }
-        lines.iter().map(|r| ansi_to_spans(r)).collect()
+        (lines.iter().map(|r| ansi_to_spans(r)).collect(), bottom)
     }
 
     /// The exit: leaves the alternate screen (unless a dump already did) and writes what no dump
@@ -824,6 +846,14 @@ impl<W: Write> Screen<W> {
     fn out(&mut self) -> &mut CrosstermBackend<SyncOut<W>> {
         &mut self.term.backend_mut().inner
     }
+}
+
+/// The screen row a conversation of `n` lines starts on, in a rectangle of `h` rows whose first
+/// `vis` are visible: on the frame while it fits above it, else as high as it needs to be — the
+/// blank rows above a short one take the frame's floating rows before any line is covered — and
+/// never higher than the rectangle's top.
+fn sits_at(n: usize, vis: usize, h: usize) -> usize {
+    n.clamp(vis, h.max(vis)) - n
 }
 
 /// The longest write that goes out without a synchronized update — an empirical threshold, not

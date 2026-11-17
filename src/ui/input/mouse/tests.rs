@@ -337,12 +337,12 @@ fn a_click_on_a_completion_item_highlights_it() {
         "the list still filters by what was typed"
     );
     assert_eq!(
-        target(top + 4, m.view_h, &m.frame_map, false, false),
+        target(top - 1, m.view_h, &m.frame_map, false, false),
         Target::Frame,
-        "the composer's upper separator, under the list"
+        "the composer's upper separator, the list area's top edge"
     );
     assert_eq!(
-        target(top + 5, m.view_h, &m.frame_map, false, false),
+        target(top + 4, m.view_h, &m.frame_map, false, false),
         Target::Composer(0),
         "the composer, under the list, is still the composer"
     );

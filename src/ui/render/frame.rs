@@ -2,7 +2,7 @@
 //! (internal/ui/model.go:914-1193).
 //!
 //! Builds the pinned bottom frame as raw ANSI rows in the FIXED stacking order
-//! `[call preview][spacer][queue][completion list] ─sep─ [composer] ─sep─
+//! `[call preview][spacer][queue] ─sep─ [blank][completion list] [composer] ─sep─
 //! [surface | status]`, tracking `rows_above`
 //! for the real-cursor offset. Every appended row is exactly one visual line (the
 //! one-entry-one-row law) or the cursor desyncs. Above the composer the frame only ever
@@ -133,8 +133,11 @@ pub(crate) struct FrameInput<'a> {
     /// block); `None` while a surface owns (and hides) the cursor.
     pub(crate) composer_cursor: Option<(u16, u16)>,
     /// The completion list's rows (pre-rendered by suggest; empty = none), directly above the
-    /// upper separator: it grows upward, into the conversation's rows.
+    /// composer, under the upper separator: it grows upward, over the conversation's rows.
     pub(crate) list: &'a [String],
+    /// The blank rows the list's area keeps above the list (its high-water mark, the loop's
+    /// `list_mark`); read only with a list.
+    pub(crate) list_blank: usize,
     /// The bottom-zone occupant.
     pub(crate) bottom: BottomZone<'a>,
     /// Status-row data.
@@ -167,6 +170,10 @@ pub(crate) struct FrameView {
     pub(crate) cursor: Option<(u16, u16)>,
     /// Which frame rows are what — where a click lands.
     pub(crate) map: FrameMap,
+    /// How many of the frame's rows are drawn OVER the conversation instead of taken from it: the
+    /// completion list's area (its blank rows and its list rows). The conversation keeps the
+    /// rectangle it has with no list open (`Screen::paint`).
+    pub(crate) float: usize,
 }
 
 /// Where the frame's clickable blocks sit, in frame rows (0 = its top row).
@@ -285,15 +292,23 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
         }
     }
 
-    // The completion list sits directly above the composer's upper separator, so it grows
-    // upward and the composer never moves; the composer sits between TWO separators.
-    let list_at = rows.len();
-    rows.extend(fi.list.iter().cloned());
+    // The composer sits between TWO separators. An open completion list goes between the upper
+    // one and the composer, bottom-aligned against the composer under the blank rows its area
+    // keeps, so the upper separator is the area's top edge: it holds still while the matches
+    // narrow, and the list grows upward and the composer never moves.
     let w = if fi.width < 1 { 80 } else { fi.width as usize };
     let sep = format!("{FAINT}{}{RESET}", SEPARATOR_GLYPH.repeat(w));
     if fi.shed < 2 {
         rows.push(sep.clone());
     }
+    let float = if fi.list.is_empty() {
+        0
+    } else {
+        rows.extend(std::iter::repeat_n(String::new(), fi.list_blank));
+        fi.list_blank + fi.list.len()
+    };
+    let list_at = rows.len();
+    rows.extend(fi.list.iter().cloned());
     let rows_above = rows.len(); // frame rows above the composer = the cursor Y offset
     rows.extend(fi.composer_rows.iter().cloned());
     if fi.shed < 1 {
@@ -333,7 +348,12 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
         list_rows: fi.list.len(),
         cut: 0,
     };
-    FrameView { rows, cursor, map }
+    FrameView {
+        rows,
+        cursor,
+        map,
+        float,
+    }
 }
 
 /// Renders the status line (model.go statusLine, 1083-1179): `"  model"` then
