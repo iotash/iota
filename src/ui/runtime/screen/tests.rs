@@ -54,8 +54,10 @@ fn grid(p: &vt100::Parser) -> Vec<String> {
         .collect()
 }
 
+/// A conversation shorter than the screen starts at its top and grows downward (every chat UI's
+/// model); the frame is pinned to the bottom, the rows between are blank.
 #[test]
-fn the_conversation_sits_on_the_frame_and_the_frame_on_the_bottom() {
+fn the_conversation_starts_at_the_top_and_the_frame_sits_on_the_bottom() {
     let (mut s, buf) = screen(40, 12);
     s.push(rows_of(&rows(3)));
     s.draw_frame(&frame(40), None).unwrap();
@@ -64,8 +66,8 @@ fn the_conversation_sits_on_the_frame_and_the_frame_on_the_bottom() {
     let g = grid(&p);
     assert_eq!(g[11], "status", "{g:#?}");
     assert_eq!(g[8], "─".repeat(40));
-    assert_eq!(&g[5..8], &["line-000", "line-001", "line-002"], "{g:#?}");
-    assert!(g[..5].iter().all(String::is_empty), "{g:#?}");
+    assert_eq!(&g[..3], &["line-000", "line-001", "line-002"], "{g:#?}");
+    assert!(g[3..8].iter().all(String::is_empty), "{g:#?}");
     assert_eq!(
         p.screen().cursor_position(),
         (9, 0),
@@ -93,14 +95,11 @@ fn a_resize_repaints_the_whole_screen_at_the_new_size() {
     let g = grid(&p);
     assert_eq!(g[19], "status");
     assert_eq!(g[16], "─".repeat(20), "the frame is full width: {g:#?}");
-    assert_eq!(
-        g[15], "wwwwwwwwwwEND",
-        "the wide row wraps at the new width"
-    );
-    assert_eq!(g[14], "w".repeat(20));
-    assert_eq!(&g[12..14], &["line-000", "line-001"], "{g:#?}");
+    assert_eq!(&g[..2], &["line-000", "line-001"], "{g:#?}");
+    assert_eq!(g[2], "w".repeat(20));
+    assert_eq!(g[3], "wwwwwwwwwwEND", "the wide row wraps at the new width");
     assert!(
-        g[..12].iter().all(String::is_empty),
+        g[4..16].iter().all(String::is_empty),
         "the old layout left a ghost: {g:#?}"
     );
     assert_eq!(g.iter().filter(|r| *r == "status").count(), 1, "{g:#?}");
@@ -997,7 +996,7 @@ fn a_double_click_copies_the_word_and_a_click_nothing() {
         &mut s,
         SelectOp::Press {
             col: 9,
-            row: 7,
+            row: 0,
             clicks: 1,
         },
     );
@@ -1007,7 +1006,7 @@ fn a_double_click_copies_the_word_and_a_click_nothing() {
         &mut s,
         SelectOp::Press {
             col: 9,
-            row: 7,
+            row: 0,
             clicks: 2,
         },
     );
@@ -1017,7 +1016,7 @@ fn a_double_click_copies_the_word_and_a_click_nothing() {
         &mut s,
         SelectOp::Press {
             col: 9,
-            row: 7,
+            row: 0,
             clicks: 3,
         },
     );
@@ -1026,12 +1025,12 @@ fn a_double_click_copies_the_word_and_a_click_nothing() {
         s.take_copied().as_deref(),
         Some("see src/ui/mod.rs:12. now")
     );
-    // A press on a blank row above a short conversation selects nothing.
+    // A press on a blank row below a short conversation selects nothing.
     select(
         &mut s,
         SelectOp::Press {
             col: 0,
-            row: 0,
+            row: 5,
             clicks: 2,
         },
     );
@@ -1200,17 +1199,17 @@ fn a_drag_over_a_code_block_and_a_table_copies_them_line_for_line() {
     blocks.push(crate::ui::block::Block::Row(long.clone()));
     s.push(blocks);
     s.draw_frame(&frame(60), None).unwrap();
-    // The viewport is rows 0–15 and the conversation sits on the frame: 3 code lines, a blank, a
-    // 5-line table, the long row's 2 segments — 11 lines, rows 5–15.
+    // The viewport is rows 0–15 and the conversation starts at its top: 3 code lines, a blank, a
+    // 5-line table, the long row's 2 segments — 11 lines, rows 0–10.
     select(
         &mut s,
         SelectOp::Press {
             col: 0,
-            row: 5,
+            row: 0,
             clicks: 1,
         },
     );
-    select(&mut s, SelectOp::Drag { col: 59, row: 15 });
+    select(&mut s, SelectOp::Drag { col: 59, row: 10 });
     select(&mut s, SelectOp::Release);
     let text = s.take_copied().expect("the drag copies");
     assert_eq!(
@@ -1234,7 +1233,7 @@ fn a_drag_over_a_code_block_and_a_table_copies_them_line_for_line() {
         &mut s,
         SelectOp::Press {
             col: 3,
-            row: 6,
+            row: 1,
             clicks: 3,
         },
     );
@@ -1336,7 +1335,7 @@ fn a_selection_over_a_hyperlink_copies_its_text_alone() {
             s,
             SelectOp::Press {
                 col,
-                row: 7,
+                row: 0,
                 clicks,
             },
         );
@@ -1349,11 +1348,11 @@ fn a_selection_over_a_hyperlink_copies_its_text_alone() {
         &mut s,
         SelectOp::Press {
             col: 0,
-            row: 7,
+            row: 0,
             clicks: 1,
         },
     );
-    select(&mut s, SelectOp::Drag { col: 6, row: 7 });
+    select(&mut s, SelectOp::Drag { col: 6, row: 0 });
     select(&mut s, SelectOp::Release);
     assert_eq!(s.take_copied().as_deref(), Some("see doc"));
 }

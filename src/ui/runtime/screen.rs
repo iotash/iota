@@ -9,9 +9,10 @@
 //! completion list open; the list's area ([`FrameView::float`]) floats over it, so opening,
 //! narrowing or closing the list never moves the conversation. The VISIBLE rows are the ones above
 //! the frame: only they are drawn, marked for the selection and the mouse, and scrolled; a covered
-//! row is laid out and followed like any other but has no mark. A conversation shorter than its
-//! rectangle sits on the frame, so its blank rows take the area before any of its lines is
-//! covered. The conversation is a buffer of committed
+//! row is laid out and followed like any other but has no mark. The conversation starts at the
+//! screen's top and grows downward; only once it is taller than its rectangle does the view follow
+//! its tail, the newest line on the rectangle's last row. A conversation that fits above the list
+//! is therefore never covered by it. The conversation is a buffer of committed
 //! BLOCKS ([`Conversation`], `ui::block`): fixed rows, and blocks laid out from their source at
 //! the width of the draw. A block's display lines are computed when a draw first needs them at a
 //! width and cached with it (a row wider than the screen is hard-wrapped by `wrap_ansi`), and
@@ -421,9 +422,7 @@ impl<W: Write> Screen<W> {
     /// rows) — the search line or the way back to the tail on the last one.
     fn mark_view(&mut self, width: usize) {
         let (h, vis) = (usize::from(self.view_h), usize::from(self.vis_h));
-        let shown = self.conv.view_marks(width, h);
-        let mut marks = vec![None; sits_at(shown.len(), vis, h)];
-        marks.extend(shown);
+        let mut marks = self.conv.view_marks(width, h);
         marks.resize(vis, None);
         if (self.search.is_some() || self.way_back_shown())
             && let Some(last) = marks.last_mut()
@@ -719,8 +718,8 @@ impl<W: Write> Screen<W> {
 
     /// How far the visible rows' content moved up since the last frame, when that is one scroll:
     /// the tail followed then and now, the screen, the conversation's rectangle and its visible
-    /// rows the same size, its last line on the same screen row (`bottom`: a short conversation
-    /// lifted into its blank rows grows under the frame instead), and fewer new lines than the
+    /// rows the same size, its last line on the same screen row (`bottom`: a conversation shorter
+    /// than its rectangle grows downward instead), and fewer new lines than the
     /// visible rows hold (more is a whole new viewport anyway).
     fn scrolled_by(&self, fresh: usize, bottom: u16) -> Option<u16> {
         let last = self.last.as_ref()?;
@@ -764,17 +763,14 @@ impl<W: Write> Screen<W> {
 
     /// The visible rows as spans, top to bottom, the search's matches highlighted, and the
     /// screen row under the conversation's last line: the conversation is laid out in its
-    /// rectangle ([`sits_at`] places it) and only the rows above the frame are kept. The last
+    /// rectangle from the top row and only the rows above the frame are kept. The last
     /// visible row is the search line while a search is on and, otherwise, the way back to the
     /// tail when the view is anchored.
     fn view_lines(&mut self, width: usize, prompt: Option<&Prompt>) -> (Vec<Line<'static>>, u16) {
         let (h, vis) = (usize::from(self.view_h), usize::from(self.vis_h));
         let hl = self.search.as_ref().and_then(Search::highlight);
-        let shown = self.conv.view_lines(width, h, hl.as_ref());
-        let top = sits_at(shown.len(), vis, h);
-        let bottom = u16::try_from(top + shown.len()).unwrap_or(u16::MAX);
-        let mut lines = vec![String::new(); top];
-        lines.extend(shown);
+        let mut lines = self.conv.view_lines(width, h, hl.as_ref());
+        let bottom = u16::try_from(lines.len()).unwrap_or(u16::MAX);
         lines.resize(vis, String::new());
         if let (Some(s), Some(p)) = (&self.search, prompt)
             && vis > 0
@@ -848,14 +844,6 @@ impl<W: Write> Screen<W> {
     fn out(&mut self) -> &mut CrosstermBackend<SyncOut<W>> {
         &mut self.term.backend_mut().inner
     }
-}
-
-/// The screen row a conversation of `n` lines starts on, in a rectangle of `h` rows whose first
-/// `vis` are visible: on the frame while it fits above it, else as high as it needs to be — the
-/// blank rows above a short one take the frame's floating rows before any line is covered — and
-/// never higher than the rectangle's top.
-fn sits_at(n: usize, vis: usize, h: usize) -> usize {
-    n.clamp(vis, h.max(vis)) - n
 }
 
 /// The longest write that goes out without a synchronized update — an empirical threshold, not

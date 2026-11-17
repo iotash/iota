@@ -568,7 +568,7 @@ impl Conversation {
     }
 
     /// The viewport's lines, top to bottom: `h` of them, or fewer when the whole session is
-    /// shorter than the viewport (it then sits on the frame). With a search on, every occurrence
+    /// shorter than the viewport (it then starts at the screen's top). With a search on, every occurrence
     /// on a shown row is highlighted — on the row BEFORE it is wrapped, so a match split by a
     /// wrap is highlighted on both of its lines (`wrap_ansi` carries the SGR across).
     pub(crate) fn view_lines(

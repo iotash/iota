@@ -63,11 +63,6 @@ impl Default for Case {
 /// Builds the frame for a case with a one-row composer holding `draft` (no prompt glyph: the
 /// text at column 0, the cursor right after it at column 5).
 fn view(c: &Case) -> FrameView {
-    view_blank(c, 0)
-}
-
-/// [`view`] with `list_blank` blank rows kept above the list.
-fn view_blank(c: &Case, list_blank: usize) -> FrameView {
     let composer_rows = vec!["draft".to_owned()];
     let bottom = if let Some(s) = &c.surface {
         BottomZone::Surface(s)
@@ -88,7 +83,6 @@ fn view_blank(c: &Case, list_blank: usize) -> FrameView {
             Some((5, 0))
         },
         list: &c.list,
-        list_blank,
         bottom,
         status: &c.status,
         busy: c.busy.as_ref(),
@@ -282,24 +276,20 @@ fn frame_order_with_empty_composer_and_slot_swap() {
     assert_eq!((v.map.list, v.map.list_rows), (Some(item), 2));
     assert_eq!(v.float, 2, "the list's rows float");
 
-    // A narrowed list keeps its area: the blank rows go between the edge and the list, which stays
-    // on the composer; they float too.
+    // A narrowed list is its own area: the edge comes down onto it, no blank rows between them.
     let mut fi_rows = case.list.clone();
     fi_rows.truncate(1);
     let narrowed = Case {
         list: fi_rows,
         ..case
     };
-    let w = view_blank(&narrowed, 3);
+    let w = view(&narrowed);
     let rows = plain(&w);
     let seps = separator_indices(&rows);
     let item = find(&rows, |r| r.contains("▸ model")).expect("list row");
-    assert!(
-        rows[seps[0] + 1..item].iter().all(String::is_empty) && item == seps[0] + 4,
-        "three blank rows under the edge:\n{rows:#?}"
-    );
+    assert_eq!(item, seps[0] + 1, "the edge sits on the list:\n{rows:#?}");
     assert_eq!(rows[item + 1], "draft", "the list sits on the composer");
-    assert_eq!((w.map.list, w.map.list_rows, w.float), (Some(item), 1, 4));
+    assert_eq!((w.map.list, w.map.list_rows, w.float), (Some(item), 1, 1));
 }
 
 /// One CONSTANT blank row separates the content side from everything input-side —

@@ -135,9 +135,6 @@ pub(crate) struct FrameInput<'a> {
     /// The completion list's rows (pre-rendered by suggest; empty = none), directly above the
     /// composer, under the upper separator: it grows upward, over the conversation's rows.
     pub(crate) list: &'a [String],
-    /// The blank rows the list's area keeps above the list (its high-water mark, the loop's
-    /// `list_mark`); read only with a list.
-    pub(crate) list_blank: usize,
     /// The bottom-zone occupant.
     pub(crate) bottom: BottomZone<'a>,
     /// Status-row data.
@@ -171,7 +168,7 @@ pub(crate) struct FrameView {
     /// Which frame rows are what — where a click lands.
     pub(crate) map: FrameMap,
     /// How many of the frame's rows are drawn OVER the conversation instead of taken from it: the
-    /// completion list's area (its blank rows and its list rows). The conversation keeps the
+    /// completion list's rows, which are its whole area. The conversation keeps the
     /// rectangle it has with no list open (`Screen::paint`).
     pub(crate) float: usize,
 }
@@ -293,20 +290,14 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
     }
 
     // The composer sits between TWO separators. An open completion list goes between the upper
-    // one and the composer, bottom-aligned against the composer under the blank rows its area
-    // keeps, so the upper separator is the area's top edge: it holds still while the matches
-    // narrow, and the list grows upward and the composer never moves.
+    // one and the composer, so the upper separator is the area's top edge: the area is exactly
+    // the list, it grows and shrinks upward with the matches, and the composer never moves.
     let w = if fi.width < 1 { 80 } else { fi.width as usize };
     let sep = format!("{FAINT}{}{RESET}", SEPARATOR_GLYPH.repeat(w));
     if fi.shed < 2 {
         rows.push(sep.clone());
     }
-    let float = if fi.list.is_empty() {
-        0
-    } else {
-        rows.extend(std::iter::repeat_n(String::new(), fi.list_blank));
-        fi.list_blank + fi.list.len()
-    };
+    let float = fi.list.len();
     let list_at = rows.len();
     rows.extend(fi.list.iter().cloned());
     let rows_above = rows.len(); // frame rows above the composer = the cursor Y offset
