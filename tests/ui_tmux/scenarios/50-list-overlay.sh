@@ -27,7 +27,13 @@ settle || miss "startup never settled"
 fresh="$(cap)"
 fresh_b="$(capb)"
 shot "fresh"
-check "the banner's card starts on the first row" "$(printf '%s\n' "$fresh" | head -1 | cut -c1-3)" "╭──"
+# A pattern on the whole row, not `cut -c`: in the C locale (the ubuntu runner's) `cut -c` counts
+# bytes, and `╭` alone is three of them. A `case` pattern compares the same bytes in any locale.
+first="$(printf '%s\n' "$fresh" | head -1)"
+case "$first" in
+    ╭──*) ok "the banner's card starts on the first row" ;;
+    *) bad "the banner's card starts on the first row: got '$first'" ;;
+esac
 banner="$(printf '%s\n' "$fresh" | grep -n '^╰' | head -1 | cut -d: -f1)"
 check "the banner's card is five rows" "$banner" 5
 
