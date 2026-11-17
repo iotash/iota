@@ -153,8 +153,8 @@ Facade shape decisions from the adversarial review:
   of the status line or an open interaction surface (surface > status) —
   swapping them is a content change plus below-composer growth, never a composer move; the
   completion list, while the line is a slash command, grows upward from the composer, over the
-  conversation's last rows (an overlay: the conversation keeps its rectangle), in an area exactly
-  as tall as the list — the upper separator is its top edge and moves with it — so it never moves
+  conversation's last rows (an overlay: the conversation keeps its rectangle), in an area as tall
+  as the list and its gap row — the upper separator is its top edge and moves with it — so it never moves
   the composer or the conversation either; a conversation shorter than its rectangle starts at the
   top, so the list covers it only once it fills the rows above the list. A block still being
   written grows in the conversation itself (tui-plan S7b), so the frame holds only the call

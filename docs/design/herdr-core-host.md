@@ -1,6 +1,6 @@
 # herdr-core host：iota 在 hc 终端里报告状态
 
-Status: **Shipped（未发版）** · 日期：2026-11-14 · hc 0.1.21、herdr 0.9.5、Claude Code 2.1.325 · 调研：`~/.iota/reports/iota/herdr-core-host.md`
+Status: **已随 0.10.0 发布（2026-11-16）** · 日期：2026-11-14 · hc 0.1.21、herdr 0.9.5、Claude Code 2.1.325 · 调研：`~/.iota/reports/iota/herdr-core-host.md`
 
 herdr-core（`hc`）是 herdr 桌面 app 背后的终端核心，是新产品，不是 herdr 多路复用器的新版本（`hc --skill`：*"It is not `herdr`, the older terminal multiplexer."*）。两者都在用，iota 两个都支持：`src/host/hc.rs` 的 `HcHost`（`name() = "herdr-core"`）与 `src/host/herdr.rs` 的 `HerdrHost` 并存。
 
