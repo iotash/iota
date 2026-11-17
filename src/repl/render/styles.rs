@@ -9,9 +9,6 @@
 //! the answer is no — attributes included, because this is fatih/color's `NoColor` rule and
 //! the chat side is text that gets copied, exported and replayed (DIVERGENCES X-27).
 
-/// SGR reset.
-pub(crate) const RESET: &str = "\x1b[0m";
-
 /// `"\x1b[{params}m{s}\x1b[0m"`, or `s` verbatim when color is off.
 fn sgr(params: &str, s: &str) -> String {
     sgr_if(crate::app::color::enabled(), params, s)

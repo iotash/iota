@@ -195,16 +195,17 @@ impl Transcript {
         lock(&self.inner)
     }
 
-    /// Renders `display` as the `▌` block (transcript.go `user`), as written — no element is
-    /// parsed ([`Self::user_input`] is the submit path's). A mid-turn injection (steering) lands
-    /// while an activity group is running — the user speaking is a stronger boundary than
-    /// content, so the group settles first; at a normal turn start the group is empty and the
-    /// settle is a no-op.
+    /// The tests' shorthand: `display` as the `▌` block, as written — no element is parsed
+    /// ([`Self::user_input`] is the submit path's).
+    #[cfg(test)]
     pub fn user(&self, display: &str) {
         self.user_block(display, None);
     }
 
-    /// Renders a submitted input as the `▌` block. When its FULL text (`Input::text`, every paste
+    /// Renders a submitted input as the `▌` block (transcript.go `user`). A mid-turn injection
+    /// (steering) lands while an activity group is running — the user speaking is a stronger
+    /// boundary than content, so the group settles first; at a normal turn start the group is
+    /// empty and the settle is a no-op. When its FULL text (`Input::text`, every paste
     /// expanded) is exactly one element of the name the host claims ([`Self::set_claimed_element`]),
     /// the block gets that text and lays out the tab and the bounded inner text itself — the
     /// paste-bounded `display` may have lost the closing tag to the bound (a long `hc send`), and
