@@ -343,7 +343,12 @@ fn a_click_on_a_completion_item_highlights_it() {
     );
     assert_eq!(
         target(top + 4, m.vis_h, &m.frame_map, false, false),
+        Target::Frame,
+        "the blank gap row under the list is a frame row, not the list's"
+    );
+    assert_eq!(
+        target(top + 5, m.vis_h, &m.frame_map, false, false),
         Target::Composer(0),
-        "the composer, under the list, is still the composer"
+        "the composer, under the gap, is still the composer"
     );
 }

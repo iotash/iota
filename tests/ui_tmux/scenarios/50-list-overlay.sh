@@ -7,8 +7,8 @@
 # letter narrows it. The rows above the list's area must not change when it opens (the
 # conversation keeps its rectangle; the area is drawn over its last rows); the area is exactly the
 # list, so narrowing brings its top edge — the upper separator — down and gives back the rows it
-# no longer covers, the conversation as it was, never blank rows. Closing the list gives every
-# covered row back. Read on a real terminal with `capture-pane`, the user's claim.
+# no longer covers, the conversation as it was, never blank rows. One blank row parts the list
+# from the composer. Closing the list gives every covered row back. Read on a real terminal with `capture-pane`, the user's claim.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
 
@@ -112,8 +112,11 @@ else
 fi
 check "the rows the narrowing gave back show the conversation as it was" \
     "$(above $((nedge - 2)) "$narrow")" "$(above $((nedge - 2)) "$closed")"
-check "the narrowed list sits on the composer" "$(($(composer_row) - 1))" \
+crow="$(composer_row)"
+check "the narrowed list sits one blank row over the composer" "$((crow - 2))" \
     "$(printf '%s\n' "$narrow" | grep -nE '^(▸ |  )[a-z]' | tail -1 | cut -d: -f1)"
+check "the gap row between the list and the composer is blank, no glyph, no colour" \
+    "$(printf '%s\n' "$narrow_b" | sed -n "$((crow - 1))p" | tr -d ' ')" ""
 check "the composer holds /d" "$(composer_line 1)" "/d"
 
 key BSpace

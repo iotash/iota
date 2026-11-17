@@ -2,7 +2,7 @@
 //! (internal/ui/model.go:914-1193).
 //!
 //! Builds the pinned bottom frame as raw ANSI rows in the FIXED stacking order
-//! `[call preview][spacer][queue] ─sep─ [blank][completion list] [composer] ─sep─
+//! `[call preview][spacer][queue] ─sep─ [completion list][gap] [composer] ─sep─
 //! [surface | status]`, tracking `rows_above`
 //! for the real-cursor offset. Every appended row is exactly one visual line (the
 //! one-entry-one-row law) or the cursor desyncs. Above the composer the frame only ever
@@ -152,11 +152,15 @@ pub(crate) struct FrameInput<'a> {
     pub(crate) shed: usize,
 }
 
+/// The blank row between an open completion list and the composer, so the two read as two blocks:
+/// a frame row, not a list row (never tinted, never hit as the list), and none while no list shows.
+pub(crate) const LIST_GAP: usize = 1;
+
 /// What gives way, in this order, when the screen is too short for the composer and the completion
-/// list's highlighted item: the lower separator, the upper separator, then the status row (or the
-/// notice in its place). The separators are chrome; the status row goes before the highlighted
-/// item loses a row.
-pub(crate) const SHED_ORDER: usize = 3;
+/// list's highlighted item: the [`LIST_GAP`] row, the lower separator, the upper separator, then
+/// the status row (or the notice in its place). The gap and the separators are chrome; the status
+/// row goes before the highlighted item loses a row.
+pub(crate) const SHED_ORDER: usize = 4;
 
 /// The built frame: one string per visual row (raw ANSI, no trailing newlines) and the
 /// real-cursor target relative to the frame origin.
@@ -168,8 +172,8 @@ pub(crate) struct FrameView {
     /// Which frame rows are what — where a click lands.
     pub(crate) map: FrameMap,
     /// How many of the frame's rows are drawn OVER the conversation instead of taken from it: the
-    /// completion list's rows, which are its whole area. The conversation keeps the
-    /// rectangle it has with no list open (`Screen::paint`).
+    /// completion list's rows, which are its whole area, and the [`LIST_GAP`] row under them. The
+    /// conversation keeps the rectangle it has with no list open (`Screen::paint`).
     pub(crate) float: usize,
 }
 
@@ -291,18 +295,26 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
 
     // The composer sits between TWO separators. An open completion list goes between the upper
     // one and the composer, so the upper separator is the area's top edge: the area is exactly
-    // the list, it grows and shrinks upward with the matches, and the composer never moves.
+    // the list, it grows and shrinks upward with the matches, and the composer never moves. One
+    // blank row (`LIST_GAP`) parts the list's last row from the composer's first; it floats with
+    // the list and goes with it.
     let w = if fi.width < 1 { 80 } else { fi.width as usize };
     let sep = format!("{FAINT}{}{RESET}", SEPARATOR_GLYPH.repeat(w));
-    if fi.shed < 2 {
+    if fi.shed < 3 {
         rows.push(sep.clone());
     }
-    let float = fi.list.len();
     let list_at = rows.len();
     rows.extend(fi.list.iter().cloned());
+    let gap = if fi.list.is_empty() || fi.shed >= 1 {
+        0
+    } else {
+        LIST_GAP
+    };
+    rows.extend(std::iter::repeat_n(String::new(), gap));
+    let float = fi.list.len() + gap;
     let rows_above = rows.len(); // frame rows above the composer = the cursor Y offset
     rows.extend(fi.composer_rows.iter().cloned());
-    if fi.shed < 1 {
+    if fi.shed < 2 {
         rows.push(sep);
     }
 

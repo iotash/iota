@@ -39,6 +39,8 @@ struct Case {
     list: Vec<String>,
     surface: Option<Vec<String>>,
     now: Instant,
+    /// How many [`SHED_ORDER`](super::SHED_ORDER) rows the screen left out.
+    shed: usize,
 }
 
 impl Default for Case {
@@ -56,6 +58,7 @@ impl Default for Case {
             list: Vec::new(),
             surface: None,
             now: Instant::now(),
+            shed: 0,
         }
     }
 }
@@ -89,7 +92,7 @@ fn view(c: &Case) -> FrameView {
         jobs: &c.jobs,
         now: c.now,
         notice: None,
-        shed: 0,
+        shed: c.shed,
     })
 }
 
@@ -227,9 +230,10 @@ fn frame_order_with_empty_composer_and_slot_swap() {
         "composer cursor must hide while a surface is open"
     );
 
-    // The completion list sits under the upper separator — the area's top edge — directly on the
-    // composer, which is above the status row; the map says where the list is, the composer's
-    // cursor row counts the list's rows above it, and the list's rows float over the conversation.
+    // The completion list sits under the upper separator — the area's top edge — one blank gap row
+    // above the composer, which is above the status row; the map says where the list is (the gap is
+    // not in it), the composer's cursor row counts the list's rows and the gap above it, and both
+    // float over the conversation.
     // A real highlighted item, two rows tall: its description wraps once at 80 columns.
     let list = item_rows(
         &Suggestion {
@@ -261,10 +265,15 @@ fn frame_order_with_empty_composer_and_slot_swap() {
     assert!(
         seps[0] + 1 == item
             && item + 1 == desc
-            && desc + 1 == composer
+            && desc + 2 == composer
             && composer < seps[1]
             && seps[1] < status,
-        "upper separator, list, composer, lower separator, status — in that order (sep={seps:?} item={item} desc={desc} composer={composer} status={status}):\n{rows:#?}"
+        "upper separator, list, gap, composer, lower separator, status — in that order (sep={seps:?} item={item} desc={desc} composer={composer} status={status}):\n{rows:#?}"
+    );
+    assert_eq!(
+        v.rows[desc + 1],
+        "",
+        "the gap row is blank, no tint, no glyph"
     );
     assert!(
         rows[seps[0] - 1].contains("queued"),
@@ -274,7 +283,7 @@ fn frame_order_with_empty_composer_and_slot_swap() {
     assert_eq!(v.map.composer, composer);
     assert_eq!(v.cursor.map(|(_, y)| usize::from(y)), Some(composer));
     assert_eq!((v.map.list, v.map.list_rows), (Some(item), 2));
-    assert_eq!(v.float, 2, "the list's rows float");
+    assert_eq!(v.float, 3, "the list's rows and the gap float");
 
     // A narrowed list is its own area: the edge comes down onto it, no blank rows between them.
     let mut fi_rows = case.list.clone();
@@ -288,8 +297,20 @@ fn frame_order_with_empty_composer_and_slot_swap() {
     let seps = separator_indices(&rows);
     let item = find(&rows, |r| r.contains("▸ model")).expect("list row");
     assert_eq!(item, seps[0] + 1, "the edge sits on the list:\n{rows:#?}");
-    assert_eq!(rows[item + 1], "draft", "the list sits on the composer");
-    assert_eq!((w.map.list, w.map.list_rows, w.float), (Some(item), 1, 1));
+    assert_eq!(rows[item + 1], "", "the gap under the list");
+    assert_eq!(rows[item + 2], "draft", "the composer under the gap");
+    assert_eq!((w.map.list, w.map.list_rows, w.float), (Some(item), 1, 2));
+
+    // A shed of one takes the gap first: the list sits on the composer again, both separators stay.
+    let shed = view(&Case {
+        shed: 1,
+        ..narrowed
+    });
+    let rows = plain(&shed);
+    let item = find(&rows, |r| r.contains("▸ model")).expect("list row");
+    assert_eq!(rows[item + 1], "draft", "{rows:#?}");
+    assert_eq!(separator_indices(&rows).len(), 2, "{rows:#?}");
+    assert_eq!(shed.float, 1);
 }
 
 /// One CONSTANT blank row separates the content side from everything input-side —
@@ -1105,12 +1126,13 @@ fn the_separators_are_a_faint_solid_rule_the_width_of_the_frame() {
             wide,
             "{w}: the list row sits under the upper separator"
         );
+        assert_eq!(rows[top + 2], "", "{w}: the gap row under the list");
         assert_eq!(
-            rows[top + 2],
+            rows[top + 3],
             "draft",
-            "{w}: the composer on the list, between the separators"
+            "{w}: the composer under the gap, between the separators"
         );
-        assert_eq!(bot, top + 3, "{w}: one list row, one composer row");
+        assert_eq!(bot, top + 4, "{w}: one list row, the gap, one composer row");
         assert_eq!(
             bot + 1,
             rows.len() - 1,

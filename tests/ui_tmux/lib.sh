@@ -403,8 +403,8 @@ frame_top() { _snap "$@" | grep -n '^───' | tail -2 | head -1 | cut -d: -f
 frame_bot() { _snap "$@" | grep -n '^───' | tail -1 | cut -d: -f1; }
 
 # _composer_at <capture> <top> <bot> — the 1-based pane row of the composer's first row. Between
-# the separators an open completion list comes first (its `▸ ` / `  ` rows), the composer under
-# it; the list is open only on a line that starts with `/`, and no list
+# the separators an open completion list comes first (its `▸ ` / `  ` rows), then one blank gap
+# row, the composer under it; blank rows are skipped like list rows. The list is open only on a line that starts with `/`, and no list
 # row does, so the composer starts at the first `/` row when every row above it is the list's.
 # Assumes, with no list open, that the composer's first row is neither blank nor indented by two
 # spaces while a LATER row starts with `/` (such a draft would be read as list rows above a
@@ -500,7 +500,7 @@ bottom_zone() {
 }
 
 # The completion list: the rows under the UPPER separator (the list area's top edge) and above the
-# composer, the area's blank rows left out.
+# composer, the blank gap row over the composer left out.
 list_block() {
     local s t b c
     s="$(_snap "$@")"

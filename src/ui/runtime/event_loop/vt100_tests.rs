@@ -1546,8 +1546,8 @@ fn shown(m: &mut Model, cols: u16, lines: u16) -> Vec<String> {
 }
 
 /// Where the screen's blocks are, top to bottom: the conversation's last line, the upper
-/// separator (the list area's top edge), the list's first and last rows, the composer, the lower
-/// separator, the status row.
+/// separator (the list area's top edge), the list's first and last rows, the composer (one blank
+/// gap row above it), the lower separator, the status row.
 #[derive(Debug, PartialEq, Eq)]
 struct Order {
     conv: Option<usize>,
@@ -1559,7 +1559,7 @@ struct Order {
 }
 
 /// The [`Order`] of `rows` (the list is the rows from the first one written under the upper
-/// separator down to the composer; the area's blank rows are above it).
+/// separator down to the gap row, which is blank and directly on the composer).
 fn order(rows: &[String]) -> Order {
     let sep = rows
         .iter()
@@ -1582,10 +1582,15 @@ fn order(rows: &[String]) -> Order {
             .iter()
             .position(|r| r.starts_with("▸ ") || r.starts_with("  "))
             .expect("list row");
+    assert_eq!(
+        rows[composer - 1],
+        "",
+        "the gap row under the list: {rows:#?}"
+    );
     Order {
         conv,
         sep,
-        list: first..=composer - 1,
+        list: first..=composer - 2,
         composer,
         lower,
         status,
@@ -1612,8 +1617,8 @@ fn skills_model(typed: &str) -> Model {
 
 /// The completion list as a terminal shows it, at 80 and 160 columns, ABOVE the composer: the
 /// two-line conversation at the screen's top, blank rows, the frame's one spacer row, the upper
-/// separator (the list area's top edge), the list, the composer, the lower separator, the status
-/// row — in that order. Two columns: the labels at column 2 (the marker at 0, under the composer's
+/// separator (the list area's top edge), the list, one blank gap row, the composer, the lower
+/// separator, the status row — in that order. Two columns: the labels at column 2 (the marker at 0, under the composer's
 /// text) and — two past the longest label — the descriptions, at the same column on every row;
 /// at 160 columns a description still wraps at the 72-column measure, and is cut with `…`
 /// after two lines; an item with no description is its label alone. Run with `--nocapture` to
@@ -1632,13 +1637,13 @@ fn the_completion_list_on_screen_at_80_and_160_columns() {
         println!("--- {w}x24 ---\n{dump}");
         let o = order(&rows);
         // The conversation at the top (its last line on row 1), blank rows down to the frame's
-        // constant spacer (13), the list's six rows.
+        // constant spacer (12), the list's six rows, the gap (20).
         assert_eq!(
             o,
             Order {
                 conv: Some(1),
-                sep: 14,
-                list: 15..=20,
+                sep: 13,
+                list: 14..=19,
                 composer: 21,
                 lower: 22,
                 status: 23,
@@ -1646,7 +1651,7 @@ fn the_completion_list_on_screen_at_80_and_160_columns() {
             "{w}:\n{dump}"
         );
         assert!(
-            rows[2..=13].iter().all(String::is_empty),
+            rows[2..=12].iter().all(String::is_empty),
             "{w}: blank rows down to the area:\n{dump}"
         );
         let list = &rows[*o.list.start()..=*o.list.end()];
@@ -1714,8 +1719,9 @@ fn the_composer_holds_still_while_the_list_grows() {
 }
 
 /// On a short terminal the highlighted item beats everything but the composer: the rows above the
-/// area (the spacer) go first, then the lower and the upper separator (the area's top edge), then the status row, then
-/// the item's description from the bottom — its label row and the composer stay.
+/// area (the spacer) go first, then the gap row under the list, then the lower and the upper
+/// separator (the area's top edge), then the status row, then the item's description from the
+/// bottom — its label row and the composer stay.
 #[test]
 fn a_short_terminal_keeps_the_composer_and_the_highlighted_item() {
     let mut m = skills_model("/skills ");
@@ -1727,7 +1733,8 @@ fn a_short_terminal_keeps_the_composer_and_the_highlighted_item() {
     let composer = "/skills investigate";
     let status = "claude-opus-5-5";
     let sep = "─".repeat(80);
-    let screens: [(u16, Vec<&str>); 5] = [
+    let screens: [(u16, Vec<&str>); 6] = [
+        (7, vec![&sep, label, desc, "", composer, &sep, status]),
         (6, vec![&sep, label, desc, composer, &sep, status]),
         (5, vec![&sep, label, desc, composer, status]),
         (4, vec![label, desc, composer, status]),
@@ -1814,13 +1821,13 @@ fn a_narrowing_match_reveals_the_conversation_and_moves_nothing_above_the_list()
     assert_eq!(o.list.clone().count(), 6, "{open_txt:#?}");
     assert_eq!(n.list.clone().count(), 2, "{narrow_txt:#?}");
     // The conversation filled the screen: its rows run to the area's edge, the spacer between.
-    assert_eq!(open_txt[o.sep - 2], "conv-53", "{open_txt:#?}");
+    assert_eq!(open_txt[o.sep - 2], "conv-52", "{open_txt:#?}");
     assert_eq!(open_txt[o.sep - 1], "", "the spacer");
     for y in 0..o.sep - 1 {
         assert_eq!(open[y], closed[y], "row {y} moved when the list opened");
     }
     // The area is the list: the edge sits on its first row and came down by the four rows the
-    // narrowing dropped; the list still sits on the composer.
+    // narrowing dropped; the list still sits on the gap row over the composer.
     assert_eq!(
         n.sep + 1,
         *n.list.start(),
@@ -1835,7 +1842,7 @@ fn a_narrowing_match_reveals_the_conversation_and_moves_nothing_above_the_list()
     assert_eq!(
         (n.list.end(), n.composer, n.lower, n.status),
         (o.list.end(), o.composer, o.lower, o.status),
-        "the list sits on the composer"
+        "the list sits on the gap over the composer"
     );
     // Every row above the spacer is the conversation as it stood with no list: the rows never
     // covered byte for byte, the four the narrowing gave back with the same text.
@@ -1850,7 +1857,7 @@ fn a_narrowing_match_reveals_the_conversation_and_moves_nothing_above_the_list()
         closed_txt[..n.sep - 1],
         "the uncovered rows show the conversation"
     );
-    assert_eq!(narrow_txt[n.sep - 2], "conv-57", "{narrow_txt:#?}");
+    assert_eq!(narrow_txt[n.sep - 2], "conv-56", "{narrow_txt:#?}");
     // Closing gives the covered rows back: the screen reads as it did before the list opened (the
     // rewritten rows' blank cells are written spaces now, so the text is compared, not the bytes),
     // and the rows the area never covered are byte for byte what they were.
@@ -1926,13 +1933,14 @@ fn a_conversation_growing_under_an_open_list_moves_no_row_above_it() {
     let mut t = Floated::new(&mut m, Block::rows((0..3).map(line)), 80, 24);
     let (mut prev, txt) = t.draw(&mut m);
     let edge = order(&txt).sep;
-    // The rectangle is the 19 rows a closed frame leaves; the open list leaves `edge - 1` visible.
+    // The rectangle is the 19 rows a closed frame leaves; the open list and its gap row leave
+    // `edge - 1` visible.
     let vis = edge - 1;
-    assert_eq!(vis, 13, "{txt:#?}");
+    assert_eq!(vis, 12, "{txt:#?}");
     let mut n = 3;
-    // 3 → 8 → 13 (the visible rows full) → 14 → 18 → 19 (the rectangle exactly full) → 20 (the
+    // 3 → 8 → 12 (the visible rows full) → 13 → 18 → 19 (the rectangle exactly full) → 20 (the
     // first one-line scroll from a top-aligned state) → 22.
-    for more in [5, 5, 1, 4, 1, 1, 2] {
+    for more in [5, 4, 1, 5, 1, 1, 2] {
         t.term.push(Block::rows((n..n + more).map(line)));
         let was = n;
         n += more;
@@ -1951,7 +1959,7 @@ fn a_conversation_growing_under_an_open_list_moves_no_row_above_it() {
                 "{txt:#?}"
             );
         } else {
-            // Past the rectangle the tail is followed: visible rows 0..=12 are lines n - 19 on.
+            // Past the rectangle the tail is followed: visible rows 0..=11 are lines n - 19 on.
             for (y, row) in txt[..vis].iter().enumerate() {
                 assert_eq!(*row, line(n - 19 + y), "{n}: {txt:#?}");
             }

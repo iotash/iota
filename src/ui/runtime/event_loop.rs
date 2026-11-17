@@ -44,7 +44,8 @@ use crate::ui::input::mouse::{self, MouseState};
 use crate::ui::input::paste;
 use crate::ui::input::suggest::{self, ListView};
 use crate::ui::render::frame::{
-    BottomZone, BusyView, FrameInput, FrameMap, FrameView, SHED_ORDER, TurnClock, build_frame,
+    BottomZone, BusyView, FrameInput, FrameMap, FrameView, LIST_GAP, SHED_ORDER, TurnClock,
+    build_frame,
 };
 use crate::ui::render::region::RegionSnapshot;
 use crate::ui::surface::tabbed::SURFACE_MIN_ROWS;
@@ -984,18 +985,22 @@ impl Model {
         {
             let others = self.rows_besides(&composer_rows, BottomZone::Status, busy.as_ref(), now);
             // An interaction area never exceeds half the screen or 15 rows: 200 matches scroll
-            // inside the cap and the conversation keeps the rest.
+            // inside the cap and the conversation keeps the rest. The gap row under the list
+            // comes out of the screen, not out of the cap: the cap bounds the list's own rows.
             let screen = usize::from(self.height);
             let room = screen
-                .saturating_sub(others)
+                .saturating_sub(others + LIST_GAP)
                 .min(crate::ui::interaction_rows(screen));
             let mut list = suggest::frame_list(&mut self.composer, &self.commands, fw, room, dark);
             // A screen too short for the highlighted item alone: the rows above the list go first
-            // (the screen cuts them off the top), then the chrome (`SHED_ORDER`), then the item's
-            // description rows from the bottom — never its label, never the composer.
-            let above = others - composer_rows.len() - SHED_ORDER;
+            // (the screen cuts them off the top), then the gap and the chrome (`SHED_ORDER`), then
+            // the item's description rows from the bottom — never its label, never the composer.
+            // `others` counts the two separators and the status row; the gap is the fourth.
+            let above = others - composer_rows.len() - (SHED_ORDER - LIST_GAP);
             let len = list.rows.len();
-            let over = (others + len).saturating_sub(screen).saturating_sub(above);
+            let over = (others + LIST_GAP + len)
+                .saturating_sub(screen)
+                .saturating_sub(above);
             shed = over.min(SHED_ORDER);
             let keep = len.saturating_sub(over - shed).max(1);
             list.rows.truncate(keep);
