@@ -404,8 +404,9 @@ frame_bot() { _snap "$@" | grep -n '^───' | tail -1 | cut -d: -f1; }
 
 # _composer_at <capture> <top> <bot> — the 1-based pane row of the composer's first row. Between
 # the separators an open completion list comes first (its `▸ ` / `  ` rows), then one blank gap
-# row, the composer under it; blank rows are skipped like list rows. The list is open only on a line that starts with `/`, and no list
-# row does, so the composer starts at the first `/` row when every row above it is the list's.
+# row, the composer under it; blank rows are skipped like list rows. The list is open only on a line
+# that starts with `/`, and no list row does, so the composer starts at the first `/` row when every
+# row above it is the list's.
 # Assumes, with no list open, that the composer's first row is neither blank nor indented by two
 # spaces while a LATER row starts with `/` (such a draft would be read as list rows above a
 # composer starting at that later row); no scenario types one.

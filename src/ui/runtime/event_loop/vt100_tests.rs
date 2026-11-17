@@ -1618,11 +1618,11 @@ fn skills_model(typed: &str) -> Model {
 /// The completion list as a terminal shows it, at 80 and 160 columns, ABOVE the composer: the
 /// two-line conversation at the screen's top, blank rows, the frame's one spacer row, the upper
 /// separator (the list area's top edge), the list, one blank gap row, the composer, the lower
-/// separator, the status row — in that order. Two columns: the labels at column 2 (the marker at 0, under the composer's
-/// text) and — two past the longest label — the descriptions, at the same column on every row;
-/// at 160 columns a description still wraps at the 72-column measure, and is cut with `…`
-/// after two lines; an item with no description is its label alone. Run with `--nocapture` to
-/// see the screens.
+/// separator, the status row — in that order. Two columns: the labels at column 2 (the marker at 0,
+/// under the composer's text) and — two past the longest label — the descriptions, at the same
+/// column on every row; at 160 columns a description still wraps at the 72-column measure, and is
+/// cut with `…` after two lines; an item with no description is its label alone. Run with
+/// `--nocapture` to see the screens.
 #[test]
 fn the_completion_list_on_screen_at_80_and_160_columns() {
     use crate::ui::input::suggest::DESC_MEASURE;
@@ -1746,6 +1746,61 @@ fn a_short_terminal_keeps_the_composer_and_the_highlighted_item() {
         println!("--- 80x{lines} ---\n{}", rows.join("\n"));
         assert_eq!(rows, want, "80x{lines}");
         assert_eq!(m.list_items.first(), Some(&3), "the highlighted item alone");
+    }
+}
+
+/// A wrapped composer under an open list on a short terminal: a 95-column command still matches,
+/// so the composer is two rows with the one item over it. The shed order is the same as for a
+/// one-row composer — the spacer (cut off the top), then the gap row, then the lower separator —
+/// and the real cursor is on the composer's second row, after its last character, at every
+/// height: the gap above the composer counts in the cursor's offset only while it is drawn.
+#[test]
+fn a_wrapped_composer_under_the_list_sheds_in_order_and_keeps_its_cursor() {
+    let mut m = test_model();
+    m.apply(UiMsg::Status(StatusData {
+        model: "claude-opus-5-5".to_owned(),
+        ..StatusData::default()
+    }));
+    let value = format!("/{}", "w".repeat(94));
+    m.apply(UiMsg::Commands(vec![crate::ui::facade::Suggestion {
+        value: value.clone(),
+        label: "wide".to_owned(),
+        desc: "one item".to_owned(),
+    }]));
+    crate::ui::testutil::type_text(&mut m, &value);
+    let (first, second) = value.split_at(80);
+    let item = "  wide  one item";
+    let status = "claude-opus-5-5";
+    let sep = "─".repeat(80);
+    let screens: [(u16, Vec<&str>); 4] = [
+        (8, vec!["", &sep, item, "", first, second, &sep, status]),
+        (7, vec![&sep, item, "", first, second, &sep, status]),
+        (6, vec![&sep, item, first, second, &sep, status]),
+        (5, vec![&sep, item, first, second, status]),
+    ];
+    for (lines, want) in screens {
+        m.width = 80;
+        m.height = lines;
+        let view = m.frame_view();
+        let buf = SharedBuf::default();
+        let wtr = buf.clone();
+        let mut term =
+            Term::headless(Box::new(move || wtr.clone()), Size::new(80, lines), false).unwrap();
+        term.draw_frame(&view, None).unwrap();
+        let parser = parse_sized(&buf, 80, lines);
+        let rows: Vec<String> = parser
+            .screen()
+            .rows(0, 80)
+            .map(|r| r.trim_end().to_owned())
+            .collect();
+        println!("--- 80x{lines} ---\n{}", rows.join("\n"));
+        assert_eq!(rows, want, "80x{lines}");
+        let row = want.iter().position(|r| *r == second).unwrap();
+        assert_eq!(
+            parser.screen().cursor_position(),
+            (u16::try_from(row).unwrap(), 15),
+            "80x{lines}: the cursor after the composer's last character"
+        );
     }
 }
 

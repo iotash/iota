@@ -8,7 +8,8 @@
 # conversation keeps its rectangle; the area is drawn over its last rows); the area is exactly the
 # list, so narrowing brings its top edge — the upper separator — down and gives back the rows it
 # no longer covers, the conversation as it was, never blank rows. One blank row parts the list
-# from the composer. Closing the list gives every covered row back. Read on a real terminal with `capture-pane`, the user's claim.
+# from the composer. Closing the list gives every covered row back. Read on a real terminal with
+# `capture-pane`, the user's claim.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
 

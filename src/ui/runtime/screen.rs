@@ -7,7 +7,8 @@
 //! The screen is the conversation's rectangle with the frame (the loop's [`FrameView`] rows,
 //! pinned to the bottom) drawn over its last rows. The rectangle is what the frame leaves with no
 //! completion list open; the list's area and the blank gap row under it ([`FrameView::float`])
-//! float over it, so opening, narrowing or closing the list never moves the conversation. The VISIBLE rows are the ones above
+//! float over it, so opening, narrowing or closing the list never moves the conversation. The
+//! VISIBLE rows are the ones above
 //! the frame: only they are drawn, marked for the selection and the mouse, and scrolled; a covered
 //! row is laid out and followed like any other but has no mark. The conversation starts at the
 //! screen's top and grows downward; only once it is taller than its rectangle does the view follow

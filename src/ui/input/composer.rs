@@ -414,8 +414,8 @@ mod tests {
     /// THE CROWN JEWEL: full layout order with real composer content — queue < sep1 <
     /// composer < sep2 < status, exactly 2 separators, status the LAST frame row; an open
     /// surface replaces the status row below the composer and close restores it;
-    /// the completion list renders between sep1 and a blank gap over the composer; the status row keeps its
-    /// content while an item is highlighted — through both the raw rows and the
+    /// the completion list renders between sep1 and a blank gap over the composer; the status row
+    /// keeps its content while an item is highlighted — through both the raw rows and the
     /// `TestBackend` cell grid.
     #[test]
     fn the_wrapped_composer_layout_is_the_full_frame_golden() {
@@ -475,8 +475,9 @@ mod tests {
             "status not restored after the surface closed"
         );
 
-        // The completion list sits under the upper separator, one blank gap row over the composer, one
-        // row per item with its description beside it, and the status row keeps its slot throughout.
+        // The completion list sits under the upper separator, one blank gap row over the composer,
+        // one row per item with its description beside it, and the status row keeps its slot
+        // throughout.
         m.apply(UiMsg::Commands(vec![Suggestion {
             value: "/model".to_owned(),
             label: String::new(),

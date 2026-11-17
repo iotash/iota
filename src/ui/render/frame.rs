@@ -132,8 +132,9 @@ pub(crate) struct FrameInput<'a> {
     /// The composer cursor as (the text's column, row within the composer
     /// block); `None` while a surface owns (and hides) the cursor.
     pub(crate) composer_cursor: Option<(u16, u16)>,
-    /// The completion list's rows (pre-rendered by suggest; empty = none), directly above the
-    /// composer, under the upper separator: it grows upward, over the conversation's rows.
+    /// The completion list's rows (pre-rendered by suggest; empty = none), above the composer, one
+    /// [`LIST_GAP`] row between them, under the upper separator: it grows upward, over the
+    /// conversation's rows.
     pub(crate) list: &'a [String],
     /// The bottom-zone occupant.
     pub(crate) bottom: BottomZone<'a>,
