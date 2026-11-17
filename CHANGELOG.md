@@ -12,7 +12,7 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   pushing it up. Typing more letters shortens the list and uncovers the
   conversation behind it, with no empty rows left between the list and its top
   line. The line that separated the list from what you type now sits on top of
-  the list.
+  the list, and one empty row separates the list from what you type.
 - **A conversation starts at the top of the screen.** A new session's banner
   and a resumed session's replayed rounds start at the top of the screen, and
   the conversation grows downward, scrolling only once it fills the screen. A

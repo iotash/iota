@@ -140,10 +140,10 @@ Facade shape decisions from the adversarial review:
   flush ordering (close preview BEFORE committing the rendered block) is
   preserved by construction.
 - **Frame stacking order is fixed and ui-owned** (user-confirmed final):
-  `[call preview] [spacer] [queue] ─sep─ [completion list]
+  `[call preview] [spacer] [queue] ─sep─ [completion list] [gap]
   [composer] ─sep─ [status | surface]` over the conversation's viewport (the staging tail and
   the stream preview were deleted in tui-plan S7b; the list since the full screen,
-  above the composer since 2026-11-16: `fullscreen-tui.md` "补全列表"). One constant blank spacer row separates
+  above the composer since 2026-11-16, one blank gap row between them since 2026-11-17: `fullscreen-tui.md` "补全列表"). One constant blank spacer row separates
   the content side from everything input-side (it cannot bounce — it never
   changes height), and residue rows render BLANK: they hold their height
   until fresh lines consume them, but their content is stale widget chrome
