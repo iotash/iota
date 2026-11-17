@@ -465,16 +465,16 @@ fn render_browser(p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<Strin
     let offset = ps.offset;
     for &i in ps.view.iter().skip(offset).take(h) {
         let Some(e) = ps.entries.get(i) else { continue };
-        let mut name = truncate_ansi(&e.name, w.saturating_sub(4).max(4), "…");
-        if e.is_dir {
-            name = format!("{FAINT}{name}{RESET}");
-        }
+        let name = truncate_ansi(&e.name, w.saturating_sub(4).max(4), "…");
+        // A directory is faint off the cursor; on it the row's bold carries it, never bold-faint.
         if i == ps.cursor {
             rows.push(paint_row(
                 &format!("{CURSOR_MARK}{}", emphasize(&name)),
                 row_bg(dark),
                 w,
             ));
+        } else if e.is_dir {
+            rows.push(format!("  {FAINT}{name}{RESET}"));
         } else {
             rows.push(format!("  {name}"));
         }

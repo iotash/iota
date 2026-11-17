@@ -13,7 +13,9 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::text::ansi::{ansi_width, strip_sgr};
 use crate::ui::facade::Panel;
+use crate::ui::render::theme::{FAINT, RESET};
 use crossterm::event::KeyCode;
 
 use crate::ui::testutil::{Surf, ch, closed, key};
@@ -80,6 +82,31 @@ fn browser_lists_parent_then_dirs_then_files_skipping_dotfiles() {
         plain.contains("↑↓ move · ←→ page · Enter open/choose · g/G top/bottom · q/Esc cancel"),
         "hint row wrong:\n{plain:?}"
     );
+}
+
+/// The cursor row is the current row of every list: tinted to the edge, the cyan `▸`, the name
+/// bold — a directory's faint is for the rows off the cursor only, so the current one is never
+/// bold-faint; a file is plain off the cursor.
+#[test]
+fn the_browser_cursor_row_is_tinted_and_bold_and_never_faint() {
+    let root = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir(root.path().join("sub")).expect("mkdir");
+    write(&root.path().join("a.txt"), "");
+    let mut s = Surf::open(vec![browser(root.path(), false)]);
+    let rows = s.rows();
+    let at = |name: &str| {
+        rows.iter()
+            .find(|r| strip_sgr(r).trim_end().ends_with(name))
+            .cloned()
+            .expect(name)
+    };
+    let cur = at("../");
+    assert!(cur.starts_with("\x1b[48;5;237m\x1b[36m"), "{cur:?}");
+    assert!(cur.contains("\x1b[1m"), "{cur:?}");
+    assert!(!cur.contains(FAINT), "{cur:?}");
+    assert_eq!(ansi_width(&cur), 80, "{cur:?}");
+    assert_eq!(at("sub/"), format!("  {FAINT}sub/{RESET}"));
+    assert_eq!(at("a.txt"), "  a.txt");
 }
 
 /// An unreadable directory keeps the panel where it was and renders the OS message —
