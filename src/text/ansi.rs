@@ -177,7 +177,8 @@ pub fn truncate_ansi(s: &str, max: usize, tail: &str) -> String {
 
 /// `s` with `sgr` re-asserted after every SGR escape inside it, so a style laid over a styled
 /// string survives the string's own resets (`\x1b[0m` would otherwise end it). Other escapes (OSC
-/// 8 hyperlinks, non-SGR CSI) are copied untouched.
+/// 8 hyperlinks, non-SGR CSI) are copied untouched. An escape that reaches the end of `s`
+/// unterminated — a CSI with no final byte, an OSC with no BEL/ST, a lone ESC — is dropped.
 pub fn reassert_sgr(s: &str, sgr: &str) -> String {
     let b = s.as_bytes();
     let mut out = String::with_capacity(s.len() + 8);
@@ -187,14 +188,30 @@ pub fn reassert_sgr(s: &str, sgr: &str) -> String {
         out.push_str(&s[i..at]);
         let n = escape_len_at(b, at).max(1);
         let seq = &s[at..at + n];
+        i = at + n;
+        if i == s.len() && !terminated(seq) {
+            break; // copied, it would swallow whatever the caller appends (a painted row's pad)
+        }
         out.push_str(seq);
         if seq.starts_with("\x1b[") && seq.ends_with('m') {
             out.push_str(sgr);
         }
-        i = at + n;
     }
     out.push_str(&s[i..]);
     out
+}
+
+/// Whether an escape [`escape_len_at`] measured has its terminator: a CSI its final byte, an OSC
+/// its BEL or ST. A lone ESC has none.
+fn terminated(seq: &str) -> bool {
+    let b = seq.as_bytes();
+    if seq.starts_with("\x1b[") {
+        b.len() > 2 && (0x40..=0x7e).contains(&b[b.len() - 1])
+    } else if seq.starts_with("\x1b]") {
+        seq.ends_with('\x07') || (b.len() > 3 && seq.ends_with("\x1b\\"))
+    } else {
+        false
+    }
 }
 
 /// `row` painted across exactly `width` cells on the background `bg`: cut with `…` first when it
@@ -202,9 +219,10 @@ pub fn reassert_sgr(s: &str, sgr: &str) -> String {
 /// after every SGR escape in it ([`reassert_sgr`]), padded by display width, then reset. The
 /// row's own foreground and attributes are kept.
 pub fn paint_row(row: &str, bg: &str, width: usize) -> String {
-    let row = truncate_ansi(row, width, "…");
+    let row = reassert_sgr(&truncate_ansi(row, width, "…"), bg);
+    // Measured after the re-assert, which drops a cut-off escape the ruler would count as text.
     let pad = width.saturating_sub(ansi_width(&row));
-    format!("{bg}{}{}\x1b[0m", reassert_sgr(&row, bg), " ".repeat(pad))
+    format!("{bg}{row}{}\x1b[0m", " ".repeat(pad))
 }
 
 /// Visible cols `[start, start+width)`: escapes always kept; a wide rune straddling a

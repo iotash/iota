@@ -14,12 +14,13 @@ use std::time::{Duration, Instant};
 use crate::shell::jobs::JobInfo;
 use crate::text::ansi::strip_sgr;
 use crate::text::width::str_width;
-use crate::ui::facade::StatusData;
+use crate::ui::facade::{StatusData, Suggestion};
+use crate::ui::input::suggest::item_rows;
 use crate::ui::render::frame::{
     BottomZone, BusyView, FrameInput, FrameView, build_frame, status_line,
 };
 use crate::ui::render::region::RegionSnapshot;
-use crate::ui::render::theme::{BOLD, CYAN, FAINT, GREEN, RED, RESET, YELLOW};
+use crate::ui::render::theme::{CYAN, FAINT, GREEN, RED, RESET, YELLOW};
 use crate::ui::testutil::SPINNER_GLYPHS;
 use ratatui::style::{Color, Modifier};
 
@@ -229,12 +230,24 @@ fn frame_order_with_empty_composer_and_slot_swap() {
     // The completion list sits directly above the upper separator — above the composer, which
     // is above the status row; the map says where the list is, and the composer's cursor row
     // counts the list's rows above it.
+    // A real highlighted item, two rows tall: its description wraps once at 80 columns.
+    let list = item_rows(
+        &Suggestion {
+            value: "/model".to_owned(),
+            label: String::new(),
+            desc: "Pick the model the agent runs on, with its context window, its effort and its \
+                   temperature, then Pick a model"
+                .to_owned(),
+        },
+        true,
+        5,
+        80,
+        true,
+    );
+    assert_eq!(list.len(), 2, "{list:#?}");
     let case = Case {
         surface: None,
-        list: vec![
-            format!("{CYAN}▸{RESET} {BOLD}model{RESET}"),
-            format!("         {FAINT}Pick a model{RESET}"),
-        ],
+        list,
         ..case
     };
     let v = view(&case);
@@ -242,7 +255,7 @@ fn frame_order_with_empty_composer_and_slot_swap() {
     let seps = separator_indices(&rows);
     assert_eq!(seps.len(), 2);
     let item = find(&rows, |r| r.contains("▸ model")).expect("list row");
-    let desc = find(&rows, |r| r.contains("Pick a model")).expect("desc row");
+    let desc = find(&rows, |r| r.contains("then Pick a model")).expect("desc row");
     let composer = find(&rows, |r| r == "draft").expect("composer row");
     let status = find(&rows, |r| r.contains("gpt-4o · ")).expect("status row");
     assert!(

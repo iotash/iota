@@ -15,7 +15,7 @@ use crate::ui::input::suggest::{
     DESC_LINES, DESC_MEASURE, LABEL_CAP, ListView, cancel, choose, frame_list, item_rows,
     label_column, layout, match_suggestions, step, tab_complete,
 };
-use crate::ui::render::theme::{BOLD, CYAN, FAINT, RESET};
+use crate::ui::render::theme::{BOLD, CYAN, FAINT, RESET, row_bg};
 
 /// Builds a suggestion table from plain values (Go `cmdTable`).
 fn cmd_table(vals: &[&str]) -> Vec<Suggestion> {
@@ -39,11 +39,19 @@ fn vals(ms: &[&Suggestion]) -> Vec<String> {
     ms.iter().map(|m| m.value.clone()).collect()
 }
 
-/// The rows' text: SGR stripped, and the current item's tinted pad to the edge with it — the pad
-/// is the tint's, not text the columns are measured by.
+/// The rows' text, SGR stripped. A row of the current item (it opens with the tint) also loses
+/// its pad to the edge — the pad is the tint's, not text the columns are measured by; any other
+/// row keeps its trailing spaces, so pad leaking onto a row the tint does not cover still fails.
 fn plain(rows: &[String]) -> Vec<String> {
     rows.iter()
-        .map(|r| strip_sgr(r).trim_end().to_owned())
+        .map(|r| {
+            let t = strip_sgr(r);
+            if r.starts_with(row_bg(true)) {
+                t.trim_end().to_owned()
+            } else {
+                t
+            }
+        })
         .collect()
 }
 

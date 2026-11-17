@@ -637,9 +637,18 @@ fn chips_and_checkbox_glyphs_are_byte_exact() {
         format!("{REV_ON} Flags {RESET}{FAINT} │ {RESET}{FAINT} B {RESET}")
     );
     assert_eq!(s.rows()[2], "  \x1b[2m[ ]\x1b[22m y");
-    s.tap(ch(' '));
     let bg = "\x1b[48;5;237m";
-    // `▸ ` + `[x] ` + `x` = 7 cells, 73 of tinted pad.
+    // Current and unchecked: `▸ ` + `[ ] ` + `x` = 7 cells, 73 of tinted pad — the box column is
+    // as wide unchecked as checked, so the label never moves when Space toggles it.
+    assert_eq!(
+        s.rows()[1],
+        format!(
+            "{bg}{CYAN}{bg}▸\x1b[39m{bg} \x1b[2m{bg}[ ]\x1b[22m{bg} {BOLD}{bg}x\x1b[22m{bg}{}{RESET}",
+            " ".repeat(73)
+        )
+    );
+    s.tap(ch(' '));
+    // Current and checked: `▸ ` + `[x] ` + `x` = 7 cells, 73 of tinted pad.
     assert_eq!(
         s.rows()[1],
         format!(

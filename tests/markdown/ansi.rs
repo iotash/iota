@@ -192,6 +192,10 @@ fn paint_row_tints_a_styled_row_to_the_width_and_never_splits_a_wide_char() {
     let cut = paint_row("漢字漢", BG, 4);
     assert_eq!(cut, format!("{BG}漢… \x1b[0m"));
     assert_eq!(ansi_width(&cut), 4);
+    // An escape cut off at the row's end is dropped: copied, it would swallow the pad behind it.
+    assert_eq!(paint_row("a\x1b[3", BG, 5), format!("{BG}a    \x1b[0m"));
+    assert_eq!(paint_row("a\x1b]8;;u", BG, 3), format!("{BG}a  \x1b[0m"));
+    assert_eq!(paint_row("a\x1b", BG, 3), format!("{BG}a  \x1b[0m"));
     // An OSC 8 hyperlink is copied untouched — only SGR escapes re-assert.
     assert_eq!(
         reassert_sgr("\x1b]8;;u\x07x\x1b]8;;\x07\x1b[1my", BG),
