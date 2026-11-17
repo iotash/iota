@@ -87,7 +87,7 @@ impl Steerer {
                 }
                 m
             } else {
-                self.tr.user(&input.display);
+                self.tr.user_input(&input);
                 Message::user(input.text)
             };
             ctxm.note(&m);

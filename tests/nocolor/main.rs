@@ -308,3 +308,23 @@ fn the_tab_is_plain_text_without_colour() {
         ]
     );
 }
+
+/// Under `NO_COLOR` the tab is cut to the width by the label itself — no painter cuts it again —
+/// so it never runs past the row: at 8 and 20 columns, one long attribute or three.
+#[test]
+fn the_plain_tab_never_exceeds_the_width() {
+    use iota::text::width::str_width;
+    use iota::ui::facade::{Layout as _, UserBlock};
+    no_color();
+    for msg in [
+        r#"<hc from="worker-2">x</hc>"#,
+        r#"<hc from="worker-2" to="lead" topic="the release">x</hc>"#,
+        r#"<hc conversation-identifier="abc">x</hc>"#,
+    ] {
+        for w in [8, 20] {
+            let rows = UserBlock::new(msg, Some("hc")).lines(w);
+            assert!(str_width(&rows[0]) <= w, "{w}: {:?}", rows[0]);
+            assert!(rows[0].starts_with("  hc"), "{w}: {:?}", rows[0]);
+        }
+    }
+}

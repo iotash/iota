@@ -3,8 +3,9 @@
 //! without the brackets in the user block's tab ink (X-107). Here, below `repl`, so the user block
 //! (`ui::block`) paints its tab with the one painter the chat's tool calls use.
 
-/// `"\x1b[{params}m{s}\x1b[0m"`, or `s` verbatim when color is off.
-fn sgr_if(on: bool, params: &str, s: &str) -> String {
+/// `"\x1b[{params}m{s}\x1b[0m"`, or `s` verbatim when color is off — the one SGR wrapper, the
+/// chat's styles (`repl::render::styles`) included.
+pub(crate) fn sgr_if(on: bool, params: &str, s: &str) -> String {
     if on {
         format!("\x1b[{params}m{s}\x1b[0m")
     } else {

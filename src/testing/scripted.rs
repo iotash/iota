@@ -256,6 +256,8 @@ pub struct ScriptedUi {
     blocking_calls: AtomicUsize,
     /// The facade's open dialogs: the provided [`Ui::tabbed`] counts them around `open_surface`.
     dialogs: Dialogs,
+    /// The `claimed` element name each [`Ui::user_block`] was handed, in order.
+    claims: Mutex<Vec<Option<String>>>,
 }
 
 impl ScriptedUi {
@@ -272,7 +274,13 @@ impl ScriptedUi {
             fail_after: AtomicUsize::new(usize::MAX),
             blocking_calls: AtomicUsize::new(0),
             dialogs: Dialogs::default(),
+            claims: Mutex::new(Vec::new()),
         })
+    }
+
+    /// The element name each user block was handed (`Ui::user_block`'s `claimed`), in order.
+    pub fn user_block_claims(&self) -> Vec<Option<String>> {
+        lock(&self.claims).clone()
     }
 
     /// Every recorded facade call, in order.
@@ -505,7 +513,8 @@ impl Ui for ScriptedUi {
         }
     }
 
-    fn user_block(&self, display: &str, _claimed: Option<&str>) {
+    fn user_block(&self, display: &str, claimed: Option<&str>) {
+        lock(&self.claims).push(claimed.map(str::to_owned));
         self.record(UiEvent::UserBlock(display.to_owned()));
     }
 

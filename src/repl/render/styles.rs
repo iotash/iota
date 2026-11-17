@@ -1,15 +1,13 @@
 //! Chat styles (`TUI_CONTRACTS` §9): raw 16-color SGR builders — DimStyle=2, ErrorStyle=31,
 //! CodeStyle=36, CodeBlockStyle=32, Bold=1, Underline=4, UserBlock=reverse — plus the 256-color
 //! diff shades keyed on the detected background (chat/styles.go, chat/diff.go:98-107,
-//! chat/theme.go), and the tool-call label painted in segments ([`paint_label`], which lives in
-//! `ui::render::label` so the user block's tab paints with it too — DIVERGENCES X-83, X-107). No
-//! styling library anywhere in the frame path.
+//! chat/theme.go). The tool-call label's painter lives in `ui::render::label` (DIVERGENCES X-83,
+//! X-107), and so does the [`sgr_if`] every wrapper here goes through. No styling library anywhere
+//! in the frame path.
 //!
 //! Every wrapper asks [`crate::app::color::enabled`] first and hands the text back UNTOUCHED when
 //! the answer is no — attributes included, because this is fatih/color's `NoColor` rule and
 //! the chat side is text that gets copied, exported and replayed (DIVERGENCES X-27).
-
-pub(crate) use crate::ui::render::label::paint_label;
 
 /// SGR reset.
 pub(crate) const RESET: &str = "\x1b[0m";
@@ -19,14 +17,7 @@ fn sgr(params: &str, s: &str) -> String {
     sgr_if(crate::app::color::enabled(), params, s)
 }
 
-/// [`sgr`] with the decision passed in.
-fn sgr_if(on: bool, params: &str, s: &str) -> String {
-    if on {
-        format!("\x1b[{params}m{s}{RESET}")
-    } else {
-        s.to_owned()
-    }
-}
+use crate::ui::render::label::sgr_if;
 
 /// Wraps `s` faint (SGR 2) — fatih `DimStyle` twin.
 pub(crate) fn dim(s: &str) -> String {

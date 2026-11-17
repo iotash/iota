@@ -161,8 +161,10 @@ pub struct Tab {
 impl UserBlock {
     /// The block for a submitted `message`. `claimed` is the element name the host wraps its own
     /// messages in (`host::Presenter::message_element`): a message that is exactly one such
-    /// element becomes its tab and its inner text; any other message — and every message when no
-    /// host claims a name — is shown as it was written.
+    /// element becomes its tab and its inner text, bounded as a paste's echo is (its first
+    /// `PASTE_ECHO_MAX_LINES` lines and `… +N more lines`, `ui::input::paste::bound_echo`) — the
+    /// message is the FULL text, so the bound eats the body and never the head; any other message —
+    /// and every message when no host claims a name — is shown as it was written.
     pub fn new(message: &str, claimed: Option<&str>) -> Self {
         match claimed.and_then(|name| crate::text::xml::claimed_element(message, name)) {
             Some(el) => Self {
@@ -174,7 +176,7 @@ impl UserBlock {
                         .map(|(k, v)| ((*k).to_owned(), v.map(str::to_owned)))
                         .collect(),
                 }),
-                text: el.inner.to_owned(),
+                text: crate::ui::input::paste::bound_echo(el.inner),
             },
             None => Self {
                 tab: None,
@@ -185,9 +187,11 @@ impl UserBlock {
 }
 
 impl Tab {
-    /// The tab as a call label no wider than `budget` columns: a bare attribute is a positional
-    /// argument, a value one-lined; attributes are dropped from the end behind the label's own
-    /// `… +N args` tail until it fits, and the one left is cut with `…`.
+    /// The tab as a call label no wider than `budget` columns — every cut made here, none left to
+    /// the painter: a bare attribute is a positional argument, a value one-lined; attributes are
+    /// dropped from the end behind the label's own `… +N args` tail until it fits, the one left is
+    /// cut with `…`; if that still does not fit it is dropped too (`name … +N args`), and as a last
+    /// resort the whole text is cut.
     fn label(&self, budget: usize) -> ToolLabel {
         use crate::text::width::{str_width, truncate_cols};
         let all: Vec<(Option<String>, String)> = self
@@ -211,6 +215,7 @@ impl Tab {
                 return l;
             }
         }
+        let fits = |l: &ToolLabel| str_width(&l.unbracketed()) <= budget;
         let mut l = make(all.len().min(1));
         let over = str_width(&l.unbracketed()).saturating_sub(budget);
         if let LabelBody::Args { pairs, .. } = &mut l.body
@@ -218,7 +223,20 @@ impl Tab {
         {
             *v = truncate_cols(v, str_width(v).saturating_sub(over));
         }
-        l
+        if fits(&l) {
+            return l;
+        }
+        let l = make(0);
+        if fits(&l) {
+            return l;
+        }
+        ToolLabel {
+            name: truncate_cols(&l.unbracketed(), budget),
+            body: LabelBody::Args {
+                pairs: Vec::new(),
+                more: 0,
+            },
+        }
     }
 
     /// The tab's row at `width` (≥ 8): the label from column 2 on the bar's gray, from column 0
@@ -232,7 +250,7 @@ impl Tab {
                 &crate::ui::render::label::TAB_INK,
             );
             let cols = LEAD + crate::text::width::str_width(&label.unbracketed()) + 1;
-            crate::text::ansi::paint_row(&format!("  {painted}"), USER_BAR, cols.min(width))
+            crate::text::ansi::paint_row(&format!("  {painted}"), USER_BAR, cols)
         } else {
             format!("  {}", label.unbracketed())
         }
@@ -380,9 +398,31 @@ mod tests {
         assert_eq!(tab(msg, 40), "  hc from:worker-2 to:lead … +1 args ");
         assert_eq!(tab(msg, 30), "  hc from:worker-2 … +2 args ");
         assert_eq!(tab(msg, 24), "  hc from:wo… … +2 args ");
-        for w in [8, 12, 24, 30, 40, 80] {
-            assert!(str_width(&tab(msg, w)) <= w, "{w}: {:?}", tab(msg, w));
+        // Every cut is made before the painter: the painted row strips back to the label's text.
+        for msg in [
+            msg,
+            r#"<hc conversation-identifier="abc">x</hc>"#,
+            r#"<hc from="worker-2">x</hc>"#,
+        ] {
+            for w in [8, 12, 20, 24, 30, 40, 80] {
+                assert!(str_width(&tab(msg, w)) <= w, "{w}: {:?}", tab(msg, w));
+            }
         }
+        assert_eq!(tab(msg, 20), "  hc … +3 args ");
+    }
+
+    /// A long host message: the block is handed the full text, so the tab is there and the bound
+    /// a paste's echo gets eats the inner text's tail — 20 lines and `… +N more lines`.
+    #[test]
+    fn a_long_host_message_keeps_its_tab_and_bounds_its_inner_text() {
+        let body: Vec<String> = (1..=25).map(|n| format!("line {n}")).collect();
+        let b = UserBlock::new(&format!("<hc from=\"w\">{}</hc>", body.join("\n")), HC);
+        assert!(b.tab.is_some());
+        assert_eq!(
+            b.text,
+            format!("{}\n… +5 more lines", body[..20].join("\n"))
+        );
+        assert_eq!(b.lines(80).len(), 1 + 21);
     }
 
     /// Anything that is not exactly one element — here, text after it — has no tab and keeps

@@ -12,7 +12,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   only what is inside it in your block, with `hc from:worker-2` on a gray tab
   just above it. Only herdr-core's own `hc` element is treated this way, and
   only inside herdr-core: XML you paste into a message yourself, `<hc>`
-  included anywhere else, is shown and sent exactly as you typed it.
+  included anywhere else, is shown and sent exactly as you typed it. Inside
+  herdr-core an `<hc>` you paste yourself gets the tab too, but the model
+  still receives exactly what you sent. A long message shows its first 20
+  lines under the tab, like any long paste. The tab line is part of your
+  message on screen: you can select, copy and search it, and it is written
+  out when iota exits.
 - **Typing a slash command no longer moves the conversation.** The
   completion list now opens over the bottom of the conversation instead of
   pushing it up. Typing more letters shortens the list and uncovers the

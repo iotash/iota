@@ -195,15 +195,38 @@ impl Transcript {
         lock(&self.inner)
     }
 
-    /// Renders the submitted input as the `▌` block (transcript.go `user`). A mid-turn
-    /// injection (steering) lands while an activity group is running — the user speaking
-    /// is a stronger boundary than content, so the group settles first; at a normal turn
-    /// start the group is empty and the settle is a no-op.
+    /// Renders `display` as the `▌` block (transcript.go `user`), as written — no element is
+    /// parsed ([`Self::user_input`] is the submit path's). A mid-turn injection (steering) lands
+    /// while an activity group is running — the user speaking is a stronger boundary than
+    /// content, so the group settles first; at a normal turn start the group is empty and the
+    /// settle is a no-op.
     pub fn user(&self, display: &str) {
+        self.user_block(display, None);
+    }
+
+    /// Renders a submitted input as the `▌` block. When its FULL text (`Input::text`, every paste
+    /// expanded) is exactly one element of the name the host claims ([`Self::set_claimed_element`]),
+    /// the block gets that text and lays out the tab and the bounded inner text itself — the
+    /// paste-bounded `display` may have lost the closing tag to the bound (a long `hc send`), and
+    /// the resume echo reads the full text too, so the two agree. Otherwise the block is `display`,
+    /// as written.
+    pub fn user_input(&self, input: &crate::ui::facade::Input) {
+        let claimed = self.lock().claimed.clone();
+        match claimed
+            .as_deref()
+            .filter(|n| crate::text::xml::claimed_element(&input.text, n).is_some())
+        {
+            Some(name) => self.user_block(&input.text, Some(name)),
+            None => self.user_block(&input.display, None),
+        }
+    }
+
+    /// Settles the group, opens the user block and commits `message` with `claimed`.
+    fn user_block(&self, message: &str, claimed: Option<&str>) {
         let mut inner = self.lock();
         group::settle_group(&mut inner);
         inner.begin(BlockKind::User);
-        inner.u.user_block(display, inner.claimed.as_deref());
+        inner.u.user_block(message, claimed);
     }
 
     /// Prints a dim one-liner; consecutive notices group into one block.

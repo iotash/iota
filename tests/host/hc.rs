@@ -376,6 +376,37 @@ async fn inside_hc_an_hc_message_shows_under_its_tab() {
     );
 }
 
+/// `hc send` PASTES: a worker report of more than 20 lines becomes a paste whose bounded echo has no
+/// `</hc>`, so the block is built from the full text — live, the tab is there and the bound eats the
+/// inner text's tail (`… +N more lines`), as the resume echo draws it. The last line, past the bound,
+/// asks the mock for one 400 so the reply is a short error and the block stays on screen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inside_hc_a_long_hc_message_keeps_its_tab() {
+    let Some(hc) = hc_binary() else { return };
+    let port = crate::mock::start().expect("mock provider");
+    let hcc = Core::start(hc, &config(port), &[]).await;
+    hcc.spawn("chat", &script("")).await;
+    hcc.until_state("chat", "idle").await;
+
+    let mut body: Vec<String> = (1..=21).map(|n| format!("report line {n}")).collect();
+    body.push("fail:400:1".to_owned());
+    let msg = format!("<hc from=\"worker-3\">{}</hc>", body.join("\n"));
+    let (code, out) = hcc.send("chat", &msg).await;
+    assert_eq!(code, Some(0), "hc send: {out}");
+    hcc.until_state("chat", "error").await;
+    let screen = hcc.run(&["read", "chat"]).await.1;
+    eprintln!("---- hc read chat ----\n{screen}\n---- end ----");
+    let rows: Vec<&str> = screen.lines().map(str::trim_end).collect();
+    let first = rows
+        .iter()
+        .position(|r| *r == "▌ report line 1")
+        .unwrap_or_else(|| panic!("no inner-text block:\n{screen}"));
+    assert_eq!(rows[first - 1], "  hc from:worker-3", "{screen}");
+    assert_eq!(rows[first + 19], "▌ report line 20", "{screen}");
+    assert_eq!(rows[first + 20], "▌ … +2 more lines", "{screen}");
+    assert!(!screen.contains("▌ <hc"), "{screen}");
+}
+
 /// A `-m` run has no facade: the host writes `/dev/tty` itself, so a supervisor sees it `working`, and
 /// the record is cleared when it ends.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

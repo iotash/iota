@@ -13,10 +13,11 @@ use crate::text::{elapsed, tokens};
 use crate::tool::{Artifact, ArtifactKind};
 
 use crate::repl::render::diff::DiffRows;
-use crate::repl::render::styles::{dim, paint_label, red, truncate_runes};
+use crate::repl::render::styles::{dim, red, truncate_runes};
 use crate::repl::render::transcript::{BlockKind, Inner, Transcript};
 use crate::text::go_duration;
 use crate::ui::facade::{Block, Layout};
+use crate::ui::render::label::paint_label;
 
 /// Aggregation state for one activity group (transcript.go `activityGroup`). The group
 /// owns the lifecycle widget for its whole lifetime; a content boundary (or

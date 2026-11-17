@@ -14,8 +14,9 @@
 //! ```
 //!
 //! Refused: a different name, anything before the `<` or after the closing `>`, a self-closing
-//! `<N/>`, an unquoted value, an unclosed or mismatched closing tag, and an inner text that closes
-//! the element early (`<hc>x</hc><hc>y</hc>` is two elements, not one). Entity references are left
+//! `<N/>`, an unquoted value, an unclosed or mismatched closing tag, and an unbalanced inner text —
+//! one that closes the element early (`<hc>x</hc><hc>y</hc>` is two elements, not one) or leaves an
+//! inner element of the same name open (`<hc><hc>x</hc>`: the outer one is unclosed). Entity references are left
 //! as they are, in the values and the inner text alike.
 
 /// The parts of a message that is one element.
@@ -68,7 +69,7 @@ pub fn claimed_element<'a>(msg: &'a str, claimed: &str) -> Option<Element<'a>> {
         return None;
     }
     let inner = &rest[..at];
-    if closes_early(inner, name) {
+    if !balanced(inner, name) {
         return None;
     }
     Some(Element {
@@ -90,9 +91,10 @@ fn take_name(s: &str) -> Option<(&str, &str)> {
     Some((&s[..end], &s[end..]))
 }
 
-/// Whether `inner` holds a `</name>` that closes the outer element before its end: every
-/// `<name` opening one of the same name must be closed first.
-fn closes_early(inner: &str, name: &str) -> bool {
+/// Whether every `<name` that `inner` opens is closed inside it, and no `</name>` in it closes the
+/// outer element early: otherwise the outer element's close is an inner one's
+/// (`<hc><hc>x</hc>` leaves the outer unclosed) or the message is two elements.
+fn balanced(inner: &str, name: &str) -> bool {
     let mut depth = 0usize;
     let mut i = 0;
     while let Some(j) = inner[i..].find('<') {
@@ -104,7 +106,7 @@ fn closes_early(inner: &str, name: &str) -> bool {
                 && r.trim_start().starts_with('>')
             {
                 if depth == 0 {
-                    return true;
+                    return false;
                 }
                 depth -= 1;
             }
@@ -116,7 +118,7 @@ fn closes_early(inner: &str, name: &str) -> bool {
         }
         i = at;
     }
-    false
+    depth == 0
 }
 
 #[cfg(test)]
@@ -227,6 +229,7 @@ mod tests {
             "<hc/>",                        // self-closing
             r#"<hc from="a"/>"#,            // self-closing with an attribute
             "<hc>x</hc><hc>y</hc>",         // two elements
+            "<hc><hc>x</hc>",               // the outer element unclosed
             "<hc from=a>x</hc>",            // unquoted value
             r#"<hc from="a>x</hc>"#,        // unterminated value
             r#"<hc from="a"to="b">x</hc>"#, // no blank between attributes

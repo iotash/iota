@@ -1475,3 +1475,41 @@ fn a_laid_out_block_through_the_latch_carries_no_trailing_blank() {
     let want = ["print:  x", "print:", &format!("print:{}", dim("next"))];
     assert_eq!(rec.joined(), want.join("\n"));
 }
+
+// X-107: the submit path hands the host's element name to the block, and picks the FULL text when
+// that text is one such element — a long `hc send` paste whose bounded display lost `</hc>` still
+// gets its tab — and the bounded display, with no name, for anything else.
+#[test]
+fn a_submitted_host_element_reaches_the_block_with_its_name_and_its_full_text() {
+    use crate::ui::facade::Input;
+    let rec = Rec::default();
+    let tr = transcript(&rec);
+    tr.set_claimed_element(Some("hc"));
+    let body: Vec<String> = (1..=25).map(|n| format!("line {n}")).collect();
+    let full = format!("<hc from=\"worker-2\">{}</hc>", body.join("\n"));
+    let bounded = format!(
+        "{}\n… +5 more lines",
+        full.lines().take(20).collect::<Vec<_>>().join("\n")
+    );
+    tr.user_input(&Input {
+        text: full.clone(),
+        display: bounded,
+        ..Input::default()
+    });
+    tr.user_input(&Input {
+        text: "<foo>x</foo>".to_owned(),
+        display: "<foo>x</foo>".to_owned(),
+        ..Input::default()
+    });
+    let blocks: Vec<String> = rec
+        .0
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            UiEvent::UserBlock(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(blocks, [full, "<foo>x</foo>".to_owned()]);
+    assert_eq!(rec.0.user_block_claims(), [Some("hc".to_owned()), None]);
+}

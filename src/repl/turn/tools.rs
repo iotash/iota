@@ -30,7 +30,7 @@ use crate::tool::fmt::{display_tool_name, tool_call_detail, tool_label};
 use crate::ui::facade::UiError;
 
 use crate::repl::context::meter::CtxMeter;
-use crate::repl::render::styles::paint_label;
+use crate::ui::render::label::paint_label;
 
 use crate::repl::turn::retry::retry_round;
 use crate::repl::turn::steer::Steerer;

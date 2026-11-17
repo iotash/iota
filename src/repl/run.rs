@@ -964,7 +964,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 repl.handles.tr.notice(&input.display);
             }
         } else {
-            repl.handles.tr.user(&input.display);
+            repl.handles.tr.user_input(&input);
         }
         if repl.conv.provider.model().is_empty() {
             let cancel = repl.handles.cancel.clone();

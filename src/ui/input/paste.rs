@@ -72,17 +72,22 @@ pub(crate) fn expand_paste_tags(text: &str, pastes: &[String]) -> String {
 /// [`PASTE_ECHO_MAX_LINES`] to its head plus a count of what follows
 /// (model.go expandPasteEcho).
 pub(crate) fn expand_paste_echo(text: &str, pastes: &[String]) -> String {
-    replace_paste_tags(text, pastes, |content| {
-        let lines: Vec<&str> = content.split('\n').collect();
-        if lines.len() <= PASTE_ECHO_MAX_LINES {
-            return content.to_owned();
-        }
-        format!(
-            "{}\n… +{} more lines",
-            lines[..PASTE_ECHO_MAX_LINES].join("\n"),
-            lines.len() - PASTE_ECHO_MAX_LINES
-        )
-    })
+    replace_paste_tags(text, pastes, bound_echo)
+}
+
+/// `content` as the echo shows it: whole up to [`PASTE_ECHO_MAX_LINES`] lines, else its head and
+/// a count of what follows. Also the bound a host's own message gets on its INNER text
+/// (`ui::block::UserBlock`), so its head — the element's tag — is never what the bound eats.
+pub(crate) fn bound_echo(content: &str) -> String {
+    let lines: Vec<&str> = content.split('\n').collect();
+    if lines.len() <= PASTE_ECHO_MAX_LINES {
+        return content.to_owned();
+    }
+    format!(
+        "{}\n… +{} more lines",
+        lines[..PASTE_ECHO_MAX_LINES].join("\n"),
+        lines.len() - PASTE_ECHO_MAX_LINES
+    )
 }
 
 /// Rewrites every stored-paste tag through `render`; an index with no stored paste
