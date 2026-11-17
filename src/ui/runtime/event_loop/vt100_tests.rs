@@ -1773,7 +1773,10 @@ impl Floated {
         let screen = parser.screen();
         (
             screen.rows_formatted(0, cols).collect(),
-            screen.rows(0, cols).map(|r| r.trim_end().to_owned()).collect(),
+            screen
+                .rows(0, cols)
+                .map(|r| r.trim_end().to_owned())
+                .collect(),
         )
     }
 }
@@ -1807,7 +1810,10 @@ fn a_narrowing_match_moves_nothing_above_the_list() {
         assert_eq!(open[y], closed[y], "row {y} moved when the list opened");
     }
     for y in 0..=o.sep {
-        assert_eq!(narrow[y], open[y], "row {y} moved when the matches narrowed");
+        assert_eq!(
+            narrow[y], open[y],
+            "row {y} moved when the matches narrowed"
+        );
     }
     assert_eq!(n.sep, o.sep, "the area's top edge moved:\n{narrow_txt:#?}");
     assert_eq!(narrow[n.sep], open[o.sep], "the top edge's bytes changed");
@@ -1863,9 +1869,16 @@ fn a_short_conversation_gives_its_blank_rows_to_the_list() {
         (Some(o.sep - 3), Some(o.sep - 2)),
         "the conversation sits on the area, nothing covered:\n{open_txt:#?}"
     );
-    assert_eq!(at(&narrow_txt), at(&open_txt), "the text moved on narrowing");
+    assert_eq!(
+        at(&narrow_txt),
+        at(&open_txt),
+        "the text moved on narrowing"
+    );
     for y in 0..=o.sep {
-        assert_eq!(narrow[y], open[y], "row {y} moved when the matches narrowed");
+        assert_eq!(
+            narrow[y], open[y],
+            "row {y} moved when the matches narrowed"
+        );
     }
     assert_eq!(at(&shut), at(&closed), "closing puts the text back");
 }
@@ -1894,14 +1907,24 @@ fn a_search_over_an_open_list_shows_its_hit() {
         .iter()
         .position(|r| r.starts_with('─'))
         .expect("separator");
-    let hit = rows.iter().position(|r| r == "conv-10").expect("the hit is on screen");
+    let hit = rows
+        .iter()
+        .position(|r| r == "conv-10")
+        .expect("the hit is on screen");
     // The last visible row (over the frame's spacer) is the search line; the hit is above it.
-    assert!(hit < edge - 2, "the hit is above the search line: {rows:#?}");
-    assert!(rows[edge - 2].starts_with("/conv-10"), "the search line: {rows:#?}");
+    assert!(
+        hit < edge - 2,
+        "the hit is above the search line: {rows:#?}"
+    );
+    assert!(
+        rows[edge - 2].starts_with("/conv-10"),
+        "the search line: {rows:#?}"
+    );
     assert!(
         !rows.iter().any(|r| r.starts_with("  brain-page")),
         "no list during the search: {rows:#?}"
-    );    assert_eq!(m.list_mark, 0, "the list's area is closed during a search");
+    );
+    assert_eq!(m.list_mark, 0, "the list's area is closed during a search");
 }
 
 // --- the interaction cap: half the screen or 15 rows ---------------------------

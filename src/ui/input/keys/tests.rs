@@ -1405,3 +1405,47 @@ fn ctrl_f_is_forward_char_and_never_opens_the_search() {
     );
     assert_eq!(m.composer.value(), "", "Ctrl+F typed nothing");
 }
+
+/// A key past the search's browse-hits state that the completion list would take leaves the search
+/// first, as a character does: the list is not drawn during a search, so `↓` must not cycle an
+/// unseen list and rewrite the draft behind it — it ends the search (the list is back in the same
+/// frame) and then moves the list's highlight there. A view key keeps the search.
+#[test]
+fn a_list_key_after_a_search_leaves_it_and_acts_on_a_shown_list() {
+    use crate::ui::runtime::screen::ViewOp;
+    use crate::ui::runtime::screen::search::SearchOp;
+    let mut m = test_model();
+    m.apply(UiMsg::Commands(vec![
+        crate::ui::facade::Suggestion {
+            value: "/skills".to_owned(),
+            label: String::new(),
+            desc: String::new(),
+        },
+        crate::ui::facade::Suggestion {
+            value: "/skills brain-page".to_owned(),
+            label: "brain-page".to_owned(),
+            desc: String::new(),
+        },
+    ]));
+    type_text(&mut m, "/skills ");
+    m.handle_key(mods(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    type_text(&mut m, "conv");
+    enter(&mut m);
+    assert!(m.search.is_some(), "browsing the hits");
+    assert!(m.frame_view().map.list.is_none(), "no list during a search");
+    m.handle_key(key(KeyCode::PageUp));
+    assert!(m.search.is_some(), "a view key keeps the search");
+    m.view_ops.clear();
+    m.handle_key(key(KeyCode::Down));
+    assert!(m.search.is_none(), "↓ left the search");
+    assert_eq!(
+        m.view_ops.first(),
+        Some(&ViewOp::Search(SearchOp::Accept)),
+        "with the view on the hit"
+    );
+    assert!(
+        m.frame_view().map.list.is_some(),
+        "the list ↓ moved is the one on screen"
+    );
+    assert_eq!(m.composer.value(), "/skills brain-page");
+}

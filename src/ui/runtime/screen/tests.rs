@@ -1390,7 +1390,10 @@ fn a_floating_area_covers_the_last_rows_and_the_way_back_stays_visible() {
     s.draw_frame(&floating(40, 3), None).unwrap();
     let back = grid(&replay(&buf, 12, 40));
     assert_eq!(back[0], "line-030", "half of the 5 visible rows: {back:#?}");
-    assert!(back[4].contains("Ctrl+End"), "the way back is visible: {back:#?}");
+    assert!(
+        back[4].contains("Ctrl+End"),
+        "the way back is visible: {back:#?}"
+    );
     assert_eq!(back[5], "─".repeat(40), "{back:#?}");
 }
 
@@ -1417,7 +1420,10 @@ fn a_selection_is_never_drawn_on_the_floating_rows() {
     assert!((5..12).all(|r| (0..40).all(|c| !inv(r, c))), "on the frame");
     select(&mut s, SelectOp::Release);
     let copied = s.take_copied().unwrap();
-    assert_eq!(copied, "line-002\nline-003\nline-004", "to the last visible line");
+    assert_eq!(
+        copied, "line-002\nline-003\nline-004",
+        "to the last visible line"
+    );
 }
 
 /// Streaming under a floating area scrolls only the rows above it: the region ends at the last
@@ -1449,7 +1455,10 @@ fn paging_under_a_floating_area_skips_no_line() {
     s.view(ViewOp::Top).unwrap();
     s.draw_frame(&floating(40, 3), None).unwrap();
     let before = grid(&replay(&buf, 12, 40));
-    assert_eq!(&before[..4], &["line-000", "line-001", "line-002", "line-003"]);
+    assert_eq!(
+        &before[..4],
+        &["line-000", "line-001", "line-002", "line-003"]
+    );
     assert!(before[4].contains("Ctrl+End"), "{before:#?}");
     s.view(ViewOp::HalfDown).unwrap();
     s.draw_frame(&floating(40, 3), None).unwrap();

@@ -258,8 +258,10 @@ fn opens_search(m: &Model, key: &KeyEvent) -> bool {
 /// query (an empty one ends the search), Esc ends it with the view back where it started,
 /// Ctrl+C/Ctrl+D keep their meaning, every other key edits the query. Applied: `n`/`p` walk,
 /// `/` or Ctrl+R starts a new query, Enter leaves with the view on the hit, Esc leaves with it
-/// back where it started; any other character leaves like Enter and is typed, and the view keys
-/// (`PgUp`, `Ctrl+End`…) work with the search still on.
+/// back where it started; the view keys (`PgUp`, `Ctrl+End`…) work with the search still on, and
+/// any other key — a character, `↑`/`↓`, `Tab` — leaves like Enter and goes on down the table: the
+/// completion list is not drawn during a search, so a key that reaches it must find it on screen
+/// again, in the same frame.
 fn search_key(m: &mut Model, key: &KeyEvent) -> bool {
     let Some(s) = m.search.as_mut() else {
         return false;
@@ -293,12 +295,12 @@ fn search_key(m: &mut Model, key: &KeyEvent) -> bool {
                 m.view_ops.push(ViewOp::Search(SearchOp::Accept));
                 return true;
             }
-            KeyCode::Char(_) => {
+            _ if view_key(key).is_some() => return false,
+            _ => {
                 m.search = None;
                 m.view_ops.push(ViewOp::Search(SearchOp::Accept));
                 return false;
             }
-            _ => return false,
         }
     };
     match op {
