@@ -1611,10 +1611,11 @@ fn skills_model(typed: &str) -> Model {
 }
 
 /// The completion list as a terminal shows it, at 80 and 160 columns, ABOVE the composer: the
-/// two-line conversation at the screen's top, blank rows, the frame's one spacer row, the upper separator (the list area's top
-/// edge), the list, the composer, the lower separator, the status row — in that order. Two columns: the labels at
-/// column 2 (the marker at 0, under the composer's text) and — two past the longest label — the descriptions, at the same column on every
-/// row; at 160 columns a description still wraps at the 72-column measure, and is cut with `…`
+/// two-line conversation at the screen's top, blank rows, the frame's one spacer row, the upper
+/// separator (the list area's top edge), the list, the composer, the lower separator, the status
+/// row — in that order. Two columns: the labels at column 2 (the marker at 0, under the composer's
+/// text) and — two past the longest label — the descriptions, at the same column on every row;
+/// at 160 columns a description still wraps at the 72-column measure, and is cut with `…`
 /// after two lines; an item with no description is its label alone. Run with `--nocapture` to
 /// see the screens.
 #[test]
@@ -1929,7 +1930,9 @@ fn a_conversation_growing_under_an_open_list_moves_no_row_above_it() {
     let vis = edge - 1;
     assert_eq!(vis, 13, "{txt:#?}");
     let mut n = 3;
-    for more in [5, 5, 1, 4, 3] {
+    // 3 → 8 → 13 (the visible rows full) → 14 → 18 → 19 (the rectangle exactly full) → 20 (the
+    // first one-line scroll from a top-aligned state) → 22.
+    for more in [5, 5, 1, 4, 1, 1, 2] {
         t.term.push(Block::rows((n..n + more).map(line)));
         let was = n;
         n += more;
@@ -1948,7 +1951,7 @@ fn a_conversation_growing_under_an_open_list_moves_no_row_above_it() {
                 "{txt:#?}"
             );
         } else {
-            // Past the rectangle the tail is followed: the rectangle's first row is line n - 19.
+            // Past the rectangle the tail is followed: visible rows 0..=12 are lines n - 19 on.
             for (y, row) in txt[..vis].iter().enumerate() {
                 assert_eq!(*row, line(n - 19 + y), "{n}: {txt:#?}");
             }

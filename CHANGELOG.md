@@ -13,9 +13,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   conversation behind it, with no empty rows left between the list and its top
   line. The line that separated the list from what you type now sits on top of
   the list.
-- **A conversation starts at the top of the screen.** A new session's banner,
-  a fresh `/new` and a resumed session's last rounds now sit at the top and the
-  conversation grows downward, scrolling only once it fills the screen. A
+- **A conversation starts at the top of the screen.** A new session's banner
+  and a resumed session's replayed rounds start at the top of the screen, and
+  the conversation grows downward, scrolling only once it fills the screen. A
   conversation that fits above the completion list is never covered by it.
 - **Every list marks its current row the same way.** The completion list,
   the pickers and the selection lists in `/model`, `/tools`, `/jobs`,
