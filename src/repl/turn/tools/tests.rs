@@ -1919,8 +1919,8 @@ impl Ui for OrderUi {
         self.inner.print(blocks);
     }
 
-    fn user_block(&self, display: &str) {
-        self.inner.user_block(display);
+    fn user_block(&self, display: &str, claimed: Option<&str>) {
+        self.inner.user_block(display, claimed);
     }
 
     fn start_stream(&self, cancel: CancellationToken) -> Box<dyn UiStreamSink> {

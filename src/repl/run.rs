@@ -534,6 +534,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     };
     let tr = Arc::new(Transcript::new(Arc::clone(&ui), estimator));
     tr.set_dark(dark);
+    tr.set_claimed_element(pres.message_element());
     // `/debug on` keeps activity groups expanded: the transcript reads the log live.
     {
         let log = Arc::clone(&reqlog);
@@ -588,6 +589,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 |n| d.presentation(n) == crate::tool::Presentation::Surface,
                 usize::from(ui.width()),
                 img_dir.as_deref(),
+                pres.message_element(),
             );
             ui.print(blocks);
         }

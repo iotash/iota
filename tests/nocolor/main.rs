@@ -289,7 +289,7 @@ fn the_standalone_renderers_are_escape_free() {
 fn the_user_block_is_the_bar_and_plain_text() {
     use iota::ui::facade::{Layout as _, UserBlock};
     no_color();
-    let rows = UserBlock::new(&format!("{}tail", "x".repeat(18))).lines(20);
+    let rows = UserBlock::new(&format!("{}tail", "x".repeat(18)), None).lines(20);
     assert_eq!(rows, ["▌ xxxxxxxxxxxxxxxxxx", "▌ tail              "]);
 }
 
@@ -299,7 +299,7 @@ fn the_user_block_is_the_bar_and_plain_text() {
 fn the_tab_is_plain_text_without_colour() {
     use iota::ui::facade::{Layout as _, UserBlock};
     no_color();
-    let rows = UserBlock::new(r#"<hc from="worker-2" urgent>done</hc>"#).lines(30);
+    let rows = UserBlock::new(r#"<hc from="worker-2" urgent>done</hc>"#, Some("hc")).lines(30);
     assert_eq!(
         rows,
         [

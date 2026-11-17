@@ -336,6 +336,46 @@ async fn an_interactive_chat_reports_its_states_to_hc() {
     assert!(screen.contains("iota-exited"), "{screen}");
 }
 
+/// herdr-core hands a sub-agent's message over as `<hc from="…">…</hc>` (`hc send` types it, as a
+/// supervisor does): inside hc, iota shows the inner text as the user block under an `hc from:…` tab on
+/// the row above it, and an element of any other name stays the user's text, tags and all
+/// (DIVERGENCES X-107).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inside_hc_an_hc_message_shows_under_its_tab() {
+    let Some(hc) = hc_binary() else { return };
+    let port = crate::mock::start().expect("mock provider");
+    let hcc = Core::start(hc, &config(port), &[]).await;
+    hcc.spawn("chat", &script("")).await;
+    hcc.until_state("chat", "idle").await;
+
+    let (code, out) = hcc
+        .send("chat", r#"<hc from="worker-2">build is green</hc>"#)
+        .await;
+    assert_eq!(code, Some(0), "hc send: {out}");
+    let (code, out) = hcc.send("chat", r#"<note from="me">keep</note>"#).await;
+    assert_eq!(code, Some(0), "hc send: {out}");
+    let start = Instant::now();
+    let screen = loop {
+        let screen = hcc.run(&["read", "chat"]).await.1;
+        if screen.matches("echo: ").count() >= 2 || start.elapsed() > DEADLINE {
+            break screen;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    eprintln!("---- hc read chat ----\n{screen}\n---- end ----");
+    let rows: Vec<&str> = screen.lines().map(str::trim_end).collect();
+    let block = rows
+        .iter()
+        .position(|r| *r == "▌ build is green")
+        .unwrap_or_else(|| panic!("no inner-text block:\n{screen}"));
+    assert_eq!(rows[block - 1], "  hc from:worker-2", "{screen}");
+    assert!(!screen.contains("▌ <hc"), "{screen}");
+    assert!(
+        rows.contains(&r#"▌ <note from="me">keep</note>"#),
+        "another name is the user's text:\n{screen}"
+    );
+}
+
 /// A `-m` run has no facade: the host writes `/dev/tty` itself, so a supervisor sees it `working`, and
 /// the record is cleared when it ends.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

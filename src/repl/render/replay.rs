@@ -188,11 +188,16 @@ fn flush_tools(w: &mut Echo, n: &mut u32) {
 /// `img_dir` is the session's images directory (`None` while ephemeral): an image whose file
 /// still exists there re-renders as half-blocks under the live turn's clickable-path caption
 /// ([`echo_image`]), and a user attachment still on disk gets the same clickable marker.
+///
+/// `claimed` is the element name the host wraps its own messages in
+/// (`host::Presenter::message_element`): a user message that is exactly one such element replays
+/// under its tab, as the live block drew it.
 pub(crate) fn echo_rounds(
     msgs: &[Message],
     interactive: impl Fn(&str) -> bool,
     width: usize,
     img_dir: Option<&Path>,
+    claimed: Option<&str>,
 ) -> Vec<Block> {
     let mut w = Echo::default();
     // Assistant attachment names in this window: a user attachment with the same name is
@@ -219,7 +224,7 @@ pub(crate) fn echo_rounds(
             }
             Role::User => {
                 flush_tools(&mut w, &mut tool_results);
-                w.extend([Block::laid(UserBlock::new(&msg.content))]);
+                w.extend([Block::laid(UserBlock::new(&msg.content, claimed))]);
                 // Named per-file lines instead of a bare count; canvas copies are
                 // suppressed (see `rendered`).
                 for att in &msg.attachments {
@@ -405,9 +410,9 @@ mod tests {
     /// A ten-round session replays exactly its last three rounds; a shorter one replays all of
     /// them, from its first non-system message.
     /// The user block the echo lays out, at `width`.
-    fn print_user_block(display: &str, width: usize) -> Vec<String> {
+    fn print_user_block(display: &str, width: usize, claimed: Option<&str>) -> Vec<String> {
         use crate::ui::facade::Layout as _;
-        crate::ui::facade::UserBlock::new(display).lines(width)
+        crate::ui::facade::UserBlock::new(display, claimed).lines(width)
     }
 
     #[test]
@@ -543,7 +548,7 @@ mod tests {
             user("second question"),
             assistant("partial reply").with_interrupted(true),
         ];
-        let out = plain(&echo_rounds(&msgs, no_ask, 80, None));
+        let out = plain(&echo_rounds(&msgs, no_ask, 80, None, None));
 
         for want in [
             "first question",
@@ -571,7 +576,7 @@ mod tests {
     #[test]
     fn test_echo_rounds_trailing_tool_results() {
         let msgs = vec![user("do the thing"), calls("f"), tool("f", "out")];
-        let out = plain(&echo_rounds(&msgs, no_ask, 80, None));
+        let out = plain(&echo_rounds(&msgs, no_ask, 80, None, None));
         assert!(out.contains("◇ ran 1 tool"), "{out}");
     }
 
@@ -586,7 +591,7 @@ mod tests {
             tool("shell", "out"),
             assistant("done"),
         ];
-        let out = plain(&echo_rounds(&msgs, |n| n == "choose", 80, None));
+        let out = plain(&echo_rounds(&msgs, |n| n == "choose", 80, None, None));
         for want in ["? Auth: JWT", "  Lib: chi", "◇ ran 1 tool"] {
             assert!(out.contains(want), "missing {want:?} in:\n{out}");
         }
@@ -607,7 +612,7 @@ mod tests {
             tool("choose", "boom").with_error(true),
             tool("confirm", "  \n"),
         ];
-        let blocks = echo_rounds(&msgs, |_| true, 80, None);
+        let blocks = echo_rounds(&msgs, |_| true, 80, None, None);
         let lines = rendered(&blocks);
         let styled_first = crate::repl::render::group::ask_record_lines("boom", true)
             .first()
@@ -628,7 +633,7 @@ mod tests {
     // width (that is what makes the reversed span a block).
     #[test]
     fn test_print_user_block_multiline() {
-        let rows = print_user_block("first line\nsecond line\nthird", 40);
+        let rows = print_user_block("first line\nsecond line\nthird", 40, None);
         assert_eq!(rows.len(), 3, "one row per line: {rows:?}");
         let mut width = 0;
         for (i, row) in rows.iter().enumerate() {
@@ -692,7 +697,7 @@ mod tests {
                 }
             },
         ];
-        let out = plain(&echo_rounds(&msgs, no_ask, 100, None));
+        let out = plain(&echo_rounds(&msgs, no_ask, 100, None, None));
         assert!(out.contains('▀'), "no half-block rows in echo:\n{out}");
         assert!(out.contains("🖼 image-1.png"), "caption missing:\n{out}");
 
@@ -709,7 +714,7 @@ mod tests {
                 ..Message::default()
             }
         }];
-        let out = plain(&echo_rounds(&broken, no_ask, 100, None));
+        let out = plain(&echo_rounds(&broken, no_ask, 100, None, None));
         assert!(
             !out.contains('▀') && out.contains("🖼 broken.png"),
             "a broken image must fall back to the caption line:\n{out}"
@@ -789,7 +794,7 @@ mod tests {
             }, // the /edit turn
             assistant_with(&gen2),
         ];
-        let out = plain(&echo_rounds(&msgs, no_ask, 100, None));
+        let out = plain(&echo_rounds(&msgs, no_ask, 100, None, None));
         assert!(
             !out.contains('📎'),
             "the canvas copy must be suppressed:\n{out}"
@@ -803,7 +808,7 @@ mod tests {
             },
             assistant_with(&gen2),
         ];
-        let out = plain(&echo_rounds(&msgs, no_ask, 100, None));
+        let out = plain(&echo_rounds(&msgs, no_ask, 100, None, None));
         assert!(
             out.contains("📎 gen-1.png"),
             "a cut-off canvas must keep its marker:\n{out}"
@@ -847,7 +852,7 @@ mod tests {
     /// to the width it is GIVEN, and a CJK run is never split mid-rune.
     #[test]
     fn user_block_wraps_cjk_at_the_given_width() {
-        let rows = print_user_block("生成一张图片的描述", 12);
+        let rows = print_user_block("生成一张图片的描述", 12, None);
         assert!(rows.len() > 1, "a 18-column run must wrap at 12: {rows:?}");
         for row in &rows {
             assert_eq!(str_width(&strip_sgr(row)), 12);
@@ -859,8 +864,8 @@ mod tests {
     /// own to pick.
     #[test]
     fn the_echo_draws_the_live_user_block() {
-        let blocks = echo_rounds(&[user("q")], no_ask, 80, None);
-        let live = print_user_block("q", 80);
+        let blocks = echo_rounds(&[user("q")], no_ask, 80, None, None);
+        let live = print_user_block("q", 80, None);
         assert_eq!(rendered(&blocks)[..1], live[..]);
         assert_eq!(
             live,
@@ -876,11 +881,14 @@ mod tests {
     #[test]
     fn the_echo_draws_a_tagged_message_with_its_tab() {
         let msg = r#"<hc from="worker-2">done</hc>"#;
-        let blocks = echo_rounds(&[user(msg)], no_ask, 80, None);
-        let live = print_user_block(msg, 80);
+        let blocks = echo_rounds(&[user(msg)], no_ask, 80, None, Some("hc"));
+        let live = print_user_block(msg, 80, Some("hc"));
         assert_eq!(live.len(), 2);
         assert_eq!(rendered(&blocks)[..2], live[..]);
         assert_eq!(strip_sgr(&live[0]), "  hc from:worker-2 ");
         assert!(strip_sgr(&live[1]).starts_with("▌ done "));
+        // With no host claiming the name, the same history replays the message as it was written.
+        let plain = echo_rounds(&[user(msg)], no_ask, 80, None, None);
+        assert!(strip_sgr(&rendered(&plain)[0]).starts_with(&format!("▌ {msg}")));
     }
 }

@@ -176,7 +176,7 @@ fn the_exit_after_a_resume_writes_only_the_replayed_rounds() {
             ]
         })
         .collect();
-    let lines = echo_rounds(resume_echo(&history), |_| false, 40, None);
+    let lines = echo_rounds(resume_echo(&history), |_| false, 40, None, None);
     let (mut s, buf) = screen(40, 12);
     s.push(lines);
     s.draw_frame(&frame(40), None).unwrap();

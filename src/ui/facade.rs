@@ -1047,8 +1047,10 @@ pub trait Ui: Send + Sync {
     /// their source at whatever width the screen has when they are drawn (`ui::block`).
     fn print(&self, blocks: Vec<Block>);
 
-    /// Renders the reverse-video user block for a submitted input.
-    fn user_block(&self, display: &str);
+    /// Renders the reverse-video user block for a submitted input. `claimed` is the element name the
+    /// host wraps its own messages in (`host::Presenter::message_element`, `None` when no host
+    /// does): a message that is exactly one such element shows under its tab (`ui::block::UserBlock`).
+    fn user_block(&self, display: &str, claimed: Option<&str>);
 
     /// Pushes the TURN cancel scope (index 0) and returns the turn's stream handle.
     fn start_stream(&self, cancel: CancellationToken) -> Box<dyn UiStreamSink>;

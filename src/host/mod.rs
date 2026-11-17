@@ -13,7 +13,7 @@
 //! `agents::harness` (brain page `host-integration`, 2026-09-21).
 //!
 //! Hosts: herdr-core (`hc::HcHost`, the terminal core behind herdr's desktop app, told the state in
-//! band with OSC 7501 — the one [`InBand`] host), the herdr multiplexer (`herdr::HerdrHost`, told the
+//! band with OSC 7501 — the one [`InBand`] host, and the one [`MessageEnvelope`]: it claims `hc`), the herdr multiplexer (`herdr::HerdrHost`, told the
 //! pane's lifecycle over its socket), the cmux multiplexer (`cmux::CmuxHost`, driven through its CLI) —
 //! all three detected from the environment — and the plain ANSI terminal ([`ansi::AnsiHost`], the
 //! fallback the command always appends).
@@ -152,6 +152,20 @@ pub trait Host: Send + Sync {
     fn as_in_band(&self) -> Option<&dyn InBand> {
         None
     }
+    /// The message-envelope capability.
+    fn as_message_envelope(&self) -> Option<&dyn MessageEnvelope> {
+        None
+    }
+}
+
+/// Wraps the messages it hands the conversation in an element of its own (`<hc from="…">…</hc>`), so
+/// the user block can show that element as a tab over its inner text (DIVERGENCES X-107). The name
+/// belongs to the HOST, not to the text: only the host that wraps its messages may claim its element,
+/// and only that name is ever parsed — a user who pastes an XML snippet into a message, any name,
+/// keeps it byte for byte, and so does a `<hc>` snippet anywhere but in herdr-core.
+pub trait MessageEnvelope: Send + Sync {
+    /// The element name the host wraps its own messages in.
+    fn element(&self) -> &str;
 }
 
 /// Speaks to the terminal IN BAND — escape sequences on the chat's own tty, not a socket or a CLI — and
@@ -560,6 +574,16 @@ impl Presenter {
             }
         }
         None
+    }
+
+    /// The element name the FIRST [`MessageEnvelope`] host wraps its messages in (`hc` inside
+    /// herdr-core); `None` when no host does, and then no message is ever parsed as one.
+    pub fn message_element(&self) -> Option<&str> {
+        self.core
+            .hosts
+            .iter()
+            .find_map(|h| h.as_message_envelope())
+            .map(MessageEnvelope::element)
     }
 
     /// The detected hosts' names, in order.

@@ -75,6 +75,9 @@ pub struct Inner {
     /// The terminal's background tone the diff shades follow (chat/theme.go `themeDark`):
     /// dark by default, refreshed by the run loop between turns only.
     pub dark: bool,
+    /// The element name the host wraps its own messages in (`Presenter::message_element`), handed
+    /// to every user block; `None` when no host claims one.
+    pub claimed: Option<String>,
 }
 
 impl Inner {
@@ -162,6 +165,7 @@ impl Transcript {
                 orphan_sep: false,
                 grp: ActivityGroup::default(),
                 dark: true,
+                claimed: None,
             }),
         }
     }
@@ -170,6 +174,13 @@ impl Transcript {
     /// `applyCodeTheme`): pre-loop from the probe, then between turns from the host.
     pub fn set_dark(&self, dark: bool) {
         self.lock().dark = dark;
+    }
+
+    /// Hands over the element name the host wraps its own messages in
+    /// (`host::Presenter::message_element`), once at startup: every user block after it shows such
+    /// a message under its tab.
+    pub fn set_claimed_element(&self, name: Option<&str>) {
+        self.lock().claimed = name.map(str::to_owned);
     }
 
     /// Installs the verbose hook (run.go:187-191 `tr.verbose = reqLog.Verbose`): with it
@@ -192,7 +203,7 @@ impl Transcript {
         let mut inner = self.lock();
         group::settle_group(&mut inner);
         inner.begin(BlockKind::User);
-        inner.u.user_block(display);
+        inner.u.user_block(display, inner.claimed.as_deref());
     }
 
     /// Prints a dim one-liner; consecutive notices group into one block.

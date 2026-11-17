@@ -505,7 +505,7 @@ impl Ui for ScriptedUi {
         }
     }
 
-    fn user_block(&self, display: &str) {
+    fn user_block(&self, display: &str, _claimed: Option<&str>) {
         self.record(UiEvent::UserBlock(display.to_owned()));
     }
 
@@ -803,7 +803,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let ui = ScriptedUi::new(Vec::new());
         ui.print(crate::ui::facade::Block::rows(["a"]));
-        ui.user_block("you");
+        ui.user_block("you", None);
         let sink = ui.start_stream(cancel.clone());
         sink.done();
         let busy = ui.busy("Waiting for the model");

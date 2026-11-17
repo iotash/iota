@@ -137,8 +137,9 @@ impl Block {
 /// reverse attribute would leak there — and the bar's character carries the block. The live block
 /// and the resume echo both lay out through this one, the same rows.
 ///
-/// A message that IS one XML element (`<hc from="agent">…</hc>`, [`crate::text::xml`]) shows its
-/// inner text as the block and its tag as a [`Tab`] on the row above it (X-107).
+/// A message that is exactly one element of the name a HOST claims (`<hc from="agent">…</hc>`
+/// inside herdr-core, [`crate::text::xml`]) shows its inner text as the block and its tag as a
+/// [`Tab`] on the row above it (X-107). The block is handed that name; it never parses without one.
 pub struct UserBlock {
     /// The tag of a message that is one element.
     pub tab: Option<Tab>,
@@ -158,10 +159,12 @@ pub struct Tab {
 }
 
 impl UserBlock {
-    /// The block for a submitted `message`: one element becomes its tab and its inner text, any
-    /// other message is shown as it was written.
-    pub fn new(message: &str) -> Self {
-        match crate::text::xml::single_element(message) {
+    /// The block for a submitted `message`. `claimed` is the element name the host wraps its own
+    /// messages in (`host::Presenter::message_element`): a message that is exactly one such
+    /// element becomes its tab and its inner text; any other message — and every message when no
+    /// host claims a name — is shown as it was written.
+    pub fn new(message: &str, claimed: Option<&str>) -> Self {
+        match claimed.and_then(|name| crate::text::xml::claimed_element(message, name)) {
             Some(el) => Self {
                 tab: Some(Tab {
                     name: el.name.to_owned(),
@@ -300,6 +303,9 @@ mod tests {
     use crate::text::ansi::strip_sgr;
     use crate::text::width::str_width;
 
+    /// The name herdr-core claims (`host::MessageEnvelope`), as the presenter hands it over.
+    const HC: Option<&str> = Some("hc");
+
     /// The block at 80 columns as bytes: one reverse-video span per row — the bar in the 245 gray
     /// (`▌` on every row, the wrapped one too), the default background back, the gutter
     /// space, the text from column 2, padded to the edge — every row 80 wide.
@@ -307,7 +313,7 @@ mod tests {
     fn the_user_block_is_one_reverse_span_with_a_gray_bar() {
         // 78 columns of text beside the gutter, then 5 more: the wrap lands at column 2 too.
         let text = format!("{}{}", "x".repeat(78), "tail.");
-        let rows = UserBlock::new(&text).lines(80);
+        let rows = UserBlock::new(&text, None).lines(80);
         assert_eq!(
             rows,
             [
@@ -321,7 +327,7 @@ mod tests {
         for row in &rows {
             assert_eq!(str_width(&strip_sgr(row)), 80, "full width: {row:?}");
         }
-        let one = UserBlock::new("hi").lines(20);
+        let one = UserBlock::new("hi", None).lines(20);
         assert_eq!(
             one,
             [format!(
@@ -336,7 +342,7 @@ mod tests {
     /// resets), one trailing gray space, reset — and the block below shows the inner text alone.
     #[test]
     fn a_tagged_message_gets_a_tab_row_above_its_inner_text() {
-        let b = UserBlock::new(r#"<hc from="worker-2" urgent>build is green</hc>"#);
+        let b = UserBlock::new(r#"<hc from="worker-2" urgent>build is green</hc>"#, HC);
         assert_eq!(b.text, "build is green");
         let rows = b.lines(40);
         assert_eq!(rows.len(), 2, "tab + one block row: {rows:?}");
@@ -356,7 +362,7 @@ mod tests {
             )
         );
         // One tab row whatever the inner text's length; the block wraps under it as before.
-        let long = UserBlock::new(&format!("<hc from=\"a\">{}</hc>", "x".repeat(60))).lines(40);
+        let long = UserBlock::new(&format!("<hc from=\"a\">{}</hc>", "x".repeat(60)), HC).lines(40);
         assert_eq!(long.len(), 3, "{long:?}");
         assert_eq!(strip_sgr(&long[0]), "  hc from:a ");
     }
@@ -365,7 +371,7 @@ mod tests {
     /// `… +N args` tail, and the one left is cut with `…`.
     #[test]
     fn the_tab_is_cut_to_the_width_with_the_labels_tail() {
-        let tab = |msg: &str, w: usize| strip_sgr(&UserBlock::new(msg).lines(w)[0]);
+        let tab = |msg: &str, w: usize| strip_sgr(&UserBlock::new(msg, HC).lines(w)[0]);
         let msg = r#"<hc from="worker-2" to="lead" topic="the release">x</hc>"#;
         assert_eq!(
             tab(msg, 80),
@@ -384,7 +390,7 @@ mod tests {
     #[test]
     fn a_message_with_trailing_text_is_shown_unchanged() {
         let msg = r#"<hc from="a">hi</hc> and more"#;
-        let b = UserBlock::new(msg);
+        let b = UserBlock::new(msg, HC);
         assert!(b.tab.is_none());
         assert_eq!(b.text, msg);
         let rows = b.lines(80);
@@ -392,11 +398,26 @@ mod tests {
         assert!(strip_sgr(&rows[0]).starts_with(&format!("▌ {msg}")));
     }
 
+    /// Without a claimed name nothing is parsed — a pasted `<hc>` snippet on a plain terminal is
+    /// the user's text, byte for byte — and with one, every other element name is too.
+    #[test]
+    fn an_unclaimed_element_is_the_users_text() {
+        let msg = r#"<hc from="worker-2">build is green</hc>"#;
+        let plain = UserBlock::new(msg, None);
+        assert!(plain.tab.is_none());
+        assert_eq!(plain.text, msg);
+        assert_eq!(plain.lines(80).len(), 1);
+        let other = r#"<foo from="a">x</foo>"#;
+        let b = UserBlock::new(other, HC);
+        assert!(b.tab.is_none());
+        assert_eq!(b.text, other);
+    }
+
     /// A CJK row: wide runes count two columns, so the reversed span is padded by display width,
     /// not by chars — the row still 80 wide.
     #[test]
     fn the_cjk_user_block_pads_by_display_width() {
-        let rows = UserBlock::new("中文一行").lines(80);
+        let rows = UserBlock::new("中文一行", None).lines(80);
         assert_eq!(
             rows,
             [format!(
@@ -413,7 +434,7 @@ mod tests {
     fn the_bar_cell_parses_as_reversed_gray_on_the_block() {
         use crate::ui::render::spans::ansi_to_spans_with;
         use ratatui::style::{Color, Modifier};
-        let row = &UserBlock::new("hi").lines(20)[0];
+        let row = &UserBlock::new("hi", None).lines(20)[0];
         let line = ansi_to_spans_with(row, true);
         let spans: Vec<_> = line
             .spans

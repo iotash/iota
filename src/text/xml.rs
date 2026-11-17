@@ -1,20 +1,22 @@
-//! A message that IS one XML element (`<hc from="agent">the message</hc>`, how a host such as
-//! herdr hands a sub-agent's message to the conversation): its outermost tag, its attributes and
-//! its inner text. A strict scanner, not a parser — anything that is not exactly one element is
-//! refused, and the message is then shown as it was written.
+//! A message that IS one element of a given name (`<hc from="agent">the message</hc>`, how
+//! herdr-core hands a sub-agent's message to the conversation): its attributes and its inner text.
+//! A strict scanner, not a parser, and it parses ONE name only — the one the caller passes, which is
+//! the element a host wraps its own messages in (`host::MessageEnvelope`). Any other name, and
+//! anything that is not exactly one element, is refused and the message is shown as it was
+//! written: a user who pastes an XML snippet keeps it.
 //!
-//! The grammar, over the message trimmed of surrounding whitespace:
+//! The grammar, over the message trimmed of surrounding whitespace, with `N` the claimed name:
 //!
 //! ```text
-//! element := '<' name (ws+ attr)* ws* '>' inner '</' name ws* '>'
+//! element := '<' N (ws+ attr)* ws* '>' inner '</' N ws* '>'
 //! attr    := name (ws* '=' ws* ( '"' [^"]* '"' | '\'' [^']* '\'' ))?
 //! name    := [A-Za-z_] [A-Za-z0-9_.:-]*
 //! ```
 //!
-//! Refused: anything before the `<` or after the closing `>`, a self-closing `<name/>`, an
-//! unquoted value, an unclosed or mismatched closing tag, and an inner text that closes the
-//! element early (`<a>x</a><a>y</a>` is two elements, not one). Entity references are left as
-//! they are, in the values and the inner text alike.
+//! Refused: a different name, anything before the `<` or after the closing `>`, a self-closing
+//! `<N/>`, an unquoted value, an unclosed or mismatched closing tag, and an inner text that closes
+//! the element early (`<hc>x</hc><hc>y</hc>` is two elements, not one). Entity references are left
+//! as they are, in the values and the inner text alike.
 
 /// The parts of a message that is one element.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,11 +29,14 @@ pub struct Element<'a> {
     pub inner: &'a str,
 }
 
-/// `msg` as one element, or `None` when it is anything else (module docs).
-pub fn single_element(msg: &str) -> Option<Element<'_>> {
+/// `msg` as exactly one element named `claimed`, or `None` when it is anything else (module docs).
+pub fn claimed_element<'a>(msg: &'a str, claimed: &str) -> Option<Element<'a>> {
     let s = msg.trim();
     let rest = s.strip_prefix('<')?;
     let (name, mut rest) = take_name(rest)?;
+    if name != claimed {
+        return None;
+    }
     let mut attrs = Vec::new();
     loop {
         let trimmed = rest.trim_start();
@@ -116,35 +121,33 @@ fn closes_early(inner: &str, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Element, single_element};
+    use super::{Element, claimed_element};
 
-    fn el<'a>(name: &'a str, attrs: &[(&'a str, Option<&'a str>)], inner: &'a str) -> Element<'a> {
+    /// herdr-core's name, the one a test claims.
+    fn hc(msg: &str) -> Option<Element<'_>> {
+        claimed_element(msg, "hc")
+    }
+
+    fn el<'a>(attrs: &[(&'a str, Option<&'a str>)], inner: &'a str) -> Element<'a> {
         Element {
-            name,
+            name: "hc",
             attrs: attrs.to_vec(),
             inner,
         }
     }
 
     #[test]
-    fn a_plain_element_with_no_attributes() {
-        assert_eq!(
-            single_element("<note>hi</note>"),
-            Some(el("note", &[], "hi"))
-        );
+    fn the_claimed_element_with_no_attributes() {
+        assert_eq!(hc("<hc>hi</hc>"), Some(el(&[], "hi")));
         // Surrounding whitespace is not text outside the element.
-        assert_eq!(
-            single_element("  \n<note >hi</note >\n"),
-            Some(el("note", &[], "hi"))
-        );
+        assert_eq!(hc("  \n<hc >hi</hc >\n"), Some(el(&[], "hi")));
     }
 
     #[test]
     fn attributes_in_both_quote_styles_keep_their_order() {
         assert_eq!(
-            single_element(r#"<hc from="worker-2" to='lead' n = "3">done</hc>"#),
+            hc(r#"<hc from="worker-2" to='lead' n = "3">done</hc>"#),
             Some(el(
-                "hc",
                 &[
                     ("from", Some("worker-2")),
                     ("to", Some("lead")),
@@ -158,17 +161,16 @@ mod tests {
     #[test]
     fn a_bare_attribute_has_no_value() {
         assert_eq!(
-            single_element(r#"<hc urgent from="a">x</hc>"#),
-            Some(el("hc", &[("urgent", None), ("from", Some("a"))], "x"))
+            hc(r#"<hc urgent from="a">x</hc>"#),
+            Some(el(&[("urgent", None), ("from", Some("a"))], "x"))
         );
     }
 
     #[test]
     fn a_quoted_value_may_hold_spaces_and_a_closing_bracket() {
         assert_eq!(
-            single_element(r#"<hc title="a > b, c" by='x y'>ok</hc>"#),
+            hc(r#"<hc title="a > b, c" by='x y'>ok</hc>"#),
             Some(el(
-                "hc",
                 &[("title", Some("a > b, c")), ("by", Some("x y"))],
                 "ok"
             ))
@@ -178,25 +180,40 @@ mod tests {
     #[test]
     fn the_inner_text_keeps_newlines_angle_brackets_and_entities() {
         assert_eq!(
-            single_element("<hc from=\"a\">line one\nif a < b && c > d &amp; <b>x</b></hc>"),
+            hc("<hc from=\"a\">line one\nif a < b && c > d &amp; <b>x</b></hc>"),
             Some(el(
-                "hc",
                 &[("from", Some("a"))],
                 "line one\nif a < b && c > d &amp; <b>x</b>"
             ))
         );
         // A nested element of the same name is closed inside, so the outer one still holds.
-        assert_eq!(
-            single_element("<a><a>x</a> y</a>"),
-            Some(el("a", &[], "<a>x</a> y"))
-        );
+        assert_eq!(hc("<hc><hc>x</hc> y</hc>"), Some(el(&[], "<hc>x</hc> y")));
     }
 
     #[test]
     fn an_empty_inner_text() {
         assert_eq!(
-            single_element(r#"<hc from="a"></hc>"#),
-            Some(el("hc", &[("from", Some("a"))], ""))
+            hc(r#"<hc from="a"></hc>"#),
+            Some(el(&[("from", Some("a"))], ""))
+        );
+    }
+
+    /// Only the claimed name is parsed: every other element, however well formed, is the user's text.
+    #[test]
+    fn every_other_name_is_left_alone() {
+        for msg in [
+            "<note>hi</note>",
+            r#"<foo from="a">x</foo>"#,
+            "<hcx>x</hcx>",
+            "<HC>x</HC>",
+            "<h>x</h>",
+        ] {
+            assert_eq!(hc(msg), None, "{msg:?}");
+        }
+        // The same message is claimed by the host whose name it carries.
+        assert_eq!(
+            claimed_element("<note>hi</note>", "note").map(|e| e.inner),
+            Some("hi")
         );
     }
 
@@ -209,17 +226,16 @@ mod tests {
             "see <hc>x</hc>",               // text before
             "<hc/>",                        // self-closing
             r#"<hc from="a"/>"#,            // self-closing with an attribute
-            "<a>x</a><a>y</a>",             // two elements
+            "<hc>x</hc><hc>y</hc>",         // two elements
             "<hc from=a>x</hc>",            // unquoted value
             r#"<hc from="a>x</hc>"#,        // unterminated value
             r#"<hc from="a"to="b">x</hc>"#, // no blank between attributes
             "< hc>x</hc>",                  // no name
-            "<1x>x</1x>",                   // a name cannot start with a digit
             "hello, world",                 // not XML at all
             "a < b and b > c",
             "",
         ] {
-            assert_eq!(single_element(msg), None, "{msg:?}");
+            assert_eq!(hc(msg), None, "{msg:?}");
         }
     }
 }

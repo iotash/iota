@@ -50,7 +50,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::BoxFuture;
 use crate::host::{
-    ChildEnvironment, Closer, EnvironmentContributor, Host, InBand, Probe, State, StateReporter,
+    ChildEnvironment, Closer, EnvironmentContributor, Host, InBand, MessageEnvelope, Probe, State,
+    StateReporter,
 };
 use crate::sync::lock;
 use crate::ui::facade::Ui;
@@ -176,6 +177,18 @@ impl Host for HcHost {
 
     fn as_child_env(&self) -> Option<&dyn ChildEnvironment> {
         Some(self)
+    }
+
+    fn as_message_envelope(&self) -> Option<&dyn MessageEnvelope> {
+        Some(self)
+    }
+}
+
+/// herdr-core hands a sub-agent's message to the conversation as `<hc from="…">…</hc>`: the user
+/// block shows the inner text under an `hc from:…` tab (DIVERGENCES X-107).
+impl MessageEnvelope for HcHost {
+    fn element(&self) -> &str {
+        "hc"
     }
 }
 
@@ -510,6 +523,43 @@ mod tests {
                 ("hc terminal".to_owned(), "t4".to_owned()),
                 ("hc note".to_owned(), HC_CHILD_NOTE.to_owned()),
             ]
+        );
+    }
+
+    /// herdr-core claims `hc`, its own envelope, and no other host claims anything: under herdr's
+    /// multiplexer, under cmux or in a plain terminal no message is ever parsed as an element.
+    #[tokio::test]
+    async fn only_hc_claims_an_element_and_it_is_hc() {
+        use crate::host::{AnsiHost, Presenter};
+        let ui = ScriptedUi::new(Vec::new());
+        let ansi =
+            || Some(Box::new(AnsiHost::new(Arc::clone(&ui) as Arc<dyn Ui>)) as Box<dyn Host>);
+        let hc = HcHost::with_writer("t4", Box::new(Recorder::default()));
+        assert_eq!(hc.as_message_envelope().map(|e| e.element()), Some("hc"));
+        let p = Presenter::over(Some(Box::new(hc)), ansi(), false);
+        assert_eq!(p.message_element(), Some("hc"));
+
+        let send: crate::host::herdr::SendFn = Arc::new(|_| Box::pin(async {}));
+        let herdr = crate::host::herdr::HerdrHost::with_send(
+            crate::host::herdr::Pane {
+                id: "p1".to_owned(),
+                ..Default::default()
+            },
+            1,
+            send,
+        );
+        let exec: crate::host::cmux::ExecFn = Arc::new(|_| Box::pin(async {}));
+        let cmux = crate::host::cmux::CmuxHost::with_exec("s1", exec, None);
+        for other in [Box::new(herdr) as Box<dyn Host>, Box::new(cmux)] {
+            let name = other.name().to_owned();
+            assert!(other.as_message_envelope().is_none(), "{name}");
+            let p = Presenter::over(Some(other), ansi(), false);
+            assert_eq!(p.message_element(), None, "{name}");
+        }
+        assert_eq!(Presenter::over(None, ansi(), false).message_element(), None);
+        assert_eq!(
+            Presenter::with_hosts(Vec::new(), false).message_element(),
+            None
         );
     }
 }

@@ -7,11 +7,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
-- **A message a host wraps in a tag reads as a message.** When a message is
-  exactly one XML element, such as the `<hc from="worker-2">…</hc>` herdr
-  uses to pass on a sub-agent's message, your block shows only what is inside
-  it, and the tag and its attributes (`hc from:worker-2`) sit on a gray tab
-  just above it. Anything else is shown exactly as typed.
+- **A sub-agent's message in herdr-core reads as a message.** Inside
+  herdr-core, a message handed over as `<hc from="worker-2">…</hc>` now shows
+  only what is inside it in your block, with `hc from:worker-2` on a gray tab
+  just above it. Only herdr-core's own `hc` element is treated this way, and
+  only inside herdr-core: XML you paste into a message yourself, `<hc>`
+  included anywhere else, is shown and sent exactly as you typed it.
 - **Typing a slash command no longer moves the conversation.** The
   completion list now opens over the bottom of the conversation instead of
   pushing it up. Typing more letters shortens the list and uncovers the
