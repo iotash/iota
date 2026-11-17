@@ -32,6 +32,10 @@ ignore = [
   # in under syntect, which has no bincode-free release; nothing here feeds it untrusted bytes —
   # it decodes the syntax and theme dumps two-face embeds in the binary.
   { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 under syntect: finished upstream, no alternative release; decodes only the embedded dumps" },
+  # chrono is declared unmaintained, not vulnerable. rmcp depends on it unconditionally (3.10 too),
+  # and again through oauth2 5.0.0 (its `auth` feature) and schemars' chrono04 feature; iota's own
+  # code never names chrono, so it parses no untrusted dates with it.
+  { id = "RUSTSEC-2026-0543", reason = "chrono 0.4 under rmcp, oauth2 and schemars: unmaintained, no chrono-free release; iota never calls it" },
 ]
 
 [licenses]
