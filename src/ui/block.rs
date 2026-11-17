@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::text::ansi::wrap_ansi;
+use crate::tool::fmt::{LabelBody, ToolLabel};
 use crate::ui::render::theme::{BG_DEFAULT, RESET, REV_ON, USER_BAR};
 
 /// Lays a block out from its source at a width.
@@ -135,9 +136,101 @@ impl Block {
 /// rows are committed text that the exit writes out raw, past the frame's colour gate, so a
 /// reverse attribute would leak there — and the bar's character carries the block. The live block
 /// and the resume echo both lay out through this one, the same rows.
+///
+/// A message that IS one XML element (`<hc from="agent">…</hc>`, [`crate::text::xml`]) shows its
+/// inner text as the block and its tag as a [`Tab`] on the row above it (X-107).
 pub struct UserBlock {
-    /// The submitted text (its display form: paste tags bounded).
+    /// The tag of a message that is one element.
+    pub tab: Option<Tab>,
+    /// The text the block shows (its display form: paste tags bounded; an element's inner text).
     pub text: String,
+}
+
+/// A tagged message's header: the element's name and its attributes in document order (a bare
+/// attribute has no value). Drawn as the user block's first row — a tool call's label without
+/// its brackets, `name k:v k:v`, on a fill of the bar's gray from column 0 to one column past the
+/// text, which starts at column 2 with the block's.
+pub struct Tab {
+    /// The element's name.
+    pub name: String,
+    /// Its attributes.
+    pub attrs: Vec<(String, Option<String>)>,
+}
+
+impl UserBlock {
+    /// The block for a submitted `message`: one element becomes its tab and its inner text, any
+    /// other message is shown as it was written.
+    pub fn new(message: &str) -> Self {
+        match crate::text::xml::single_element(message) {
+            Some(el) => Self {
+                tab: Some(Tab {
+                    name: el.name.to_owned(),
+                    attrs: el
+                        .attrs
+                        .iter()
+                        .map(|(k, v)| ((*k).to_owned(), v.map(str::to_owned)))
+                        .collect(),
+                }),
+                text: el.inner.to_owned(),
+            },
+            None => Self {
+                tab: None,
+                text: message.to_owned(),
+            },
+        }
+    }
+}
+
+impl Tab {
+    /// The tab as a call label no wider than `budget` columns: a bare attribute is a positional
+    /// argument, a value one-lined; attributes are dropped from the end behind the label's own
+    /// `… +N args` tail until it fits, and the one left is cut with `…`.
+    fn label(&self, budget: usize) -> ToolLabel {
+        use crate::text::width::{str_width, truncate_cols};
+        let all: Vec<(Option<String>, String)> = self
+            .attrs
+            .iter()
+            .map(|(k, v)| match v {
+                Some(v) => (Some(k.clone()), v.replace('\n', " ")),
+                None => (None, k.clone()),
+            })
+            .collect();
+        let make = |shown: usize| ToolLabel {
+            name: self.name.clone(),
+            body: LabelBody::Args {
+                pairs: all[..shown].to_vec(),
+                more: all.len() - shown,
+            },
+        };
+        for shown in (1..=all.len()).rev() {
+            let l = make(shown);
+            if str_width(&l.unbracketed()) <= budget {
+                return l;
+            }
+        }
+        let mut l = make(all.len().min(1));
+        let over = str_width(&l.unbracketed()).saturating_sub(budget);
+        if let LabelBody::Args { pairs, .. } = &mut l.body
+            && let Some((_, v)) = pairs.first_mut()
+        {
+            *v = truncate_cols(v, str_width(v).saturating_sub(over));
+        }
+        l
+    }
+
+    /// The tab's row at `width` (≥ 8): the label from column 2 on the bar's gray, from column 0
+    /// to one column past it; with colour off, the plain `  name k:v`.
+    fn row(&self, width: usize, color: bool) -> String {
+        const LEAD: usize = 2;
+        let label = self.label(width - LEAD - 1);
+        if color {
+            let painted = crate::repl::render::styles::paint_label_segments(&label);
+            let cols = LEAD + crate::text::width::str_width(&label.unbracketed()) + 1;
+            crate::text::ansi::paint_row(&format!("  {painted}"), USER_BAR, cols.min(width))
+        } else {
+            format!("  {}", label.unbracketed())
+        }
+    }
 }
 
 impl Layout for UserBlock {
@@ -145,17 +238,21 @@ impl Layout for UserBlock {
         const GUTTER: usize = 2;
         let w = width.max(8);
         let color = crate::app::color::enabled();
-        crate::text::ansi::wrap_by_width(&self.text, w - GUTTER)
-            .into_iter()
-            .map(|row| {
-                let pad = (w - GUTTER).saturating_sub(crate::text::width::str_width(&row));
-                let pad = " ".repeat(pad);
-                if color {
-                    format!("{REV_ON}{USER_BAR}▌{BG_DEFAULT} {row}{pad}{RESET}")
-                } else {
-                    format!("▌ {row}{pad}")
-                }
-            })
+        let tab = self.tab.as_ref().map(|t| t.row(w, color));
+        tab.into_iter()
+            .chain(
+                crate::text::ansi::wrap_by_width(&self.text, w - GUTTER)
+                    .into_iter()
+                    .map(|row| {
+                        let pad = (w - GUTTER).saturating_sub(crate::text::width::str_width(&row));
+                        let pad = " ".repeat(pad);
+                        if color {
+                            format!("{REV_ON}{USER_BAR}▌{BG_DEFAULT} {row}{pad}{RESET}")
+                        } else {
+                            format!("▌ {row}{pad}")
+                        }
+                    }),
+            )
             .collect()
     }
 }
@@ -207,7 +304,7 @@ mod tests {
     fn the_user_block_is_one_reverse_span_with_a_gray_bar() {
         // 78 columns of text beside the gutter, then 5 more: the wrap lands at column 2 too.
         let text = format!("{}{}", "x".repeat(78), "tail.");
-        let rows = UserBlock { text }.lines(80);
+        let rows = UserBlock::new(&text).lines(80);
         assert_eq!(
             rows,
             [
@@ -221,7 +318,7 @@ mod tests {
         for row in &rows {
             assert_eq!(str_width(&strip_sgr(row)), 80, "full width: {row:?}");
         }
-        let one = UserBlock { text: "hi".into() }.lines(20);
+        let one = UserBlock::new("hi").lines(20);
         assert_eq!(
             one,
             [format!(
@@ -231,14 +328,72 @@ mod tests {
         );
     }
 
+    /// A message that is one element: the tab is the block's first row — the bar's gray from
+    /// column 0, the label's segments from column 2 (the gray re-asserted after each of their
+    /// resets), one trailing gray space, reset — and the block below shows the inner text alone.
+    #[test]
+    fn a_tagged_message_gets_a_tab_row_above_its_inner_text() {
+        let b = UserBlock::new(r#"<hc from="worker-2" urgent>build is green</hc>"#);
+        assert_eq!(b.text, "build is green");
+        let rows = b.lines(40);
+        assert_eq!(rows.len(), 2, "tab + one block row: {rows:?}");
+        let g = "\x1b[48;5;245m";
+        assert_eq!(
+            rows[0],
+            format!(
+                "{g}  \x1b[1;36m{g}hc\x1b[0m{g} \x1b[2m{g}from:\x1b[0m{g}\x1b[36m{g}worker-2\x1b[0m{g} \x1b[36m{g}urgent\x1b[0m{g} \x1b[0m"
+            )
+        );
+        assert_eq!(strip_sgr(&rows[0]), "  hc from:worker-2 urgent ");
+        assert_eq!(
+            rows[1],
+            format!(
+                "\x1b[7m\x1b[48;5;245m▌\x1b[49m build is green{}\x1b[0m",
+                " ".repeat(24)
+            )
+        );
+        // One tab row whatever the inner text's length; the block wraps under it as before.
+        let long = UserBlock::new(&format!("<hc from=\"a\">{}</hc>", "x".repeat(60))).lines(40);
+        assert_eq!(long.len(), 3, "{long:?}");
+        assert_eq!(strip_sgr(&long[0]), "  hc from:a ");
+    }
+
+    /// The tab never runs past the width: attributes go from the end behind the label's
+    /// `… +N args` tail, and the one left is cut with `…`.
+    #[test]
+    fn the_tab_is_cut_to_the_width_with_the_labels_tail() {
+        let tab = |msg: &str, w: usize| strip_sgr(&UserBlock::new(msg).lines(w)[0]);
+        let msg = r#"<hc from="worker-2" to="lead" topic="the release">x</hc>"#;
+        assert_eq!(
+            tab(msg, 80),
+            "  hc from:worker-2 to:lead topic:the release "
+        );
+        assert_eq!(tab(msg, 40), "  hc from:worker-2 to:lead … +1 args ");
+        assert_eq!(tab(msg, 30), "  hc from:worker-2 … +2 args ");
+        assert_eq!(tab(msg, 24), "  hc from:wo… … +2 args ");
+        for w in [8, 12, 24, 30, 40, 80] {
+            assert!(str_width(&tab(msg, w)) <= w, "{w}: {:?}", tab(msg, w));
+        }
+    }
+
+    /// Anything that is not exactly one element — here, text after it — has no tab and keeps
+    /// its text as it was written.
+    #[test]
+    fn a_message_with_trailing_text_is_shown_unchanged() {
+        let msg = r#"<hc from="a">hi</hc> and more"#;
+        let b = UserBlock::new(msg);
+        assert!(b.tab.is_none());
+        assert_eq!(b.text, msg);
+        let rows = b.lines(80);
+        assert_eq!(rows.len(), 1);
+        assert!(strip_sgr(&rows[0]).starts_with(&format!("▌ {msg}")));
+    }
+
     /// A CJK row: wide runes count two columns, so the reversed span is padded by display width,
     /// not by chars — the row still 80 wide.
     #[test]
     fn the_cjk_user_block_pads_by_display_width() {
-        let rows = UserBlock {
-            text: "中文一行".into(),
-        }
-        .lines(80);
+        let rows = UserBlock::new("中文一行").lines(80);
         assert_eq!(
             rows,
             [format!(
@@ -255,7 +410,7 @@ mod tests {
     fn the_bar_cell_parses_as_reversed_gray_on_the_block() {
         use crate::ui::render::spans::ansi_to_spans_with;
         use ratatui::style::{Color, Modifier};
-        let row = &UserBlock { text: "hi".into() }.lines(20)[0];
+        let row = &UserBlock::new("hi").lines(20)[0];
         let line = ansi_to_spans_with(row, true);
         let spans: Vec<_> = line
             .spans

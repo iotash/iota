@@ -4,6 +4,7 @@
 
 pub mod ansi;
 pub mod width;
+pub mod xml;
 
 /// tool/agent.go:240-249: split on `'\n'`, drop exactly one trailing empty segment; `""` → `[]`.
 pub(crate) fn split_lines(s: &str) -> Vec<&str> {

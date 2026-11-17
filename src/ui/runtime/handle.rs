@@ -409,9 +409,7 @@ impl Ui for TuiHandle {
     }
 
     fn user_block(&self, display: &str) {
-        lock(&self.region).commit(vec![Block::laid(UserBlock {
-            text: display.to_owned(),
-        })]);
+        lock(&self.region).commit(vec![Block::laid(UserBlock::new(display))]);
     }
 
     fn start_stream(&self, cancel: CancellationToken) -> Box<dyn UiStreamSink> {

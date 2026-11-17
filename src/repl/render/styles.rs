@@ -46,12 +46,24 @@ pub(crate) fn paint_label(l: &crate::tool::fmt::ToolLabel) -> String {
 
 /// [`paint_label`] with the decision passed in.
 fn paint_label_if(on: bool, l: &crate::tool::fmt::ToolLabel) -> String {
+    let mark = |s: &str| sgr_if(on, LABEL_MARK, s);
+    format!("{}{}{}", mark("["), paint_segments_if(on, l), mark("]"))
+}
+
+/// The label's segments without the brackets — `name k:v k:v … +N args`, painted exactly as
+/// inside [`paint_label`]: a tagged user message's tab (`ui::block::UserBlock`). Strips back to
+/// [`ToolLabel::unbracketed`](crate::tool::fmt::ToolLabel::unbracketed).
+pub(crate) fn paint_label_segments(l: &crate::tool::fmt::ToolLabel) -> String {
+    paint_segments_if(crate::app::color::enabled(), l)
+}
+
+/// The name and the body, each segment self-contained SGR.
+fn paint_segments_if(on: bool, l: &crate::tool::fmt::ToolLabel) -> String {
     use crate::tool::fmt::LabelBody;
     let mark = |s: &str| sgr_if(on, LABEL_MARK, s);
     let value = |s: &str| sgr_if(on, LABEL_VALUE, s);
-    let mut out = mark("[");
-    out.push_str(&sgr_if(on, LABEL_NAME, &l.name));
-    // A body with no text is the bare `[name]`, exactly as the plain label drops its blank.
+    let mut out = sgr_if(on, LABEL_NAME, &l.name);
+    // A body with no text is the bare name, exactly as the plain label drops its blank.
     let body = if l.body.detail().is_empty() {
         &LabelBody::Phrase(String::new())
     } else {
@@ -81,7 +93,6 @@ fn paint_label_if(on: bool, l: &crate::tool::fmt::ToolLabel) -> String {
             }
         }
     }
-    out.push_str(&mark("]"));
     out
 }
 

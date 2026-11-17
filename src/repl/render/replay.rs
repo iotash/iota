@@ -219,9 +219,7 @@ pub(crate) fn echo_rounds(
             }
             Role::User => {
                 flush_tools(&mut w, &mut tool_results);
-                w.extend([Block::laid(UserBlock {
-                    text: msg.content.clone(),
-                })]);
+                w.extend([Block::laid(UserBlock::new(&msg.content))]);
                 // Named per-file lines instead of a bare count; canvas copies are
                 // suppressed (see `rendered`).
                 for att in &msg.attachments {
@@ -409,10 +407,7 @@ mod tests {
     /// The user block the echo lays out, at `width`.
     fn print_user_block(display: &str, width: usize) -> Vec<String> {
         use crate::ui::facade::Layout as _;
-        crate::ui::facade::UserBlock {
-            text: display.to_owned(),
-        }
-        .lines(width)
+        crate::ui::facade::UserBlock::new(display).lines(width)
     }
 
     #[test]

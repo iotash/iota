@@ -72,14 +72,22 @@ impl LabelBody {
     }
 }
 
-impl std::fmt::Display for ToolLabel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl ToolLabel {
+    /// The label without its brackets: `"name k:v k:v"`, or the bare `"name"` — the text a
+    /// tagged user message's tab shows (`ui::block::UserBlock`).
+    pub(crate) fn unbracketed(&self) -> String {
         let detail = self.body.detail();
         if detail.is_empty() {
-            write!(f, "[{}]", self.name)
+            self.name.clone()
         } else {
-            write!(f, "[{} {detail}]", self.name)
+            format!("{} {detail}", self.name)
         }
+    }
+}
+
+impl std::fmt::Display for ToolLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{}]", self.unbracketed())
     }
 }
 

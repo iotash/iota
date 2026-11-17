@@ -289,9 +289,22 @@ fn the_standalone_renderers_are_escape_free() {
 fn the_user_block_is_the_bar_and_plain_text() {
     use iota::ui::facade::{Layout as _, UserBlock};
     no_color();
-    let rows = UserBlock {
-        text: format!("{}tail", "x".repeat(18)),
-    }
-    .lines(20);
+    let rows = UserBlock::new(&format!("{}tail", "x".repeat(18))).lines(20);
     assert_eq!(rows, ["▌ xxxxxxxxxxxxxxxxxx", "▌ tail              "]);
+}
+
+/// A tagged message under `NO_COLOR`: the tab is the plain `  name k:v` row — no fill, no escape
+/// (the exit writes it raw) — and the block under it is unchanged, the inner text alone.
+#[test]
+fn the_tab_is_plain_text_without_colour() {
+    use iota::ui::facade::{Layout as _, UserBlock};
+    no_color();
+    let rows = UserBlock::new(r#"<hc from="worker-2" urgent>done</hc>"#).lines(30);
+    assert_eq!(
+        rows,
+        [
+            "  hc from:worker-2 urgent",
+            &format!("▌ done{}", " ".repeat(24))
+        ]
+    );
 }
