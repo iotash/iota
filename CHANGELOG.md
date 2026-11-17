@@ -3,10 +3,29 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
-## Unreleased
+## 0.11.0 - 2026-11-17
 
 ### Changed
 
+- **Typing a slash command no longer moves the conversation.** The
+  completion list now opens over the bottom of the conversation instead of
+  pushing it up. Typing more letters shortens the list and uncovers the
+  conversation behind it, with no empty rows left between the list and its top
+  line. The line that separated the list from what you type now sits on top of
+  the list, and one empty row separates the list from what you type.
+- **A conversation starts at the top of the screen.** A new session's banner
+  and the rounds a session resumed at startup replays start at the top of
+  the screen, and the conversation grows downward, scrolling only once it
+  fills the screen. A conversation that fits above the completion list is
+  never covered by it.
+- **Every list marks its current row the same way.** The completion list,
+  the pickers and the selection lists in `/model`, `/tools`, `/jobs`,
+  `/session` and the rest now shade the whole current row, put a `▸` in front
+  of it and set its label in bold. Rows whose labels have colours of their own
+  (`/tools`, `/jobs`) used to show only the `▸`; they now get the full
+  highlight too. A checked item in a multi-select keeps its `[x]`, in bold
+  green, beside the `▸`. With `NO_COLOR` the shading goes and the `▸` and the
+  bold stay.
 - **A sub-agent's message in herdr-core reads as a message.** Inside
   herdr-core, a message handed over as `<hc from="worker-2">…</hc>` now shows
   only what is inside it in your block, with `hc from:worker-2` on a gray tab
@@ -18,24 +37,21 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   lines under the tab, like any long paste. The tab line is part of your
   message on screen: you can select, copy and search it, and it is written
   out when iota exits.
-- **Typing a slash command no longer moves the conversation.** The
-  completion list now opens over the bottom of the conversation instead of
-  pushing it up. Typing more letters shortens the list and uncovers the
-  conversation behind it, with no empty rows left between the list and its top
-  line. The line that separated the list from what you type now sits on top of
-  the list, and one empty row separates the list from what you type.
-- **A conversation starts at the top of the screen.** A new session's banner
-  and a resumed session's replayed rounds start at the top of the screen, and
-  the conversation grows downward, scrolling only once it fills the screen. A
-  conversation that fits above the completion list is never covered by it.
-- **Every list marks its current row the same way.** The completion list,
-  the pickers and the selection lists in `/model`, `/tools`, `/jobs`,
-  `/session` and the rest now shade the whole current row, put a `▸` in front
-  of it and set its label in bold. Rows whose labels have colours of their own
-  (`/tools`, `/jobs`) used to show only the `▸`; they now get the full
-  highlight too. A checked item in a multi-select keeps its `[x]`, in bold
-  green, beside the `▸`. With `NO_COLOR` the shading goes and the `▸` and the
-  bold stay.
+- **rmcp is 3.9**, past a security advisory on the version iota used
+  before. An MCP server that answers 429 now says the server is limiting
+  requests, and a 429 or 5xx carries the server's `Retry-After` when it sends
+  one; the page behind a 5xx is no longer read, so its title is not shown.
+
+### Fixed
+
+- **A resize that ends where it began no longer leaves a broken screen.**
+  tmux can end a resize with the window back at its old size; iota saw no
+  change and redrew only what it thought had moved, over a screen the
+  terminal had cropped. Every resize now repaints the whole screen.
+- **On Windows, a write outside the project is asked about again.** A path
+  the system spelled `\\?\C:\…` was read as inside a project at `C:\…`, so
+  the write was not asked about and its result showed the path as
+  `//?/C:/…`.
 
 ## 0.10.0 - 2026-11-16
 
