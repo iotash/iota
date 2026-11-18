@@ -24,8 +24,6 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 - **iota no longer exits at once on macOS when its input is not a terminal.**
   With stdin redirected, the full screen could end at startup as if the
   terminal had hung up.
-- **Resizing the window while iota starts no longer picks the dark shades on a
-  light terminal.** The resize cut the wait for the terminal's answer short.
 
 ## 0.11.1 - 2026-11-18
 

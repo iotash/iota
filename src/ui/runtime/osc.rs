@@ -160,10 +160,11 @@ pub(crate) fn round_trip(_query: &[u8]) -> io::Result<Vec<u8>> {
 ///
 /// Every byte is read only after the descriptor said one is there ([`super::tty::readable`], which
 /// says why `select(2)` and not `poll(2)`), and the wait is bounded by what is left of `timeout` —
-/// a signal that cuts it short is waited out, not taken for the deadline: when it runs out the function returns with nothing in
-/// flight — no thread parked on the tty, no read that a later keystroke would complete. (Until
-/// 2026-11-18 a detached thread did the reading, and on a terminal that answered nothing it stayed
-/// parked and took the first key typed.) Nothing past the `R` is read either.
+/// a signal that cuts it short is waited out, not taken for the deadline: when it runs out the
+/// function returns with nothing in flight — no thread parked on the tty, no read that a later
+/// keystroke would complete. (Until 2026-11-18 a detached thread did the reading, and on a terminal
+/// that answered nothing it stayed parked and took the first key typed.) Nothing past the `R` is
+/// read either.
 #[cfg(unix)]
 fn exchange(tty: &mut File, query: &[u8], timeout: Duration) -> io::Result<Vec<u8>> {
     tty.write_all(&[query, b"\x1b[6n"].concat())?;

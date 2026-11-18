@@ -130,16 +130,16 @@ http = "1"
 # `thread_local` (the registry's span storage); nothing else is new to Cargo.lock.
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 
-# Process supervision, the one thing `src/shell/exec.rs` cannot write itself: this crate forbids `unsafe`, so
-# the syscalls that own a process TREE have to come from somewhere. Both entries are that somewhere, and
-# nothing else in the tree reaches for either — save the one `poll` noted below.
+# The syscalls this crate cannot write itself: it forbids `unsafe`, so process supervision
+# (`src/shell/exec.rs`) and the waits on the terminal's descriptor (`src/ui/runtime/tty.rs`) have to come
+# from somewhere. These entries are that somewhere.
 #
 # Unix: `setpgid` at spawn, then `killpg(SIGKILL)` — `nix` is those two and the `ESRCH` they answer with.
-# `select` (in `poll`) is the one other kind of syscall: the terminal's descriptor is waited on before it is read
-# (`src/ui/runtime/tty.rs`). `term` is `tcgetpgrp`: a terminal query enters raw mode only from the terminal's
-# foreground process group (`src/ui/runtime/osc.rs`). `rustix` is `FIONREAD`, which `nix` has only as an
-# `unsafe` ioctl: a terminal that is readable with nothing queued has hung up (`tty::hung_up`). It is the copy
-# crossterm already builds against — nothing new in Cargo.lock.
+# `select` (nix's `poll` feature) waits on the terminal's descriptor before anything reads it. `term` is
+# `tcgetpgrp`: a terminal query enters raw mode only from the terminal's foreground process group
+# (`src/ui/runtime/osc.rs`). `rustix` is `FIONREAD`, which `nix` offers only through its `ioctl_*!` macros
+# (`unsafe fn`): a terminal that is readable with nothing queued has hung up (`tty::hung_up`). crossterm and
+# tempfile already build against the same copy — nothing new in Cargo.lock.
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", default-features = false, features = ["signal", "process", "fs", "poll", "term"] }
 rustix = { version = "1.1", default-features = false, features = ["std"] }
