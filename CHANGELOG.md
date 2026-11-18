@@ -3,6 +3,15 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Changed
+
+- **A sub-agent's message in herdr-core has a teal bar.** A message handed
+  over as `<hc from="…">…</hc>` now has a teal bar and a teal tab, so it
+  stands apart from what you typed, whose bar stays gray. With `NO_COLOR`
+  only the tab line tells them apart.
+
 ## 0.11.0 - 2026-11-17
 
 ### Changed
@@ -28,8 +37,8 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   bold stay.
 - **A sub-agent's message in herdr-core reads as a message.** Inside
   herdr-core, a message handed over as `<hc from="worker-2">…</hc>` now shows
-  only what is inside it in your block, with `hc from:worker-2` on a tab just
-  above it. Only herdr-core's own `hc` element is treated this way, and
+  only what is inside it in your block, with `hc from:worker-2` on a gray tab
+  just above it. Only herdr-core's own `hc` element is treated this way, and
   only inside herdr-core: XML you paste into a message yourself, `<hc>`
   included anywhere else, is shown and sent exactly as you typed it. Inside
   herdr-core an `<hc>` you paste yourself gets the tab too, but the model
@@ -37,9 +46,6 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   lines under the tab, like any long paste. The tab line is part of your
   message on screen: you can select, copy and search it, and it is written
   out when iota exits.
-  A message handed over this way has a teal bar and a teal tab, so it stands
-  apart from what you typed, whose bar stays gray; with `NO_COLOR` only the
-  tab line tells them apart.
 - **rmcp is 3.9**, past a security advisory on the version iota used
   before. An MCP server that answers 429 now says the server is limiting
   requests, and a 429 or 5xx carries the server's `Retry-After` when it sends
