@@ -7,9 +7,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
-- **A sub-agent's message in herdr-core has a teal bar.** A message handed
-  over as `<hc from="…">…</hc>` now has a teal bar and a teal tab, so it
-  stands apart from what you typed, whose bar stays gray. With `NO_COLOR`
+- **A sub-agent's message in herdr-core has a teal bar.** A block with a tab
+  (a message handed over as `<hc from="…">…</hc>`) now has a teal bar and a
+  teal tab, so it stands apart from what you typed, whose bar stays gray. With `NO_COLOR`
   only the tab line tells them apart.
 
 ## 0.11.0 - 2026-11-17

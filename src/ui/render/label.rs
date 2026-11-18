@@ -33,8 +33,8 @@ const LABEL_INK: LabelInk = LabelInk {
 
 /// A user block's tab (`ui::block::Tab`): the label's segments in one dark ink (`38;5;16`) — a
 /// bold name, faint keys, plain values — because the tab's fill is the host bar's teal
-/// (`theme::HOST_BAR`; the dark ink is 4.82:1 on it, AA), on which the label's cyan and faint
-/// read weakly.
+/// (`theme::HOST_BAR`; the dark ink is 4.82:1 on it, AA), and the label's cyan and faint read
+/// weakly on the gray it replaced (1.7:1) and on the teal alike.
 pub(crate) const TAB_INK: LabelInk = LabelInk {
     name: "1;38;5;16",
     value: "38;5;16",
