@@ -50,6 +50,7 @@ image
 http
 # process supervision, per platform (justifications in Cargo.toml beside the entries)
 nix
+rustix
 process-wrap
 windows
 # dev (plus the self-dev-dependency `iota`, which check-deps.sh skips)
