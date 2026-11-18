@@ -550,7 +550,7 @@ impl Model {
         }
     }
 
-    /// The background question's timers (`requery.rs`): the focus check and the reply deadline, and
+    /// The background question's timers (`requery.rs`): the reply deadline, and
     /// keys that were held as a possible reply and are the user's after all.
     pub(crate) fn tick_requery(&mut self) {
         let now = Instant::now();
@@ -789,12 +789,10 @@ impl Model {
                 mouse::end_drag(self, SelectOp::Release);
             }
             Event::Key(k) => {
-                self.requery.input(Instant::now());
                 self.handle_key(k);
                 self.dirty = true;
             }
             Event::Paste(data) => {
-                self.requery.input(Instant::now());
                 self.route_paste(&data);
                 self.dirty = true;
             }
@@ -803,7 +801,7 @@ impl Model {
             // while the window was away (X-108). No redraw — nothing on screen depends on focus.
             Event::FocusGained => {
                 self.focused = true;
-                self.requery.focus_gained(Instant::now());
+                self.requery.focus_gained();
             }
             Event::FocusLost => {
                 self.focused = false;

@@ -2347,9 +2347,8 @@ mod asked_again {
     const DARK_ROW: u8 = 237;
     const LIGHT_ROW: u8 = 253;
 
-    /// The loop with a completion list open (`/` typed over two commands, `Down` onto the first) and
-    /// the keyboard quiet since: the list's current row is what an idle frame shades by the
-    /// background's tone.
+    /// The loop with a completion list open (`/` typed over two commands, `Down` onto the first):
+    /// the list's current row is what an idle frame shades by the background's tone.
     fn start_listed() -> LoopHarness {
         let h = start_loop();
         let command = |value: &str| crate::ui::facade::Suggestion {
@@ -2367,7 +2366,6 @@ mod asked_again {
             "no list: {}",
             h.contents()
         );
-        thread::sleep(crate::ui::runtime::requery::KEY_QUIET);
         h
     }
 
@@ -2451,8 +2449,6 @@ mod asked_again {
     /// reply that comes late is `requery::tests`' to say, on a clock of its own.)
     #[test]
     fn a_mute_terminal_is_asked_once() {
-        use crate::ui::runtime::requery::FOCUS_SETTLE;
-
         let h = start_listed();
         let (tx, rx) = tokio::sync::oneshot::channel();
         h.tx.send(UiMsg::RequeryBackground(tx)).unwrap();
@@ -2461,7 +2457,6 @@ mod asked_again {
 
         h.etx.send(Event::FocusLost).unwrap();
         h.etx.send(Event::FocusGained).unwrap();
-        thread::sleep(FOCUS_SETTLE * 2);
         let (tx, rx) = tokio::sync::oneshot::channel();
         h.tx.send(UiMsg::RequeryBackground(tx)).unwrap();
         assert_eq!(rx.blocking_recv().unwrap(), None);
@@ -2478,13 +2473,10 @@ mod asked_again {
     /// never asked — not on focus, not by the REPL's call, which hears `None` at once.
     #[test]
     fn a_host_that_knows_the_background_silences_the_question() {
-        use crate::ui::runtime::requery::FOCUS_SETTLE;
-
         let h = start_loop();
         h.tx.send(UiMsg::BackgroundFromHost).unwrap();
         h.sync();
         h.etx.send(Event::FocusGained).unwrap();
-        thread::sleep(FOCUS_SETTLE * 2);
         let (tx, rx) = tokio::sync::oneshot::channel();
         h.tx.send(UiMsg::RequeryBackground(tx)).unwrap();
         assert_eq!(rx.blocking_recv().unwrap(), None);
@@ -2493,28 +2485,8 @@ mod asked_again {
         h.quit_and_join(LONG);
     }
 
-    /// The focus check never fires while the user types: a key within the last 300 ms and the
-    /// question is not asked at all (the next turn asks).
-    #[test]
-    fn focus_asks_nothing_while_the_user_types() {
-        use crate::ui::runtime::requery::{FOCUS_SETTLE, KEY_QUIET};
-
-        let h = start_loop();
-        h.etx.send(Event::FocusGained).unwrap();
-        // Typing straight through the settle time.
-        let until = Instant::now() + FOCUS_SETTLE + Duration::from_millis(50);
-        while Instant::now() < until {
-            h.etx.send(ch('k')).unwrap();
-            thread::sleep(Duration::from_millis(20));
-        }
-        thread::sleep(KEY_QUIET);
-        h.sync();
-        assert_eq!(queries(&h), 0);
-        h.quit_and_join(LONG);
-    }
-
     /// The REPL's between-turns call (`Ui::requery_background`): the loop writes the question at
-    /// once — no focus, no settle time — and the caller gets the terminal's answer, which the frame
+    /// once — no focus needed — and the caller gets the terminal's answer, which the frame
     /// has taken too. A terminal that answered is asked again the next time.
     #[test]
     fn the_repl_ask_is_answered_with_the_terminals_reply() {

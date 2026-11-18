@@ -19,8 +19,8 @@
 //! — so that `Esc` cancels whatever is innermost and the rest lands in the composer. It needs a
 //! terminal (or a transport) that cuts the reply exactly after its first byte.
 //!
-//! [`Requery`] is the policy around it: when to ask (150 ms after the window regains focus, if
-//! the user is not typing; and when the REPL asks, between turns), how long to wait, that a
+//! [`Requery`] is the policy around it: when to ask (when the window regains focus, and when the
+//! REPL asks, between turns), how long to wait, that a
 //! terminal which does not answer is never asked again, and that one whose host answers for it is
 //! never asked at all.
 
@@ -30,14 +30,6 @@ use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use tokio::sync::oneshot;
 
 use super::osc;
-
-/// How long after `FocusGained` the terminal is asked: the click that focused the window, and
-/// whatever the window system sends with it, are through by then.
-pub(crate) const FOCUS_SETTLE: Duration = Duration::from_millis(150);
-
-/// A focus check is skipped when a key or a paste arrived this recently: the user is typing, and
-/// the question waits for the next turn.
-pub(crate) const KEY_QUIET: Duration = Duration::from_millis(300);
 
 /// How long after a miss a late reply is still looked for. Within it the reply is removed instead
 /// of typed; past it the matcher stands down, so a terminal that never answers costs a real
@@ -268,16 +260,12 @@ pub(crate) struct Requery {
     matcher: ReplyMatcher,
     /// A question went unanswered (or this platform cannot ask): never again this session.
     off: bool,
-    /// The focus check's time, when one is armed.
-    due: Option<Instant>,
     /// When the question that is out was written.
     sent: Option<Instant>,
     /// A question to write this iteration.
     wanted: bool,
     /// After a miss: when the matcher stops looking for the late reply ([`MISS_GRACE`]).
     stand_down: Option<Instant>,
-    /// When the last key or paste arrived.
-    last_input: Option<Instant>,
     /// The REPL's callers waiting for the answer.
     waiters: Vec<oneshot::Sender<Option<bool>>>,
 }
@@ -289,27 +277,18 @@ impl Default for Requery {
             // Elsewhere than unix the startup detect is declined too (`osc::round_trip`): the
             // console's input is not a byte stream a reply could arrive in.
             off: !cfg!(unix),
-            due: None,
             sent: None,
             wanted: false,
             stand_down: None,
-            last_input: None,
             waiters: Vec::new(),
         }
     }
 }
 
 impl Requery {
-    /// The window regained focus: the terminal is asked once things have settled.
-    pub(crate) fn focus_gained(&mut self, now: Instant) {
-        if !self.off {
-            self.due = Some(now + FOCUS_SETTLE);
-        }
-    }
-
-    /// A key or a paste arrived.
-    pub(crate) fn input(&mut self, now: Instant) {
-        self.last_input = Some(now);
+    /// The window regained focus: the terminal is asked this iteration, unless a question is out.
+    pub(crate) fn focus_gained(&mut self) {
+        self.wanted |= !self.off && self.sent.is_none();
     }
 
     /// The REPL asks (between turns): answered at once with `None` when asking is off, otherwise
@@ -323,18 +302,9 @@ impl Requery {
         self.wanted = self.sent.is_none();
     }
 
-    /// The timers: a due focus check asks unless the user is typing, a question out for
-    /// [`osc::REPLY_TIMEOUT`] is a miss, and [`MISS_GRACE`] after a miss the matcher stands down.
+    /// The timers: a question out for [`osc::REPLY_TIMEOUT`] is a miss, and [`MISS_GRACE`] after a
+    /// miss the matcher stands down.
     pub(crate) fn tick(&mut self, now: Instant) {
-        if self.due.is_some_and(|at| now >= at) {
-            self.due = None;
-            let typing = self
-                .last_input
-                .is_some_and(|at| now.saturating_duration_since(at) < KEY_QUIET);
-            if !typing && self.sent.is_none() {
-                self.wanted = true;
-            }
-        }
         if self
             .sent
             .is_some_and(|at| now.saturating_duration_since(at) >= osc::REPLY_TIMEOUT)
@@ -398,7 +368,6 @@ impl Requery {
     /// No answer: every waiter is told so, and nothing is asked again.
     fn miss(&mut self) {
         self.off = true;
-        self.due = None;
         self.sent = None;
         self.wanted = false;
         for w in self.waiters.drain(..) {
@@ -413,7 +382,6 @@ impl Requery {
         let after = |at: Instant| (at + osc::REPLY_TIMEOUT).saturating_duration_since(now);
         let stand_down = self.stand_down.filter(|_| self.matcher.since.is_none());
         [
-            self.due.map(|at| at.saturating_duration_since(now)),
             stand_down.map(|at| at.saturating_duration_since(now)),
             self.sent.map(after),
             self.matcher.since.map(after),
@@ -428,7 +396,7 @@ impl Requery {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::{FOCUS_SETTLE, Fed, KEY_QUIET, MISS_GRACE, Reply, ReplyMatcher, Requery};
+    use super::{Fed, MISS_GRACE, Reply, ReplyMatcher, Requery};
     use crate::ui::runtime::osc::REPLY_TIMEOUT;
     use crate::ui::testutil::reply_events;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -556,28 +524,6 @@ mod tests {
         assert_eq!(replies, [Some(false)]);
     }
 
-    /// The focus check: asked [`FOCUS_SETTLE`] after the focus, not while the user types.
-    #[test]
-    fn focus_asks_once_settled_and_not_while_typing() {
-        let t0 = Instant::now();
-        let mut r = Requery::default();
-        r.focus_gained(t0);
-        r.tick(t0 + (FOCUS_SETTLE / 2));
-        assert!(!r.take_query(t0));
-        r.tick(t0 + FOCUS_SETTLE);
-        assert!(r.take_query(t0 + FOCUS_SETTLE));
-        assert!(!r.take_query(t0 + FOCUS_SETTLE), "one question");
-
-        let mut r = Requery::default();
-        r.input(t0);
-        r.focus_gained(t0);
-        r.tick(t0 + FOCUS_SETTLE);
-        assert!(!r.take_query(t0 + FOCUS_SETTLE), "a key 150 ms ago");
-        r.focus_gained(t0 + KEY_QUIET);
-        r.tick(t0 + KEY_QUIET + FOCUS_SETTLE);
-        assert!(r.take_query(t0 + KEY_QUIET + FOCUS_SETTLE));
-    }
-
     /// A question nobody answers is the last one: the waiter hears `None`, later callers hear it
     /// at once, focus arms nothing — and the late reply is ignored.
     #[test]
@@ -595,7 +541,7 @@ mod tests {
         let (tx, mut rx) = oneshot::channel();
         r.ask(tx);
         assert_eq!(rx.try_recv().unwrap(), None);
-        r.focus_gained(t0);
+        r.focus_gained();
         r.tick(t0 + REPLY_TIMEOUT * 2);
         assert!(!r.take_query(t0));
         assert_eq!(r.answer(Reply::Tone { dark: false }), None);
@@ -608,10 +554,9 @@ mod tests {
     fn a_late_reply_is_removed_within_the_grace_and_typing_after_it() {
         let reply = || reply_events("rgb:ffff/ffff/ffff", "\x07");
         let miss = |r: &mut Requery, t0: Instant| {
-            r.focus_gained(t0);
-            r.tick(t0 + FOCUS_SETTLE);
-            assert!(r.take_query(t0 + FOCUS_SETTLE));
-            let missed = t0 + FOCUS_SETTLE + REPLY_TIMEOUT;
+            r.focus_gained();
+            assert!(r.take_query(t0));
+            let missed = t0 + REPLY_TIMEOUT;
             r.tick(missed);
             missed
         };
@@ -642,14 +587,11 @@ mod tests {
     #[test]
     fn a_stand_down_behind_a_held_start_wakes_at_the_release() {
         let now = Instant::now();
-        let t0 = now
-            .checked_sub(FOCUS_SETTLE + REPLY_TIMEOUT + MISS_GRACE)
-            .unwrap();
+        let t0 = now.checked_sub(REPLY_TIMEOUT + MISS_GRACE).unwrap();
         let mut r = Requery::default();
-        r.focus_gained(t0);
-        r.tick(t0 + FOCUS_SETTLE);
-        assert!(r.take_query(t0 + FOCUS_SETTLE));
-        r.tick(t0 + FOCUS_SETTLE + REPLY_TIMEOUT); // the miss; the grace ends at `now`
+        r.focus_gained();
+        assert!(r.take_query(t0));
+        r.tick(t0 + REPLY_TIMEOUT); // the miss; the grace ends at `now`
         assert_eq!(r.feed(alt(']')), Fed::default(), "held from here on");
         r.tick(now);
         let wake = r.next_wake(now).unwrap();
@@ -669,9 +611,8 @@ mod tests {
         let t0 = Instant::now();
         let mut r = Requery::default();
         r.leave_to_host(t0);
-        r.focus_gained(t0);
-        r.tick(t0 + FOCUS_SETTLE);
-        assert!(!r.take_query(t0 + FOCUS_SETTLE));
+        r.focus_gained();
+        assert!(!r.take_query(t0));
         let (tx, mut rx) = oneshot::channel();
         r.ask(tx);
         assert_eq!(rx.try_recv().unwrap(), None);
@@ -693,8 +634,7 @@ mod tests {
         assert_eq!(rx1.try_recv().unwrap(), Some(false));
         assert_eq!(rx2.try_recv().unwrap(), Some(false));
         // Answered, so the next focus asks again.
-        r.focus_gained(t0);
-        r.tick(t0 + FOCUS_SETTLE);
-        assert!(r.take_query(t0 + FOCUS_SETTLE));
+        r.focus_gained();
+        assert!(r.take_query(t0));
     }
 }
