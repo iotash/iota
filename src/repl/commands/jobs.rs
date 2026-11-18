@@ -575,15 +575,13 @@ mod tests {
         }
     }
 
-    /// Waits for the registry to have `n` jobs running, up to four seconds.
-    async fn running(jobs: &Jobs, n: usize) {
-        for _ in 0..400 {
-            if jobs.running() == n {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("{} jobs still running, wanted {n}", jobs.running());
+    /// Waits for the next job to end — the registry's own notice, not a count polled against the
+    /// clock: a child's exit takes what it takes on a loaded runner (Git Bash on Windows) — and checks
+    /// that it is `id` and that `n` jobs are left running.
+    async fn ends(jobs: &Jobs, id: &str, n: usize) {
+        let done = jobs.wait_any(&CancellationToken::new()).await;
+        assert_eq!(done.map(|d| d.id), Some(id.to_owned()));
+        assert_eq!(jobs.running(), n);
     }
 
     // The live rows: every call is the registry as of now — a job gone is a row gone, the keys are the ids
@@ -619,7 +617,7 @@ mod tests {
         // b1 is killed: the next read has one row, keyed b2 — and row 0 is b2 now.
         let b1 = live.shown(0).expect("b1");
         jobs.kill("b1");
-        running(&jobs, 1).await;
+        ends(&jobs, "b1", 1).await;
         let second = live.refresh()();
         assert_eq!(second.keys, ["b2"]);
         assert_eq!(second.prompt.as_deref(), Some("1 job running"));
@@ -651,7 +649,7 @@ mod tests {
         let b3 = live.refresh()();
         let b3 = live.shown(b3.keys.len() - 1).expect("b3");
         assert_eq!(b3.id, "b3");
-        running(&jobs, 1).await;
+        ends(&jobs, "b3", 1).await;
         let tail = read_tail(b3.output_path.clone()).await;
         let page: Vec<String> = page_lines(&jobs, &b3, None, &tail)
             .iter()
@@ -683,7 +681,7 @@ mod tests {
             Arc::clone(&tail),
             stop,
         ));
-        running(&jobs, 0).await;
+        ends(&jobs, &job.id, 0).await;
         let tail = wait_for_last(&tail, "two").await;
         assert_eq!(tail, ["one", "two"]);
         let page: Vec<String> = page_lines(&jobs, &job, None, &tail)
