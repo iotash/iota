@@ -356,9 +356,11 @@ mod tests {
         argv(&["sh", "-c", "cat >/dev/null; exit 1"])
     }
 
-    fn done(chars: usize, ways: &[&str]) -> Option<Copied> {
-        let ways = argv(ways);
-        Some(Copied::Done { chars, ways })
+    fn done(chars: usize, ways: &[&str]) -> Copied {
+        Copied::Done {
+            chars,
+            ways: argv(ways),
+        }
     }
 
     /// Outside tmux: the sequence is written at once, the tool runs too, and the outcome names both.
@@ -367,7 +369,7 @@ mod tests {
         let mut c = Clipboard::with_commands(vec![ok()], true, "Shift");
         assert_eq!(c.start("abc".to_owned()), (Some(osc52("abc")), None));
         assert!(c.pending());
-        assert_eq!(finish(&mut c), (None, done(3, &["sh", "OSC 52"])));
+        assert_eq!(finish(&mut c), (None, Some(done(3, &["sh", "OSC 52"]))));
     }
 
     /// A fake `pbcopy` (a script by that name, at a full path) is named by its file name.
@@ -382,7 +384,7 @@ mod tests {
         std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut c = Clipboard::with_commands(vec![argv(&[tool.to_str().unwrap()])], true, "Shift");
         assert_eq!(c.start("héllo".to_owned()), (Some(osc52("héllo")), None));
-        assert_eq!(finish(&mut c), (None, done(5, &["pbcopy", "OSC 52"])));
+        assert_eq!(finish(&mut c), (None, Some(done(5, &["pbcopy", "OSC 52"]))));
         assert_eq!(std::fs::read_to_string(out).unwrap(), "héllo");
     }
 
@@ -393,7 +395,7 @@ mod tests {
         let mut c =
             Clipboard::with_commands(vec![fail(), argv(&["no-such-tool-iota"])], true, "Shift");
         assert_eq!(c.start("abc".to_owned()), (Some(osc52("abc")), None));
-        assert_eq!(finish(&mut c), (None, done(3, &["OSC 52"])));
+        assert_eq!(finish(&mut c), (None, Some(done(3, &["OSC 52"]))));
     }
 
     /// No tool outside tmux: OSC 52 alone, at once.
@@ -402,7 +404,7 @@ mod tests {
         let mut c = Clipboard::with_commands(Vec::new(), true, "Shift");
         assert_eq!(
             c.start("hi".to_owned()),
-            (Some(osc52("hi")), done(2, &["OSC 52"]))
+            (Some(osc52("hi")), Some(done(2, &["OSC 52"])))
         );
         assert!(!c.pending());
     }
@@ -413,18 +415,25 @@ mod tests {
     fn inside_tmux_osc52_is_only_the_fall_through() {
         let mut c = Clipboard::with_commands(vec![fail(), ok()], false, "Shift");
         assert_eq!(c.start("abc".to_owned()), (None, None));
-        assert_eq!(finish(&mut c), (None, done(3, &["sh"])), "one took it");
+        assert_eq!(
+            finish(&mut c),
+            (None, Some(done(3, &["sh"]))),
+            "one took it"
+        );
         let mut c = Clipboard::with_commands(vec![ok(), ok()], false, "Shift");
         c.start("abc".to_owned());
         assert_eq!(
             finish(&mut c),
-            (None, done(3, &["sh", "sh"])),
+            (None, Some(done(3, &["sh", "sh"]))),
             "both took it"
         );
         let mut c =
             Clipboard::with_commands(vec![fail(), argv(&["no-such-tool-iota"])], false, "Shift");
         assert_eq!(c.start("abc".to_owned()), (None, None));
-        assert_eq!(finish(&mut c), (Some(osc52("abc")), done(3, &["OSC 52"])));
+        assert_eq!(
+            finish(&mut c),
+            (Some(osc52("abc")), Some(done(3, &["OSC 52"])))
+        );
     }
 
     /// A text too long for OSC 52 is never sent as one; a tool may still take it, and then the
@@ -438,7 +447,7 @@ mod tests {
         );
         let mut c = Clipboard::with_commands(vec![ok()], true, "Shift");
         assert_eq!(c.start(big()), (None, None));
-        assert_eq!(finish(&mut c), (None, done(OSC52_MAX, &["sh"])));
+        assert_eq!(finish(&mut c), (None, Some(done(OSC52_MAX, &["sh"]))));
         let mut c = Clipboard::with_commands(vec![fail()], true, "Shift");
         c.start(big());
         let too = Some(Copied::TooLarge { chars: OSC52_MAX });
