@@ -14,7 +14,8 @@
 //!
 //! A drag held at the viewport's top row or below its last one scrolls every [`EDGE_STEP`] (one
 //! line at the top; below the viewport 1, 3, 5 … lines with the distance), so a selection crosses
-//! screens without the pointer moving — for hundreds of screens, `Ctrl+O` and the terminal's own
+//! screens without the pointer moving. Only a drag does: a press that has not moved yet is a click,
+//! and the view stays put under it however long it is held — for hundreds of screens, `Ctrl+O` and the terminal's own
 //! selection are the faster way. A key, the window losing focus or a resize ends a drag whose
 //! release never came. Where a terminal delivers no reports (iTerm2 with reporting off in its
 //! profile, `tmux -CC`), nothing here runs and the keyboard does everything it did before; a tmux
@@ -49,6 +50,9 @@ pub(crate) struct MouseState {
     last_press: Option<(u16, u16, Instant, u8)>,
     /// The pointer while the left button is held down on the conversation.
     pub(crate) held: Option<(u16, u16)>,
+    /// Whether the pointer has moved since the press (a Drag report came): only then does a
+    /// button held at the viewport's edge scroll it.
+    pub(crate) moved: bool,
     /// When a held drag last scrolled at the viewport's edge.
     pub(crate) last_step: Option<Instant>,
     /// Whether a selection may be on the screen (a key then drops it).
@@ -158,6 +162,7 @@ pub(crate) fn update_mouse(m: &mut Model, ev: MouseEvent) {
             press(m, at, col);
             if at == Target::View {
                 m.mouse.held = Some((col, row));
+                m.mouse.moved = false;
                 m.mouse.last_step = None;
                 m.mouse.selected = true;
                 m.view_ops
@@ -167,6 +172,7 @@ pub(crate) fn update_mouse(m: &mut Model, ev: MouseEvent) {
         MouseEventKind::Drag(MouseButton::Left) => {
             if m.mouse.held.is_some() {
                 m.mouse.held = Some((col, row));
+                m.mouse.moved = true;
                 if !at_edge(row, m.vis_h) || m.mouse.last_step.is_none() {
                     m.mouse.last_step = at_edge(row, m.vis_h).then(Instant::now);
                     m.view_ops.push(ViewOp::Select(SelectOp::Drag { col, row }));
@@ -175,6 +181,7 @@ pub(crate) fn update_mouse(m: &mut Model, ev: MouseEvent) {
         }
         MouseEventKind::Up(MouseButton::Left) if m.mouse.held.is_some() => {
             m.mouse.held = None;
+            m.mouse.moved = false;
             m.mouse.last_step = None;
             m.view_ops.push(ViewOp::Select(SelectOp::Release));
         }
@@ -226,6 +233,7 @@ pub(crate) fn end_drag(m: &mut Model, op: SelectOp) -> bool {
     if m.mouse.held.take().is_none() {
         return false;
     }
+    m.mouse.moved = false;
     m.mouse.last_step = None;
     if op == SelectOp::Clear {
         m.mouse.selected = false;
@@ -235,12 +243,12 @@ pub(crate) fn end_drag(m: &mut Model, op: SelectOp) -> bool {
 }
 
 /// The loop's edge step: a drag held at the viewport's edge scrolls another line when
-/// [`EDGE_STEP`] has passed since the last.
+/// [`EDGE_STEP`] has passed since the last. A press that has not moved yet is no drag.
 pub(crate) fn tick_edge(m: &mut Model, now: Instant) {
     let Some((col, row)) = m.mouse.held else {
         return;
     };
-    if !at_edge(row, m.vis_h) {
+    if !m.mouse.moved || !at_edge(row, m.vis_h) {
         return;
     }
     if m.mouse
@@ -254,10 +262,11 @@ pub(crate) fn tick_edge(m: &mut Model, now: Instant) {
     m.dirty = true;
 }
 
-/// When the edge step is next due, while a drag is held at the edge.
+/// When the edge step is next due, while a drag (not a press that has not moved) is held at the
+/// edge.
 pub(crate) fn edge_due(m: &Model, now: Instant) -> Option<Duration> {
     let (_, row) = m.mouse.held?;
-    at_edge(row, m.vis_h).then(|| {
+    (m.mouse.moved && at_edge(row, m.vis_h)).then(|| {
         m.mouse.last_step.map_or(Duration::ZERO, |at| {
             EDGE_STEP.saturating_sub(now.saturating_duration_since(at))
         })

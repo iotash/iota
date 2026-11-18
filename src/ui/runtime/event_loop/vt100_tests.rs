@@ -1308,14 +1308,12 @@ fn a_drag_through_the_loop_copies_and_the_status_row_says_so() {
         })
     };
     let rows_shown = parse(&h.buf).screen().contents();
-    // One row below the conversation's first: a button held on the viewport's top row is a drag at
-    // its edge, which scrolls the view a line on the first loop iteration that runs before the next
-    // report (`mouse::tick_edge`) — and whether one does is the scheduler's call, not the test's.
+    // The conversation's first row, the viewport's top edge: a press there that has not moved is a
+    // click, so no loop iteration between it and the drag scrolls the view (`mouse::tick_edge`).
     let top = rows_shown
         .lines()
         .position(|l| l.starts_with("row-"))
-        .unwrap()
-        + 1;
+        .unwrap();
     let top = u16::try_from(top).unwrap();
     h.etx
         .send(at(MouseEventKind::Down(MouseButton::Left), top))

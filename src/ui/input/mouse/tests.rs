@@ -225,6 +225,59 @@ fn a_drag_held_at_the_edge_keeps_scrolling() {
     );
 }
 
+/// A press held on the top row without moving is a click: over any number of loop iterations the
+/// view stays put and the selection is only the press. The first Drag report arms the edge step,
+/// which then keeps its cadence for the rest of the drag.
+#[test]
+fn a_press_held_at_the_edge_scrolls_only_once_it_moves() {
+    let mut m = test_model();
+    laid_out(&mut m);
+    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 1, 0));
+    let pressed = vec![ViewOp::Select(SelectOp::Press {
+        col: 1,
+        row: 0,
+        clicks: 1,
+    })];
+    assert_eq!(m.view_ops, pressed);
+    let t = Instant::now();
+    for i in 0..10 {
+        assert_eq!(
+            edge_due(&m, t + EDGE_STEP * i),
+            None,
+            "the loop is not woken"
+        );
+        tick_edge(&mut m, t + EDGE_STEP * i);
+    }
+    assert_eq!(
+        m.view_ops, pressed,
+        "no step, no drag: the view did not move"
+    );
+    m.view_ops.clear();
+    m.handle_event(ev(MouseEventKind::Drag(MouseButton::Left), 2, 0));
+    assert_eq!(
+        m.view_ops,
+        vec![ViewOp::Select(SelectOp::Drag { col: 2, row: 0 })],
+        "the drag steps at once"
+    );
+    m.view_ops.clear();
+    let t = Instant::now();
+    assert!(edge_due(&m, t).is_some(), "armed");
+    tick_edge(&mut m, t + EDGE_STEP);
+    tick_edge(&mut m, t + EDGE_STEP * 2);
+    assert_eq!(
+        m.view_ops,
+        vec![ViewOp::Select(SelectOp::Drag { col: 2, row: 0 }); 2],
+        "and keeps the cadence while held"
+    );
+    m.handle_event(ev(MouseEventKind::Up(MouseButton::Left), 2, 0));
+    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 2, 0));
+    assert_eq!(
+        edge_due(&m, t + EDGE_STEP * 3),
+        None,
+        "a release disarms it: the next press starts unmoved"
+    );
+}
+
 /// The search line, clicked while an applied query is walked, takes the keys again; the way-back
 /// row returns to the tail.
 #[test]
