@@ -264,8 +264,9 @@ parses them). The GUI terminals are not drivable from the test runner: tick thes
 - [ ] **4c.8** Drag past the window's edge and release OUTSIDE the window (or Cmd+Tab away
       mid-drag): the edge scroll stops at the next key, when the window loses focus, or at once if
       the terminal reports the release.
-- [ ] **4c.9** herdr with a real mouse: the wheel, a drag, a click — and whether a copy over SSH
-      reaches your local clipboard (OSC 52 through herdr).
+- [ ] **4c.9** herdr with a real mouse: the wheel, a drag, a click — and whether a copy reaches
+      your local clipboard (OSC 52 through herdr) both over SSH and in a herdr-core (`hc`) terminal
+      attached from another machine, where the row should read `(pbcopy + OSC 52)`.
 - [ ] **4c.10** At the tail, drag down past the conversation's last row, into the frame and below
       it: every viewport row stays as it was (the edge scroll has nowhere further to go), and
       scrolled back first, the view scrolls down to the tail and stops there.
