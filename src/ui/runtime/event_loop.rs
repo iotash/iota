@@ -550,16 +550,6 @@ impl Model {
         }
     }
 
-    /// The background question's timers (`requery.rs`): the reply deadline, and
-    /// keys that were held as a possible reply and are the user's after all.
-    pub(crate) fn tick_requery(&mut self) {
-        let now = Instant::now();
-        for ev in self.requery.stale(now) {
-            self.dispatch_event(ev);
-        }
-        self.requery.tick(now);
-    }
-
     /// One generation-guarded surface refresh when due (tabbed.go surfTickMsg).
     fn tick_surface_refresh(&mut self) {
         let live = self.surface_gen;
@@ -624,7 +614,7 @@ impl Model {
             }
             // Nothing to draw: the query is written by this iteration, the answer is an event.
             UiMsg::RequeryBackground(reply) => self.requery.ask(reply),
-            UiMsg::BackgroundFromHost => self.requery.leave_to_host(Instant::now()),
+            UiMsg::BackgroundFromHost => self.requery.leave_to_host(),
             #[cfg(unix)]
             UiMsg::Suspend => {
                 self.suspend = true;
@@ -763,8 +753,8 @@ impl Model {
     /// here too, as the keys crossterm makes of it (`requery.rs`): it is taken out first, and a flip
     /// is ONE ordinary dirty frame — the shades are read at draw time, so nothing is cleared.
     pub(crate) fn handle_event(&mut self, ev: Event) {
-        let fed = self.requery.feed(ev);
-        for ev in fed.pass {
+        let fed = self.requery.feed(ev, Instant::now());
+        if let Some(ev) = fed.pass {
             self.dispatch_event(ev);
         }
         if let Some(reply) = fed.reply
@@ -1236,7 +1226,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         m.tick_jobs();
         m.tick_surface_refresh();
         m.tick_mouse();
-        m.tick_requery();
+        m.requery.tick(Instant::now());
         // The background question, when one is due: written here, read nowhere — its answer is an
         // event of a later iteration.
         if !resizing && m.requery.take_query(Instant::now()) {

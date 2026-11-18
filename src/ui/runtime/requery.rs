@@ -8,21 +8,21 @@
 //!
 //! crossterm 0.29 has no event for an OSC reply. It parses `ESC ] 1 1 ; rgb:… BEL` as the keys
 //! those bytes would be: `Alt+]`, then one character key a byte, then `Ctrl+G` (or `Alt+\` for an
-//! ST terminator). [`ReplyMatcher`] recognizes exactly that run and takes it out of the stream;
-//! every other event passes through in the order it came, which is the whole input-safety
-//! argument: no byte is read anywhere but in crossterm, so there is no second reader to take a
-//! key, and the only events withheld are the reply's own.
+//! ST terminator). [`ReplyMatcher`] swallows that run while a reply is expected; every other
+//! event passes through in the order it came, which is the whole input-safety argument: no byte
+//! is read anywhere but in crossterm, so there is no second reader to take a key. What it costs:
+//! an `Alt+]` typed while a reply is expected (that chord has no binding), and the keys right
+//! after it that could belong to a reply, are dropped.
 //!
 //! One residual risk is accepted: a reply whose first byte, `ESC`, is the last byte of a read
 //! reaches the loop as a lone `Esc` key and then `]11;rgb:…` as typing. The matcher never
-//! withholds a lone `Esc` — it is the user's cancel key, and delaying it would be the worse fault
-//! — so that `Esc` cancels whatever is innermost and the rest lands in the composer. It needs a
-//! terminal (or a transport) that cuts the reply exactly after its first byte.
+//! swallows a lone `Esc` — it is the user's cancel key — so that `Esc` cancels whatever is
+//! innermost and the rest lands in the composer. It needs a terminal (or a transport) that cuts
+//! the reply exactly after its first byte.
 //!
 //! [`Requery`] is the policy around it: when to ask (when the window regains focus, and when the
-//! REPL asks, between turns), how long to wait, that a
-//! terminal which does not answer is never asked again, and that one whose host answers for it is
-//! never asked at all.
+//! REPL asks, between turns), how long to wait, that a terminal which does not answer is never
+//! asked again, and that one whose host answers for it is never asked at all.
 
 use std::time::{Duration, Instant};
 
@@ -31,9 +31,8 @@ use tokio::sync::oneshot;
 
 use super::osc;
 
-/// How long after a miss a late reply is still looked for. Within it the reply is removed instead
-/// of typed; past it the matcher stands down, so a terminal that never answers costs a real
-/// `Alt+]` nothing for the rest of the session.
+/// How long after a miss a late reply is still looked for: within it the reply is swallowed
+/// instead of typed; past it nothing is matched for the rest of the session.
 pub(crate) const MISS_GRACE: Duration = Duration::from_secs(1);
 
 /// How a reply begins, as bytes: `ESC ] 1 1 ;`.
@@ -46,9 +45,8 @@ const MAX_REPLY: usize = 64;
 /// What [`ReplyMatcher::feed`] made of one event.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Fed {
-    /// Events to handle now, oldest first: the event itself, or keys that were held as a possible
-    /// reply start and turned out not to be one.
-    pub(crate) pass: Vec<Event>,
+    /// The event, when it is to be handled; `None` when it was swallowed as part of a reply.
+    pub(crate) pass: Option<Event>,
     /// A whole reply was taken out of the stream.
     pub(crate) reply: Option<Reply>,
 }
@@ -77,21 +75,15 @@ impl Reply {
 
 /// Finds the OSC 11 reply among the key events crossterm makes of it (the module doc).
 ///
-/// Idle until [`Self::expect`]: a session that never asks is never matched against. From then on
-/// it stays armed until a reply has been taken or [`Requery`] stands it down — which it does
-/// [`MISS_GRACE`] after a miss, so an answer that comes a little late is still removed instead of
-/// being typed into the composer, and a terminal that never answers is not matched against for
-/// the rest of the session.
+/// Armed by [`Self::expect`] until one instant — the question's deadline plus [`MISS_GRACE`] —
+/// or until a reply has been taken: a session that never asks, or whose terminal never answers,
+/// is not matched against outside that window.
 #[derive(Debug, Default)]
 pub(crate) struct ReplyMatcher {
-    /// Whether a query is out and its reply has not been seen.
-    expecting: bool,
-    /// The events held as a reply in the making.
-    held: Vec<Event>,
-    /// The bytes those events stand for.
+    /// Until when a reply is looked for.
+    until: Option<Instant>,
+    /// The bytes of the keys swallowed so far as the reply.
     bytes: Vec<u8>,
-    /// When the first of them arrived.
-    since: Option<Instant>,
 }
 
 /// The bytes a key event stands for, when it can be part of a reply: a character, `ESC` + a
@@ -128,129 +120,91 @@ fn in_colour(b: u8) -> bool {
     b.is_ascii_hexdigit() || matches!(b, b'r' | b'g' | b':' | b'/')
 }
 
+/// Whether `bytes` can begin a reply. A lone `ESC` cannot: it is the user's `Esc` far more often
+/// than half a split reply.
+fn starts(bytes: &[u8]) -> bool {
+    bytes != [0x1b] && PREFIX.starts_with(bytes)
+}
+
 impl ReplyMatcher {
-    /// A query went out: its reply is to be taken from the stream.
-    pub(crate) fn expect(&mut self) {
-        self.expecting = true;
-    }
-
-    /// Stops looking for a reply, once nothing is held: `false` while a run is still held (its
-    /// fate is [`Self::stale`]'s to decide first).
-    fn stand_down(&mut self) -> bool {
-        if self.since.is_some() {
-            return false;
-        }
-        self.expecting = false;
-        true
-    }
-
-    /// Whether the held events are inside a reply (the prefix matched), not just a possible start.
-    fn in_reply(&self) -> bool {
-        self.bytes.len() >= PREFIX.len()
-    }
-
-    /// Gives up on the held events: a possible start goes back into the stream, the fragment of a
-    /// reply is dropped (after `ESC ] 1 1 ;` it is nobody's typing).
-    fn give_up(&mut self, pass: &mut Vec<Event>) {
-        if self.in_reply() {
-            self.held.clear();
-        } else {
-            pass.append(&mut self.held);
-        }
+    /// A query went out: its reply is to be taken from the stream until `until`.
+    pub(crate) fn expect(&mut self, until: Instant) {
+        self.until = Some(until);
         self.bytes.clear();
-        self.since = None;
     }
 
     /// The reply is whole: its colour, and the matcher idle again.
     fn complete(&mut self) -> Reply {
         let reply = osc::parse_osc11_dark(&self.bytes)
             .map_or(Reply::Unreadable, |dark| Reply::Tone { dark });
-        self.held.clear();
         self.bytes.clear();
-        self.since = None;
-        self.expecting = false;
+        self.until = None;
         reply
     }
 
-    /// Holds `ev` as the next piece of a reply.
-    fn hold(&mut self, ev: Event, bytes: &[u8]) {
-        self.since.get_or_insert_with(Instant::now);
-        self.held.push(ev);
-        self.bytes.extend_from_slice(bytes);
-    }
-
-    /// One event from the terminal: passed on, held, or the end of a reply.
-    pub(crate) fn feed(&mut self, ev: Event) -> Fed {
-        let mut fed = Fed::default();
-        if !self.expecting {
-            fed.pass.push(ev);
-            return fed;
+    /// One event from the terminal at `now`: passed on, swallowed, or the end of a reply.
+    pub(crate) fn feed(&mut self, ev: Event, now: Instant) -> Fed {
+        if self.until.is_none_or(|at| now > at) {
+            self.until = None;
+            self.bytes.clear();
+            return Fed {
+                pass: Some(ev),
+                reply: None,
+            };
         }
+        // A resize, a mouse report, a paste or a focus change is no part of a reply and breaks
+        // none: the reply's keys are one run of the terminal's bytes, and a resize is a signal
+        // that may land between two reads of it.
         if !matches!(ev, Event::Key(_)) {
-            // A resize, a mouse report, a paste or a focus change is no part of a reply. Inside
-            // one it passes and breaks nothing (the reply's keys are one run of the terminal's
-            // bytes; a resize is a signal that may land between two reads of it). Behind a mere
-            // possible start it ends the wait: the held keys go first, so the order stands.
-            if !self.in_reply() {
-                self.give_up(&mut fed.pass);
+            return Fed {
+                pass: Some(ev),
+                reply: None,
+            };
+        }
+        let b = bytes_of(&ev);
+        if self.bytes.len() >= PREFIX.len() {
+            // A lone ESC was swallowed as the first half of an ST; whatever follows ends the
+            // reply, and anything but the `\` is the user's.
+            if self.bytes.last() == Some(&0x1b) {
+                let st = b.as_deref() == Some(b"\\");
+                return Fed {
+                    pass: (!st).then_some(ev),
+                    reply: Some(self.complete()),
+                };
             }
-            fed.pass.push(ev);
-            return fed;
-        }
-        let Some(b) = bytes_of(&ev) else {
-            self.give_up(&mut fed.pass);
-            fed.pass.push(ev);
-            return fed;
-        };
-        if self.in_reply() {
-            // A lone ESC is held as the first half of an ST; whatever follows ends the reply.
-            let esc_pending = self.bytes.last() == Some(&0x1b);
-            if esc_pending && b != b"\\" {
-                fed.reply = Some(self.complete());
-                fed.pass.push(ev);
-            } else if esc_pending || b == [0x07] || b == b"\x1b\\" {
-                fed.reply = Some(self.complete());
-            } else if (b == [0x1b] || (b.len() == 1 && in_colour(b[0])))
-                && self.bytes.len() < PREFIX.len() + MAX_REPLY
-            {
-                self.hold(ev, &b);
-            } else {
-                self.give_up(&mut fed.pass);
-                fed.pass.push(ev);
+            match b.as_deref() {
+                Some([0x07] | [0x1b, b'\\']) => {
+                    return Fed {
+                        pass: None,
+                        reply: Some(self.complete()),
+                    };
+                }
+                Some([c])
+                    if (*c == 0x1b || in_colour(*c))
+                        && self.bytes.len() < PREFIX.len() + MAX_REPLY =>
+                {
+                    self.bytes.push(*c);
+                    return Fed::default();
+                }
+                _ => {}
             }
-            return fed;
+        } else if let Some(b) = b {
+            // The start: `Alt+]` as ONE event, then `1`, `1`, `;`. A key that does not continue a
+            // start may begin one.
+            if !starts(&[&self.bytes[..], &b].concat()) {
+                self.bytes.clear();
+            }
+            if starts(&[&self.bytes[..], &b].concat()) {
+                self.bytes.extend_from_slice(&b);
+                return Fed::default();
+            }
         }
-        // The start: `Alt+]` as ONE event, then `1`, `1`, `;`. A lone ESC key is never held as a
-        // start — it is the user's Esc far more often than half a split reply.
-        let fits = |held: &[u8], b: &[u8]| {
-            let all = [held, b].concat();
-            all != [0x1b] && PREFIX.starts_with(&all)
-        };
-        if fits(&self.bytes, &b) {
-            self.hold(ev, &b);
-            return fed;
+        // A key that cannot belong to a reply ends the run, and is the user's.
+        self.bytes.clear();
+        Fed {
+            pass: Some(ev),
+            reply: None,
         }
-        self.give_up(&mut fed.pass);
-        if fits(&[], &b) {
-            self.hold(ev, &b);
-        } else {
-            fed.pass.push(ev);
-        }
-        fed
-    }
-
-    /// When held events have waited [`osc::REPLY_TIMEOUT`] the rest is not coming: a possible
-    /// start is handed back (a real `Alt+]` is delayed by that much, once a query is out), a
-    /// reply's fragment is dropped.
-    pub(crate) fn stale(&mut self, now: Instant) -> Vec<Event> {
-        let mut pass = Vec::new();
-        if self
-            .since
-            .is_some_and(|at| now.saturating_duration_since(at) >= osc::REPLY_TIMEOUT)
-        {
-            self.give_up(&mut pass);
-        }
-        pass
     }
 }
 
@@ -264,8 +218,6 @@ pub(crate) struct Requery {
     sent: Option<Instant>,
     /// A question to write this iteration.
     wanted: bool,
-    /// After a miss: when the matcher stops looking for the late reply ([`MISS_GRACE`]).
-    stand_down: Option<Instant>,
     /// The REPL's callers waiting for the answer.
     waiters: Vec<oneshot::Sender<Option<bool>>>,
 }
@@ -279,7 +231,6 @@ impl Default for Requery {
             off: !cfg!(unix),
             sent: None,
             wanted: false,
-            stand_down: None,
             waiters: Vec::new(),
         }
     }
@@ -302,28 +253,20 @@ impl Requery {
         self.wanted = self.sent.is_none();
     }
 
-    /// The timers: a question out for [`osc::REPLY_TIMEOUT`] is a miss, and [`MISS_GRACE`] after a
-    /// miss the matcher stands down.
+    /// The reply deadline: a question out for [`osc::REPLY_TIMEOUT`] is a miss.
     pub(crate) fn tick(&mut self, now: Instant) {
         if self
             .sent
             .is_some_and(|at| now.saturating_duration_since(at) >= osc::REPLY_TIMEOUT)
         {
             self.miss();
-            self.stand_down = Some(now + MISS_GRACE);
-        }
-        if self.stand_down.is_some_and(|at| now >= at) && self.matcher.stand_down() {
-            self.stand_down = None;
         }
     }
 
     /// A host answers for the background (cmux, asked by the REPL before every turn): the
     /// terminal is not asked at all, so the two can never disagree on screen — a focus check
     /// flipping the frame one way and the next turn flipping it back.
-    pub(crate) fn leave_to_host(&mut self, now: Instant) {
-        if self.sent.is_some() {
-            self.stand_down = Some(now + MISS_GRACE);
-        }
+    pub(crate) fn leave_to_host(&mut self) {
         self.miss();
     }
 
@@ -333,18 +276,13 @@ impl Requery {
             return false;
         }
         self.sent = Some(now);
-        self.matcher.expect();
+        self.matcher.expect(now + osc::REPLY_TIMEOUT + MISS_GRACE);
         true
     }
 
     /// One event from the terminal ([`ReplyMatcher::feed`]).
-    pub(crate) fn feed(&mut self, ev: Event) -> Fed {
-        self.matcher.feed(ev)
-    }
-
-    /// Held events that are no reply after all ([`ReplyMatcher::stale`]).
-    pub(crate) fn stale(&mut self, now: Instant) -> Vec<Event> {
-        self.matcher.stale(now)
+    pub(crate) fn feed(&mut self, ev: Event, now: Instant) -> Fed {
+        self.matcher.feed(ev, now)
     }
 
     /// A reply was taken from the stream: the tone to adopt, when it is one. A reply that comes
@@ -375,20 +313,11 @@ impl Requery {
         }
     }
 
-    /// How long until [`Self::tick`] or [`Self::stale`] has something to do, when either does. The
-    /// stand-down waits for held events to be released ([`ReplyMatcher::stand_down`]), so while
-    /// any are held it is their release that is waited for, not a stand-down already due.
+    /// How long until [`Self::tick`] has something to do: the reply deadline, while a question is
+    /// out.
     pub(crate) fn next_wake(&self, now: Instant) -> Option<Duration> {
-        let after = |at: Instant| (at + osc::REPLY_TIMEOUT).saturating_duration_since(now);
-        let stand_down = self.stand_down.filter(|_| self.matcher.since.is_none());
-        [
-            stand_down.map(|at| at.saturating_duration_since(now)),
-            self.sent.map(after),
-            self.matcher.since.map(after),
-        ]
-        .into_iter()
-        .flatten()
-        .min()
+        self.sent
+            .map(|at| (at + osc::REPLY_TIMEOUT).saturating_duration_since(now))
     }
 }
 
@@ -396,11 +325,11 @@ impl Requery {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::{Fed, MISS_GRACE, Reply, ReplyMatcher, Requery};
+    use super::{MISS_GRACE, Reply, ReplyMatcher, Requery};
     use crate::ui::runtime::osc::REPLY_TIMEOUT;
     use crate::ui::testutil::reply_events;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
     use tokio::sync::oneshot;
 
     fn key(c: char) -> Event {
@@ -411,11 +340,18 @@ mod tests {
         Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT))
     }
 
+    /// A matcher expecting a reply for the next minute.
+    fn expecting() -> ReplyMatcher {
+        let mut m = ReplyMatcher::default();
+        m.expect(Instant::now() + Duration::from_secs(60));
+        m
+    }
+
     /// Feeds `events` and returns everything passed on and every reply taken.
     fn run(m: &mut ReplyMatcher, events: Vec<Event>) -> (Vec<Event>, Vec<Option<bool>>) {
         let (mut pass, mut replies) = (Vec::new(), Vec::new());
         for ev in events {
-            let fed = m.feed(ev);
+            let fed = m.feed(ev, Instant::now());
             pass.extend(fed.pass);
             replies.extend(fed.reply.map(Reply::dark));
         }
@@ -443,8 +379,7 @@ mod tests {
             ("rgb:ff/ff/ff", "\x1b\\", Some(false)),
             ("", "\x07", None),
         ] {
-            let mut m = ReplyMatcher::default();
-            m.expect();
+            let mut m = expecting();
             let mut events = vec![key('h'), key('i')];
             events.extend(reply_events(colour, end));
             events.push(key('!'));
@@ -452,7 +387,7 @@ mod tests {
             assert_eq!(pass, [key('h'), key('i'), key('!')], "{colour}");
             assert_eq!(replies, [want], "{colour}");
             // One question, one reply: the next such run is typing again.
-            assert_eq!(m.feed(alt(']')).pass, [alt(']')]);
+            assert_eq!(m.feed(alt(']'), Instant::now()).pass, Some(alt(']')));
         }
     }
 
@@ -464,8 +399,7 @@ mod tests {
         let mut body = reply_events("rgb:0000/0000/0000", "");
         body.push(esc.clone());
         for (last, passed) in [(key('\\'), vec![]), (key('x'), vec![key('x')])] {
-            let mut m = ReplyMatcher::default();
-            m.expect();
+            let mut m = expecting();
             let mut events = body.clone();
             events.push(last);
             let (pass, replies) = run(&mut m, events);
@@ -474,53 +408,21 @@ mod tests {
         }
     }
 
-    /// Keys that only begin like a reply are the user's: all of them come back, in order, as soon
-    /// as one does not fit — and a lone `Esc` is never held at all.
+    /// A run that only begins like a reply is swallowed up to the first key that cannot belong,
+    /// which passes; a lone `Esc` is never swallowed, and an event that is no key passes without
+    /// breaking a reply.
     #[test]
-    fn a_false_start_is_handed_back_in_order() {
+    fn a_false_start_is_swallowed_up_to_the_key_that_cannot_belong() {
         let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        let mut m = ReplyMatcher::default();
-        m.expect();
-        assert_eq!(m.feed(esc.clone()).pass, [esc]);
-        assert_eq!(m.feed(alt(']')), Fed::default());
-        assert_eq!(m.feed(key('1')), Fed::default());
-        assert_eq!(m.feed(key('z')).pass, [alt(']'), key('1'), key('z')]);
-        // A start right behind a false start is still a start.
-        assert_eq!(m.feed(alt(']')), Fed::default());
-        let (pass, replies) = run(&mut m, reply_events("rgb:ffff/ffff/ffff", "\x07"));
-        assert_eq!(pass, [alt(']')]);
-        assert_eq!(replies, [Some(false)]);
-    }
-
-    /// A held start whose rest never comes goes back into the stream after the reply deadline; a
-    /// reply's fragment is dropped instead. Other events pass meanwhile and break nothing.
-    #[test]
-    fn stale_holds_are_released() {
-        let mut m = ReplyMatcher::default();
-        m.expect();
-        assert_eq!(m.feed(alt(']')), Fed::default());
-        let now = Instant::now();
-        assert!(m.stale(now).is_empty());
-        assert_eq!(m.stale(now + REPLY_TIMEOUT), [alt(']')]);
-        // Behind a possible start, an event that is no key releases it first: the order stands.
-        assert_eq!(m.feed(alt(']')), Fed::default());
-        let paste = Event::Paste("p".to_owned());
-        assert_eq!(m.feed(paste.clone()).pass, [alt(']'), paste]);
-        // Inside a reply it passes and breaks nothing.
-        let (pass, replies) = run(&mut m, reply_events("rgb:ffff/", ""));
-        assert!(pass.is_empty() && replies.is_empty());
-        assert_eq!(m.feed(Event::FocusLost).pass, [Event::FocusLost]);
-        let (pass, replies) = run(&mut m, reply_events("ffff/ffff", "\x07").split_off(4));
-        assert!(pass.is_empty());
-        assert_eq!(replies, [Some(false)]);
-        m.expect();
-
-        let (pass, replies) = run(&mut m, reply_events("rgb:ffff/ff", ""));
-        assert!(pass.is_empty() && replies.is_empty());
-        assert!(m.stale(Instant::now() + REPLY_TIMEOUT).is_empty());
-        // The fragment is gone, and the matcher still waits for a whole reply.
-        let (pass, replies) = run(&mut m, reply_events("rgb:ffff/ffff/ffff", "\x07"));
-        assert!(pass.is_empty());
+        let mut m = expecting();
+        let (pass, _) = run(&mut m, vec![esc.clone(), alt(']'), key('1'), key('z')]);
+        assert_eq!(pass, [esc, key('z')]);
+        // A start right behind a false start is still a start, and a paste inside it passes.
+        let mut events = vec![alt(']'), alt(']')];
+        events.extend(reply_events("rgb:ffff/ffff/ffff", "\x07").split_off(1));
+        events.insert(8, Event::Paste("p".to_owned()));
+        let (pass, replies) = run(&mut m, events);
+        assert_eq!(pass, [Event::Paste("p".to_owned())]);
         assert_eq!(replies, [Some(false)]);
     }
 
@@ -537,71 +439,44 @@ mod tests {
         assert!(rx.try_recv().is_err(), "still waiting");
         r.tick(t0 + REPLY_TIMEOUT);
         assert_eq!(rx.try_recv().unwrap(), None);
+        assert_eq!(r.next_wake(t0), None, "nothing left to wake for");
 
         let (tx, mut rx) = oneshot::channel();
         r.ask(tx);
         assert_eq!(rx.try_recv().unwrap(), None);
         r.focus_gained();
-        r.tick(t0 + REPLY_TIMEOUT * 2);
         assert!(!r.take_query(t0));
         assert_eq!(r.answer(Reply::Tone { dark: false }), None);
     }
 
     /// After a miss the reply is still looked for, for [`MISS_GRACE`]: one that comes late is
-    /// taken out of the stream (and ignored). Past the grace the matcher stands down — the same
-    /// keys are the user's again, and nothing is left to wake the loop for.
+    /// taken out of the stream (and ignored). Past the grace the same keys are the user's again.
     #[test]
     fn a_late_reply_is_removed_within_the_grace_and_typing_after_it() {
         let reply = || reply_events("rgb:ffff/ffff/ffff", "\x07");
-        let miss = |r: &mut Requery, t0: Instant| {
+        let t0 = Instant::now();
+        let missed = t0 + REPLY_TIMEOUT;
+        for (at, typed) in [
+            (missed + MISS_GRACE, false),
+            (missed + MISS_GRACE * 2, true),
+        ] {
+            let mut r = Requery::default();
             r.focus_gained();
             assert!(r.take_query(t0));
-            let missed = t0 + REPLY_TIMEOUT;
             r.tick(missed);
-            missed
-        };
-        let t0 = Instant::now();
-
-        let mut r = Requery::default();
-        let missed = miss(&mut r, t0);
-        r.tick(missed + MISS_GRACE / 2);
-        let mut taken = None;
-        for ev in reply() {
-            let fed = r.feed(ev);
-            assert!(fed.pass.is_empty(), "the late reply was typed");
-            taken = taken.or(fed.reply);
+            let (mut passed, mut taken) = (Vec::new(), None);
+            for ev in reply() {
+                let fed = r.feed(ev, at);
+                passed.extend(fed.pass);
+                taken = taken.or(fed.reply);
+            }
+            if typed {
+                assert_eq!(passed, reply(), "past the grace the keys are the user's");
+            } else {
+                assert!(passed.is_empty(), "the late reply was typed");
+                assert_eq!(r.answer(taken.unwrap()), None, "and it is not obeyed");
+            }
         }
-        assert_eq!(r.answer(taken.unwrap()), None, "and it is not obeyed");
-
-        let mut r = Requery::default();
-        let missed = miss(&mut r, t0);
-        r.tick(missed + MISS_GRACE);
-        assert_eq!(r.next_wake(missed + MISS_GRACE), None);
-        let events = reply();
-        let passed: Vec<Event> = events.iter().flat_map(|e| r.feed(e.clone()).pass).collect();
-        assert_eq!(passed, events, "past the grace the keys are the user's");
-    }
-
-    /// A stand-down that falls due while the matcher holds a possible start waits for the start to
-    /// be released: the loop is woken then, not at once and again every millisecond until then.
-    #[test]
-    fn a_stand_down_behind_a_held_start_wakes_at_the_release() {
-        let now = Instant::now();
-        let t0 = now.checked_sub(REPLY_TIMEOUT + MISS_GRACE).unwrap();
-        let mut r = Requery::default();
-        r.focus_gained();
-        assert!(r.take_query(t0));
-        r.tick(t0 + REPLY_TIMEOUT); // the miss; the grace ends at `now`
-        assert_eq!(r.feed(alt(']')), Fed::default(), "held from here on");
-        r.tick(now);
-        let wake = r.next_wake(now).unwrap();
-        assert!(wake >= REPLY_TIMEOUT, "woken after {wake:?}");
-
-        let released = Instant::now() + REPLY_TIMEOUT;
-        assert_eq!(r.stale(released), [alt(']')]);
-        assert_eq!(r.next_wake(released), Some(std::time::Duration::ZERO));
-        r.tick(released);
-        assert_eq!(r.next_wake(released), None, "stood down");
     }
 
     /// A host that knows the background takes the question over: focus asks nothing, the REPL's
@@ -610,7 +485,7 @@ mod tests {
     fn a_host_that_knows_ends_the_asking() {
         let t0 = Instant::now();
         let mut r = Requery::default();
-        r.leave_to_host(t0);
+        r.leave_to_host();
         r.focus_gained();
         assert!(!r.take_query(t0));
         let (tx, mut rx) = oneshot::channel();
