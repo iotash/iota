@@ -506,7 +506,7 @@ NO_COLOR=1 target/release/iota          # then the same session with TERM=dumb
 ```
 
 - [x] 自动化：scenario 16 **8c.1 The frame reads.** With `NO_COLOR=1`, the separators are faint, the composer's
-      text (no prompt glyph) is plain, the status row is plain (from column 0), and a committed user block is plain text behind its `▌ ` gutter — the block writes no escape under NO_COLOR (no bar gray, no reverse video: its rows reach the exit's raw write-out, past the colour gate), and the bar's character marks it. Nothing
+      text (no prompt glyph) is plain, the status row is plain (from column 0), and a committed user block is plain text behind its `▌ ` gutter — the block writes no escape under NO_COLOR (no bar colour — neither a typed block's gray nor a host block's teal — no reverse video: its rows reach the exit's raw write-out, past the colour gate), and the bar's character marks it. Nothing
       is invisible and no row is painted in a color.
 - [x] 自动化：scenario 16 **8c.2 The chat is bare.** Ask for a markdown reply with a heading, a list, a table and a
       fenced code block: every row is plain text — no bold heading, no faint bullet, no syntax
