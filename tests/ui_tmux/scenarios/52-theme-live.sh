@@ -39,7 +39,6 @@ key Down
 _poll_until 60 _shaded "$DARK" || miss "the list's current row never took the dark shade"
 check "dark: no light shade on screen" "$(shade "$LIGHT")" 0
 before="$(queries)"
-sleep 0.5 # the keyboard has been quiet for longer than KEY_QUIET
 
 focus_in
 if _poll_until 60 _asked "$((before + 1))"; then ok "focus asked the terminal for its background (OSC 11)"; else miss "focus asked nothing"; fi

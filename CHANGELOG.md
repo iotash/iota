@@ -15,6 +15,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   terminal that does not report its background (the Linux console, PuTTY, mosh,
   GNU screen, and any terminal on Windows) keeps the shades it started with,
   and inside herdr 0.9.5 the terminal may still report the old background.
+  Nothing you type is lost to the question, with one exception: an `Alt+]`
+  typed in the instant iota is waiting for the answer (1 s at most, once, on a
+  terminal that never answers) is dropped, with the keys right after it that
+  could be part of an answer. `Alt+]` does nothing in iota.
 
 ### Fixed
 
