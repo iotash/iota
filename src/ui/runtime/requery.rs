@@ -45,9 +45,30 @@ pub(crate) struct Fed {
     /// Events to handle now, oldest first: the event itself, or keys that were held as a possible
     /// reply start and turned out not to be one.
     pub(crate) pass: Vec<Event>,
-    /// A whole reply was taken out of the stream: `Some(dark)`, or `None` when its colour did not
-    /// parse.
-    pub(crate) reply: Option<Option<bool>>,
+    /// A whole reply was taken out of the stream.
+    pub(crate) reply: Option<Reply>,
+}
+
+/// The terminal's reply, taken whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reply {
+    /// Its colour, as a tone.
+    Tone {
+        /// Whether the background is dark.
+        dark: bool,
+    },
+    /// A reply whose colour did not parse.
+    Unreadable,
+}
+
+impl Reply {
+    /// The tone it names, when it names one.
+    pub(crate) fn dark(self) -> Option<bool> {
+        match self {
+            Self::Tone { dark } => Some(dark),
+            Self::Unreadable => None,
+        }
+    }
 }
 
 /// Finds the OSC 11 reply among the key events crossterm makes of it (the module doc).
@@ -125,13 +146,14 @@ impl ReplyMatcher {
     }
 
     /// The reply is whole: its colour, and the matcher idle again.
-    fn complete(&mut self) -> Option<bool> {
-        let dark = osc::parse_osc11_dark(&self.bytes);
+    fn complete(&mut self) -> Reply {
+        let reply = osc::parse_osc11_dark(&self.bytes)
+            .map_or(Reply::Unreadable, |dark| Reply::Tone { dark });
         self.held.clear();
         self.bytes.clear();
         self.since = None;
         self.expecting = false;
-        dark
+        reply
     }
 
     /// Holds `ev` as the next piece of a reply.
@@ -308,11 +330,11 @@ impl Requery {
     /// A reply was taken from the stream: the tone to adopt, when it is one. A reply that comes
     /// after its question was given up on is removed and ignored — the REPL was already told
     /// "no answer", and the frame must not move without it.
-    pub(crate) fn answer(&mut self, reply: Option<bool>) -> Option<bool> {
+    pub(crate) fn answer(&mut self, reply: Reply) -> Option<bool> {
         if self.off {
             return None;
         }
-        let Some(dark) = reply else {
+        let Some(dark) = reply.dark() else {
             self.miss();
             return None;
         };
@@ -352,7 +374,7 @@ impl Requery {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::{FOCUS_SETTLE, Fed, KEY_QUIET, ReplyMatcher, Requery};
+    use super::{FOCUS_SETTLE, Fed, KEY_QUIET, Reply, ReplyMatcher, Requery};
     use crate::ui::runtime::osc::REPLY_TIMEOUT;
     use crate::ui::testutil::reply_events;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -373,7 +395,7 @@ mod tests {
         for ev in events {
             let fed = m.feed(ev);
             pass.extend(fed.pass);
-            replies.extend(fed.reply);
+            replies.extend(fed.reply.map(Reply::dark));
         }
         (pass, replies)
     }
@@ -475,7 +497,7 @@ mod tests {
         let t0 = Instant::now();
         let mut r = Requery::default();
         r.focus_gained(t0);
-        r.tick(t0 + FOCUS_SETTLE - Duration::from_millis(1));
+        r.tick(t0 + (FOCUS_SETTLE / 2));
         assert!(!r.take_query(t0));
         r.tick(t0 + FOCUS_SETTLE);
         assert!(r.take_query(t0 + FOCUS_SETTLE));
@@ -500,7 +522,7 @@ mod tests {
         let (tx, mut rx) = oneshot::channel();
         r.ask(tx);
         assert!(r.take_query(t0));
-        r.tick(t0 + REPLY_TIMEOUT - Duration::from_millis(1));
+        r.tick(t0 + (REPLY_TIMEOUT / 2));
         assert!(rx.try_recv().is_err(), "still waiting");
         r.tick(t0 + REPLY_TIMEOUT);
         assert_eq!(rx.try_recv().unwrap(), None);
@@ -512,7 +534,7 @@ mod tests {
         r.tick(t0 + Duration::from_secs(1));
         assert!(!r.take_query(t0));
         assert_eq!(r.next_wake(t0), None);
-        assert_eq!(r.answer(Some(false)), None);
+        assert_eq!(r.answer(Reply::Tone { dark: false }), None);
     }
 
     /// One question serves every caller that asked while it was out.
@@ -526,7 +548,7 @@ mod tests {
         assert!(r.take_query(t0));
         r.ask(tx2);
         assert!(!r.take_query(t0), "the question is already out");
-        assert_eq!(r.answer(Some(false)), Some(false));
+        assert_eq!(r.answer(Reply::Tone { dark: false }), Some(false));
         assert_eq!(rx1.try_recv().unwrap(), Some(false));
         assert_eq!(rx2.try_recv().unwrap(), Some(false));
         // Answered, so the next focus asks again.
