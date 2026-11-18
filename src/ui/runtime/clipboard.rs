@@ -300,8 +300,8 @@ fn offer(text: &str, mux: Option<Mux>) -> (Option<String>, Osc) {
     }
 }
 
-/// The bytes of one DCS string screen passes on ([`screen_dcs`]): screen 4 keeps a string of up
-/// to 768 bytes; hterm and vim-oscyank cut at 76.
+/// The bytes of one DCS string screen passes on ([`screen_dcs`]), as hterm and vim-oscyank cut
+/// them (screen keeps a string of a bounded length).
 const SCREEN_CHUNK: usize = 76;
 
 /// `seq` (ASCII) for GNU screen: cut into [`SCREEN_CHUNK`]-byte pieces, each in a DCS string
@@ -638,7 +638,7 @@ mod tests {
     }
 
     /// A tool that hangs settles the copy at [`COPY_DEADLINE`] as one that failed, and is killed:
-    /// outside a multiplexer the sequence alone, inside tmux the fall-through.
+    /// outside tmux the sequence alone, inside it the fall-through.
     #[cfg(unix)]
     #[test]
     fn a_hung_tool_settles_at_the_deadline() {

@@ -28,13 +28,14 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   terminal attached from another machine that did not look like SSH, the text
   went to the remote machine's clipboard and nothing reached yours. Over SSH,
   a remote host with a clipboard tool now has its clipboard written as well.
-  Inside tmux nothing changes, and inside GNU screen — which prints a long
-  OSC 52 on the screen instead of passing it on — the local tool runs and OSC
-  52 is sent only when it fails. The status row now says which way the text
+  Inside tmux nothing changes. Inside GNU screen, which swallows OSC 52 or
+  prints it on the screen, the sequence is wrapped so that screen passes it on
+  to your terminal, over SSH too. The status row now says which way the text
   went — `copied 14 characters (pbcopy + OSC 52)`, or `(OSC 52)`, `(pbcopy)`,
   `(tmux)`. A selection too long for OSC 52 (about 73 KB) goes to the local
   tool alone and the row says so: `(pbcopy; too large for OSC 52)`. A
-  clipboard tool that hangs is given up on after 2 seconds. In iTerm2, whose
+  clipboard tool that hangs is stopped after 2 seconds without holding back
+  the others (inside tmux, its buffer still gets the text). In iTerm2, whose
   clipboard access is off by default, the first copy may ask for permission.
 - **The first key typed is no longer lost on a terminal that answers no
   queries.** The startup check of the terminal's background used to leave a
