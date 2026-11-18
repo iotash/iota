@@ -89,7 +89,7 @@ impl ReplyMatcher {
             matches!(b[..], [c] if c == 0x1b || c.is_ascii_hexdigit() || b"rg:/".contains(&c))
                 && self.bytes.len() < PREFIX.len() + MAX_REPLY
         } else {
-            starts(&[&self.bytes[..], &b].concat())
+            !b.is_empty() && starts(&[&self.bytes[..], &b].concat())
         };
         if !fits {
             // A key that cannot belong ends the run; it may begin another, or it is the user's.
@@ -289,8 +289,12 @@ mod tests {
         let alt = Event::Key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::ALT));
         let t0 = Instant::now();
         let mut r = asked(t0);
-        let events = vec![esc(), alt.clone(), ch('1'), ch('z'), alt.clone(), alt];
+        let events = vec![esc(), alt.clone(), ch('1'), ch('z'), alt.clone()];
         assert_eq!(feed(&mut r, events, t0), (vec![esc(), ch('z')], vec![]));
+        // A key that stands for no byte (Enter here) ends a start too, and is the user's.
+        let enter = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let (pass, _) = feed(&mut r, vec![enter.clone(), alt.clone(), alt], t0);
+        assert_eq!(pass, [enter]);
         let rest = reply_events("rgb:ffff/ffff/ffff", "\x07").split_off(1);
         assert_eq!(feed(&mut r, rest, t0), (vec![], vec![false]));
     }
