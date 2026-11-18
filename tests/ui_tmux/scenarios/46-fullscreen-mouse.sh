@@ -84,6 +84,14 @@ mouse 32 1 1
 _poll_until 300 _vis_has 'l#00 line' || miss "the held drag never scrolled back to l#00"
 mouse 0 1 1 m
 wait_vis 'copied' || miss "the release copied nothing"
+# The row names the ways that ran: the local stub and tmux's buffer; inside tmux no OSC 52 beside them.
+local_tool=wl-copy
+[ "$(uname)" = Darwin ] && local_tool=pbcopy
+if _vis_has "($local_tool + tmux) · "; then
+    ok "the status row names the ways ($local_tool + tmux)"
+else
+    bad "the status row does not name the ways: $(cap | grep -F copied)"
+fi
 _buffer() { tm show-buffer 2>/dev/null; }
 _has_buffer() { _buffer | grep -qF 'l#98 line'; }
 _poll_until 100 _has_buffer || miss "tmux's paste buffer never got the selection"
