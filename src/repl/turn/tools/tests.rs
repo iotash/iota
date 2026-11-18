@@ -2009,6 +2009,10 @@ impl Ui for OrderUi {
         self.inner.set_dark_background(dark);
     }
 
+    fn requery_background(&self) -> BoxFuture<'_, Option<bool>> {
+        self.inner.requery_background()
+    }
+
     fn width(&self) -> u16 {
         self.inner.width()
     }

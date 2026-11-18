@@ -1125,6 +1125,12 @@ pub trait Ui: Send + Sync {
     /// `applyCodeTheme`).
     fn set_dark_background(&self, dark: bool);
 
+    /// Asks the terminal for its background again and resolves with its answer: `Some(dark)`, or
+    /// `None` when it does not answer — and then at once on every later call, a terminal that
+    /// stays silent is asked one time only. The UI loop does the asking, and its own frame has
+    /// already taken the answer when this resolves (X-108).
+    fn requery_background(&self) -> BoxFuture<'_, Option<bool>>;
+
     // ---- cross-thread reads (atomics) ----
 
     /// Terminal width; starts 80.

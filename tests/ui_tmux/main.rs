@@ -740,6 +740,14 @@ fn tmux_xml_tab() {
     run_scenario("51-xml-tab.sh");
 }
 
+/// theme-live (X-108): the background asked again through a real terminal and the real crossterm
+/// reader — focus writes OSC 11, tmux's answer re-shades the current list row when the pane's
+/// background changed, and no character of the reply reaches the composer.
+#[test]
+fn tmux_theme_live() {
+    run_scenario("52-theme-live.sh");
+}
+
 /// M2 (tui-plan §7) — a measurement, not a check: the bytes the tmux iota runs in sends to its own
 /// terminal for typing, a stream and a drag (`measure/m2-bytes.sh`). Runs only with
 /// `IOTA_TMUX_MEASURE=1`; `TMUX_BIN` picks the tmux under test.

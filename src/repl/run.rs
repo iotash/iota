@@ -1031,8 +1031,14 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // host that knows the background tone re-shades the code blocks, the diff shades
         // and the composer; a theme flip never lands inside a streaming block.
         // (chat/theme.go `applyCodeTheme`: the hosts are asked per turn — the cmux RPC child runs
-        // under its own deadline; `None` = no host knows, keep the pre-loop probe's answer.)
-        if let Some(known) = pres.dark_background().await {
+        // under its own deadline; `None` = no host knows.) Then the terminal itself is asked
+        // again, through the UI loop (X-108): the OS may have switched its appearance since the
+        // last turn. A terminal that does not answer keeps the pre-loop probe's answer.
+        let known = match pres.dark_background().await {
+            Some(known) => Some(known),
+            None => ui.requery_background().await,
+        };
+        if let Some(known) = known {
             repl.handles.dark = known;
             repl.handles.tr.set_dark(known);
             ui.set_dark_background(known);

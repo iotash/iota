@@ -251,6 +251,29 @@ impl EventSource for ChannelEvents {
     }
 }
 
+/// The key events crossterm 0.29 makes of the terminal's OSC 11 reply `ESC ] 1 1 ; <colour> <end>`
+/// (`runtime::requery`): `Alt+]`, one character key a byte (an uppercase one with `Shift`), and for
+/// the terminator `Ctrl+G` (`end` = BEL), `Alt+\` (`end` = ST) or nothing (`end` empty).
+pub(crate) fn reply_events(colour: &str, end: &str) -> Vec<Event> {
+    let key = |c: char, m: KeyModifiers| Event::Key(KeyEvent::new(KeyCode::Char(c), m));
+    let mut events = vec![key(']', KeyModifiers::ALT)];
+    for c in "11;".chars().chain(colour.chars()) {
+        let shift = if c.is_uppercase() {
+            KeyModifiers::SHIFT
+        } else {
+            KeyModifiers::NONE
+        };
+        events.push(key(c, shift));
+    }
+    match end {
+        "\x07" => events.push(key('g', KeyModifiers::CONTROL)),
+        "\x1b\\" => events.push(key('\\', KeyModifiers::ALT)),
+        "" => {}
+        other => panic!("no such terminator: {other:?}"),
+    }
+    events
+}
+
 // --- the conversation's blocks ----------------------------------------------
 
 /// `md` rendered (no color) into the blocks the terminal's markdown sink commits: text as rows,

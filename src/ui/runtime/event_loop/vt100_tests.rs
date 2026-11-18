@@ -2296,3 +2296,233 @@ fn a_resize_back_to_the_drawn_size_repaints_every_cell() {
         after.len()
     );
 }
+
+// --- the background, asked again (X-108) -------------------------------------
+
+/// How many times the loop has written the OSC 11 query.
+fn queries(h: &LoopHarness) -> usize {
+    let q = crate::ui::runtime::osc::OSC11_QUERY;
+    h.buf.bytes().windows(q.len()).filter(|w| *w == q).count()
+}
+
+/// Every cell of the screen, row-major: its text, its foreground, its background.
+fn cells(h: &LoopHarness) -> Vec<(String, vt100::Color, vt100::Color)> {
+    let p = parse(&h.buf);
+    let mut out = Vec::new();
+    for r in 0..24 {
+        for c in 0..80 {
+            let cell = p.screen().cell(r, c).unwrap();
+            out.push((cell.contents().to_owned(), cell.fgcolor(), cell.bgcolor()));
+        }
+    }
+    out
+}
+
+/// Whether any cell has the 256-colour background `idx`.
+fn shaded(h: &LoopHarness, idx: u8) -> bool {
+    cells(h).iter().any(|c| c.2 == vt100::Color::Idx(idx))
+}
+
+/// Sends the terminal's reply, as the key events crossterm makes of it.
+fn reply(h: &LoopHarness, colour: &str) {
+    for ev in crate::ui::testutil::reply_events(colour, "\x07") {
+        h.etx.send(ev).unwrap();
+    }
+}
+
+/// One character key.
+fn ch(c: char) -> Event {
+    key(crossterm::event::KeyCode::Char(c))
+}
+
+const LONG: Duration = Duration::from_secs(10);
+
+/// The current row's shade in a list on a dark terminal, and on a light one (`theme::row_bg`).
+const DARK_ROW: u8 = 237;
+const LIGHT_ROW: u8 = 253;
+
+/// The loop with a completion list open (`/` typed over two commands, `Down` onto the first) and
+/// the keyboard quiet since: the list's current row is what an idle frame shades by the
+/// background's tone.
+fn start_listed() -> LoopHarness {
+    let h = start_loop();
+    let command = |value: &str| crate::ui::facade::Suggestion {
+        value: value.to_owned(),
+        label: String::new(),
+        desc: String::new(),
+    };
+    h.tx.send(UiMsg::Commands(vec![command("/help"), command("/model")]))
+        .unwrap();
+    h.sync(); // the table is in before the keys that open the list over it
+    h.etx.send(ch('/')).unwrap();
+    h.etx.send(key(crossterm::event::KeyCode::Down)).unwrap();
+    assert!(
+        h.wait_until(LONG, |h| shaded(h, DARK_ROW)),
+        "no list: {}",
+        h.contents()
+    );
+    thread::sleep(crate::ui::runtime::requery::KEY_QUIET);
+    h
+}
+
+/// The window comes back and the OS has switched to light meanwhile: the loop asks once, and the
+/// answer re-shades the NEXT frame — the list's current row goes from the dark shade (237) to the
+/// light one (253) and no other cell changes its text, its foreground or its background. It is an
+/// ordinary frame: the screen is not cleared.
+#[test]
+fn a_flip_on_focus_reshades_the_next_frame_and_nothing_else() {
+    let h = start_listed();
+    h.sync();
+    let before = cells(&h);
+    assert!(!shaded(&h, LIGHT_ROW));
+    assert_eq!(queries(&h), 0, "nothing is asked unprompted");
+
+    h.etx.send(Event::FocusGained).unwrap();
+    assert!(h.wait_until(LONG, |h| queries(h) == 1), "the question");
+    let mark = h.buf.bytes().len();
+    reply(&h, "rgb:ffff/ffff/ffff");
+    assert!(
+        h.wait_until(LONG, |h| shaded(h, LIGHT_ROW)),
+        "the light row"
+    );
+    h.sync();
+
+    let after = cells(&h);
+    let (dark, light) = (vt100::Color::Idx(DARK_ROW), vt100::Color::Idx(LIGHT_ROW));
+    let mut flipped = 0;
+    for (i, (b, a)) in before.iter().zip(&after).enumerate() {
+        assert_eq!((&b.0, &b.1), (&a.0, &a.1), "cell {i}: text and foreground");
+        if b.2 == dark {
+            assert_eq!(a.2, light, "cell {i}");
+            flipped += 1;
+        } else {
+            assert_eq!(a.2, b.2, "cell {i}: background");
+        }
+    }
+    assert_eq!(flipped, 80, "the current row, edge to edge");
+    let written = h.buf.bytes()[mark..].to_vec();
+    assert!(
+        !written.windows(4).any(|w| w == b"\x1b[2J"),
+        "a flip cleared the screen: {:?}",
+        String::from_utf8_lossy(&written)
+    );
+    assert_eq!(queries(&h), 1);
+    h.quit_and_join(LONG);
+}
+
+/// THE input-safety unit. The terminal answers late; inside the window the user types a key and
+/// pastes, and types again right behind the reply. All of it reaches the composer, in order, and
+/// not one character of the reply does. That the reply was heard and not written off as a miss is
+/// what the second question shows: a terminal that missed is never asked again.
+#[test]
+fn keys_and_a_paste_inside_the_reply_window_reach_the_composer() {
+    let h = start_loop();
+    h.etx.send(Event::FocusGained).unwrap();
+    assert!(h.wait_until(LONG, |h| queries(h) == 1), "the question");
+
+    h.etx.send(ch('a')).unwrap();
+    h.etx.send(Event::Paste("-pasted-".to_owned())).unwrap();
+    h.etx.send(ch('b')).unwrap();
+    assert!(h.wait_until(LONG, |h| h.contents().contains("a-pasted-b")));
+    thread::sleep(Duration::from_millis(40)); // the terminal is slow
+    reply(&h, "rgb:ffff/ffff/ffff");
+    h.etx.send(ch('c')).unwrap();
+
+    assert!(
+        h.wait_until(LONG, |h| h.contents().contains("a-pasted-bc")),
+        "{}",
+        h.contents()
+    );
+    h.sync();
+    let screen = h.contents();
+    assert!(
+        !screen.contains("11;") && !screen.contains("rgb"),
+        "the reply was typed: {screen}"
+    );
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    h.tx.send(UiMsg::RequeryBackground(tx)).unwrap();
+    assert!(h.wait_until(LONG, |h| queries(h) == 2), "asked again");
+    reply(&h, "rgb:ffff/ffff/ffff");
+    assert_eq!(rx.blocking_recv().unwrap(), Some(false));
+    h.quit_and_join(LONG);
+}
+
+/// A terminal that never answers is asked ONE time. The miss ends it for the session: another
+/// focus asks nothing, the REPL's between-turns call is told "no answer" at once, and the reply
+/// that does come — far too late — is neither typed nor obeyed. Keys go on working throughout.
+#[test]
+fn a_mute_terminal_is_asked_once() {
+    use crate::ui::runtime::osc::REPLY_TIMEOUT;
+    use crate::ui::runtime::requery::FOCUS_SETTLE;
+
+    let h = start_listed();
+    h.etx.send(Event::FocusGained).unwrap();
+    assert!(h.wait_until(LONG, |h| queries(h) == 1), "the question");
+    thread::sleep(REPLY_TIMEOUT * 2);
+
+    h.etx.send(Event::FocusLost).unwrap();
+    h.etx.send(Event::FocusGained).unwrap();
+    thread::sleep(FOCUS_SETTLE * 2);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    h.tx.send(UiMsg::RequeryBackground(tx)).unwrap();
+    assert_eq!(rx.blocking_recv().unwrap(), None);
+    h.sync();
+    assert_eq!(queries(&h), 1, "asked again after a miss");
+
+    reply(&h, "rgb:ffff/ffff/ffff");
+    h.sync();
+    assert!(
+        shaded(&h, DARK_ROW) && !shaded(&h, LIGHT_ROW),
+        "the late reply was obeyed"
+    );
+    h.etx.send(ch('z')).unwrap();
+    assert!(h.wait_until(LONG, |h| h.contents().contains('z')));
+    h.sync();
+    let screen = h.contents();
+    assert!(
+        !screen.contains("rgb"),
+        "the late reply was typed: {screen}"
+    );
+    h.quit_and_join(LONG);
+}
+
+/// The focus check never fires while the user types: a key within the last 300 ms and the
+/// question is not asked at all (the next turn asks).
+#[test]
+fn focus_asks_nothing_while_the_user_types() {
+    use crate::ui::runtime::requery::{FOCUS_SETTLE, KEY_QUIET};
+
+    let h = start_loop();
+    h.etx.send(Event::FocusGained).unwrap();
+    // Typing straight through the settle time.
+    let until = Instant::now() + FOCUS_SETTLE + Duration::from_millis(50);
+    while Instant::now() < until {
+        h.etx.send(ch('k')).unwrap();
+        thread::sleep(Duration::from_millis(20));
+    }
+    thread::sleep(KEY_QUIET);
+    h.sync();
+    assert_eq!(queries(&h), 0);
+    h.quit_and_join(LONG);
+}
+
+/// The REPL's between-turns call (`Ui::requery_background`): the loop writes the question at
+/// once — no focus, no settle time — and the caller gets the terminal's answer, which the frame
+/// has taken too. A terminal that answered is asked again the next time.
+#[test]
+fn the_repl_ask_is_answered_with_the_terminals_reply() {
+    let h = start_listed();
+    for (n, colour, dark, shade) in [
+        (1, "rgb:ffff/ffff/ffff", false, LIGHT_ROW),
+        (2, "rgb:1e1e/1e1e/1e1e", true, DARK_ROW),
+    ] {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        h.tx.send(UiMsg::RequeryBackground(tx)).unwrap();
+        assert!(h.wait_until(LONG, |h| queries(h) == n), "question {n}");
+        reply(&h, colour);
+        assert_eq!(rx.blocking_recv().unwrap(), Some(dark));
+        assert!(h.wait_until(LONG, |h| shaded(h, shade)), "shade {shade}");
+    }
+    h.quit_and_join(LONG);
+}

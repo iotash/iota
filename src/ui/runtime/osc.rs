@@ -5,19 +5,24 @@
 //! the text, the loop emits on change only). `detect_background` is the one OSC 11
 //! round-trip: it MUST run before any event loop claims stdin (the reply arrives as
 //! terminal input), honors a 100 ms deadline, and defaults to dark — the safer side
-//! for every adaptive shade (theme.go:36-38; Go used termenv the same way).
+//! for every adaptive shade (theme.go:36-38; Go used termenv the same way). Once the loop
+//! has the terminal the same question is asked again with no round-trip at all: the loop
+//! writes [`OSC11_QUERY`] and finds the answer in its own event stream
+//! (`super::requery`, X-108).
 //!
 //! The progress and notification tables below are the bytes
 //! `github.com/charmbracelet/x/ansi` v0.11.7 emits through bubbletea's renderer
 //! (`cursed_renderer.go:779-800`), written verbatim so the wire is byte-identical to Go's.
 
 use std::borrow::Cow;
-use std::fs::File;
 #[cfg(unix)]
-use std::fs::OpenOptions;
-use std::io::{self, Read, Write};
-use std::sync::mpsc;
+use std::fs::{File, OpenOptions};
+#[cfg(unix)]
+use std::io::Read;
+use std::io::{self, Write};
 use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
 use crossterm::queue;
 use crossterm::terminal::SetTitle;
@@ -25,7 +30,11 @@ use crossterm::terminal::SetTitle;
 use crate::ui::facade::ProgressState;
 
 /// A query's reply deadline (`TUI_CONTRACTS` §5: 100ms timeout).
-const REPLY_TIMEOUT: Duration = Duration::from_millis(100);
+pub(crate) const REPLY_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// The OSC 11 query: "what is your background colour?". The answer is the same sequence with
+/// `rgb:RRRR/GGGG/BBBB` where the `?` is, ended the way the terminal likes (ST or BEL).
+pub(crate) const OSC11_QUERY: &[u8] = b"\x1b]11;?\x1b\\";
 
 /// OSC 9;4 reset — no bar (`ProgressState::None`, and the exit clear).
 pub(crate) const OSC_PROGRESS_RESET: &str = "\x1b]9;4;0\x07";
@@ -81,17 +90,17 @@ pub(crate) fn emit_title<W: Write>(w: &mut W, title: &str) -> io::Result<()> {
 ///
 /// Mechanism: the query is chased by a DSR 6n (`\x1b[6n`) on the same write — a read
 /// terminator, not a cursor query the UI uses (the full screen never asks where the cursor is):
-/// the read loop ends at the DSR reply's `R` whether or not OSC 11 was understood, and the 100ms
-/// recv timeout only covers a terminal that answers neither. In that pathological case the
-/// detached reader thread stays parked on the tty read until the next byte, which it takes —
-/// accepted and documented: the first keystroke on a terminal mute to DSR is lost.
+/// the read ends at the DSR reply's `R` whether or not OSC 11 was understood, and the 100ms
+/// deadline only covers a terminal that answers neither. Nothing is left behind in that case:
+/// the read waits on the descriptor with the deadline ([`exchange`]), so past it no thread is
+/// parked on the tty and the next keystroke is the event loop's.
 pub(crate) fn detect_background() -> bool {
     detect_dark().unwrap_or(true)
 }
 
 /// The fallible body: `Err` (no tty, raw-mode failure, timeout) → the dark default.
 fn detect_dark() -> io::Result<bool> {
-    let buf = round_trip(b"\x1b]11;?\x1b\\")?;
+    let buf = round_trip(OSC11_QUERY)?;
     Ok(parse_osc11_dark(&buf).unwrap_or(true))
 }
 
@@ -103,10 +112,15 @@ fn detect_dark() -> io::Result<bool> {
 /// process with `SIGTTOU` (measured: an hc-probing `iota -m` started by the shell tool, whose
 /// commands get a process group of their own, hung stopped). Shared by the OSC 11 background detect and the
 /// herdr-core probe (`host::hc::probe_tty`): both run before any event loop claims the input, one
-/// after the other.
+/// after the other. It is never run once the loop has the terminal: it reads the tty itself, and a
+/// key typed before the reply would be read here and lost (`super::requery` asks without reading).
+///
+/// The terminal is `/dev/tty`, opened read+write: the query goes out on it and the reply comes
+/// back on it, which is why it is not stdin/stdout (either may be a pipe, and a redirect must not
+/// turn the detect into a write to a file).
+#[cfg(unix)]
 pub(crate) fn round_trip(query: &[u8]) -> io::Result<Vec<u8>> {
-    let mut tty = open_tty()?;
-    #[cfg(unix)]
+    let mut tty = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
     if nix::unistd::tcgetpgrp(&tty)? != nix::unistd::getpgrp() {
         return Err(io::Error::other(
             "not the terminal's foreground process group",
@@ -116,19 +130,11 @@ pub(crate) fn round_trip(query: &[u8]) -> io::Result<Vec<u8>> {
     if !was_raw {
         crossterm::terminal::enable_raw_mode()?;
     }
-    let result = exchange(&mut tty, query);
+    let result = exchange(&mut tty, query, REPLY_TIMEOUT);
     if !was_raw {
         let _ = crossterm::terminal::disable_raw_mode();
     }
     result
-}
-
-/// The controlling terminal, opened read+write: the query goes out on it and the reply
-/// comes back on it, which is why this is `/dev/tty` and not stdin/stdout (either may be a
-/// pipe, and a redirect must not turn the detect into a write to a file).
-#[cfg(unix)]
-fn open_tty() -> io::Result<File> {
-    OpenOptions::new().read(true).write(true).open("/dev/tty")
 }
 
 /// Windows has no `/dev/tty`, and its nearest pair — `CONIN$` / `CONOUT$` — cannot stand in
@@ -139,49 +145,61 @@ fn open_tty() -> io::Result<File> {
 /// dark — which is also what Windows Terminal ships with. A real detect belongs with a real
 /// terminal to verify it against.
 #[cfg(windows)]
-fn open_tty() -> io::Result<File> {
+pub(crate) fn round_trip(_query: &[u8]) -> io::Result<Vec<u8>> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "a terminal query needs a controlling terminal (no /dev/tty on Windows)",
     ))
 }
 
-/// Writes `query` + `DSR 6n` and reads the reply bytes off the tty, bounded by the DSR
-/// terminator.
-fn exchange(tty: &mut File, query: &[u8]) -> io::Result<Vec<u8>> {
+/// Writes `query` + `DSR 6n` and reads the reply bytes off the tty up to the DSR's `R`, which
+/// always trails the OSC answer (same write, in-order replies); the cap guards a garbage-spewing
+/// pty.
+///
+/// Every byte is read only after the descriptor said one is there, and the wait is bounded by
+/// what is left of `timeout`: when it runs out the function returns with nothing in flight — no
+/// thread parked on the tty, no read that a later keystroke would complete. (Until 2026-11-18 a
+/// detached thread did the reading, and on a terminal that answered nothing it stayed parked and
+/// took the first key typed.) Nothing past the `R` is read either.
+#[cfg(unix)]
+fn exchange(tty: &mut File, query: &[u8], timeout: Duration) -> io::Result<Vec<u8>> {
+    use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+    use std::os::fd::AsFd as _;
+
     tty.write_all(&[query, b"\x1b[6n"].concat())?;
     tty.flush()?;
-    let mut reader = tty.try_clone()?;
-    let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("iota-tty-reply".to_owned())
-        .spawn(move || {
-            let mut buf = Vec::with_capacity(64);
-            let mut byte = [0u8; 1];
-            loop {
-                match reader.read(&mut byte) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {
-                        buf.push(byte[0]);
-                        // The DSR reply "\x1b[<row>;<col>R" always trails the OSC
-                        // answer (same write, in-order replies) — its 'R' ends the
-                        // read. The cap guards a garbage-spewing pty.
-                        if byte[0] == b'R' || buf.len() > 256 {
-                            break;
-                        }
-                    }
-                }
-            }
-            let _ = tx.send(buf);
-        })?;
-    rx.recv_timeout(REPLY_TIMEOUT)
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no reply to the query or the DSR"))
+    let deadline = Instant::now() + timeout;
+    let silent = || io::Error::new(io::ErrorKind::TimedOut, "no reply to the query or the DSR");
+    let mut buf = Vec::with_capacity(64);
+    let mut byte = [0u8; 1];
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(silent());
+        }
+        let mut fds = [PollFd::new(tty.as_fd(), PollFlags::POLLIN)];
+        let wait = PollTimeout::try_from(left).unwrap_or(PollTimeout::MAX);
+        match poll(&mut fds, wait) {
+            Ok(0) => return Err(silent()),
+            Ok(_) => {}
+            // A signal (SIGWINCH during startup): wait again for what is left.
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(e) => return Err(e.into()),
+        }
+        if tty.read(&mut byte)? == 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        buf.push(byte[0]);
+        if byte[0] == b'R' || buf.len() > 256 {
+            return Ok(buf);
+        }
+    }
 }
 
 /// Extracts the `rgb:`/`rgba:` payload of an OSC 11 reply and classifies it dark by
 /// perceived luminance — the Go `darkHex` formula (host/background.go:118-128):
 /// `(299·r + 587·g + 114·b) / 1000 < 128`.
-fn parse_osc11_dark(buf: &[u8]) -> Option<bool> {
+pub(crate) fn parse_osc11_dark(buf: &[u8]) -> Option<bool> {
     let s = String::from_utf8_lossy(buf);
     let at = s.find("]11;")?;
     let rest = &s[at + 4..];
@@ -263,6 +281,82 @@ mod tests {
         assert_eq!(parse_osc11_dark(dark), Some(true));
         // DSR only (terminal ignored OSC 11): unknown → caller defaults dark.
         assert_eq!(parse_osc11_dark(b"\x1b[24;1R"), None);
+    }
+
+    /// A terminal stood in for by one end of a socket pair: `exchange` gets the other end as the
+    /// file it would have opened.
+    #[cfg(unix)]
+    fn fake_tty() -> (std::fs::File, std::os::unix::net::UnixStream) {
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        (
+            std::fs::File::from(std::os::fd::OwnedFd::from(ours)),
+            theirs,
+        )
+    }
+
+    /// The timeout path: a terminal that answers nothing costs the deadline and leaves NOTHING
+    /// behind. The byte the terminal sends afterwards — the user's next key — is still there to be
+    /// read by whoever reads the tty next; a reader left parked by `exchange` (the detached thread
+    /// it used to have) would have taken it, and this read would then find nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_mute_terminal_times_out_and_keeps_the_next_byte() {
+        use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+        use std::io::{Read as _, Write as _};
+        use std::os::fd::AsFd as _;
+        use std::time::{Duration, Instant};
+
+        let (mut tty, mut terminal) = fake_tty();
+        let started = Instant::now();
+        let err = super::exchange(&mut tty, super::OSC11_QUERY, super::REPLY_TIMEOUT).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        let took = started.elapsed();
+        // (`poll` counts whole milliseconds: the wait may end a fraction of one early.)
+        assert!(
+            took >= super::REPLY_TIMEOUT * 9 / 10 && took < Duration::from_secs(2),
+            "waited {took:?}"
+        );
+        // The query and its DSR chaser went out, in one write.
+        let mut asked = [0u8; 64];
+        let n = terminal.read(&mut asked).unwrap();
+        assert_eq!(&asked[..n], b"\x1b]11;?\x1b\\\x1b[6n");
+
+        terminal.write_all(b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(50)); // a parked reader would have it by now
+        let mut fds = [PollFd::new(tty.as_fd(), PollFlags::POLLIN)];
+        assert_eq!(
+            poll(&mut fds, PollTimeout::ZERO).unwrap(),
+            1,
+            "the key was taken"
+        );
+        let mut key = [0u8; 8];
+        assert_eq!(tty.read(&mut key).unwrap(), 1);
+        assert_eq!(key[0], b'x');
+    }
+
+    /// A terminal that answers late but inside the deadline is heard, and the read stops at the
+    /// DSR's `R`: what the terminal sent behind the reply in the same write stays unread.
+    #[cfg(unix)]
+    #[test]
+    fn a_late_reply_is_read_up_to_the_dsr_and_no_further() {
+        use std::io::{Read as _, Write as _};
+        use std::time::Duration;
+
+        let (mut tty, mut terminal) = fake_tty();
+        let answer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            terminal
+                .write_all(b"\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[24;1Rk")
+                .unwrap();
+            terminal
+        });
+        let reply = super::exchange(&mut tty, super::OSC11_QUERY, Duration::from_secs(5)).unwrap();
+        assert_eq!(reply, b"\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[24;1R");
+        assert_eq!(parse_osc11_dark(&reply), Some(false));
+        let _terminal = answer.join().unwrap();
+        let mut key = [0u8; 8];
+        assert_eq!(tty.read(&mut key).unwrap(), 1);
+        assert_eq!(key[0], b'k');
     }
 
     #[test]

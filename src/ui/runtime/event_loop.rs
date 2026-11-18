@@ -35,6 +35,7 @@ use tokio_util::sync::CancellationToken;
 use super::clipboard::Copied;
 use super::msgs::UiMsg;
 use super::osc;
+use super::requery::Requery;
 use super::screen::{Prompt, SelectOp, ViewOp};
 use super::term::Term;
 use crate::ui::input::composer::Composer;
@@ -264,8 +265,11 @@ pub(crate) struct Model {
     last_spin: Instant,
     /// A queued full clear before the next draw (T-32 surface Tab switch).
     force_clear: bool,
-    /// The terminal's background tone (`UiMsg::DarkBackground`; dark is the safe default).
+    /// The terminal's background tone (`UiMsg::DarkBackground`, or the terminal's own answer to
+    /// [`Self::requery`]; dark is the safe default).
     dark: bool,
+    /// The background asked again while the loop runs (X-108).
+    pub(crate) requery: Requery,
     /// Whether the frame must be redrawn this iteration (pub(crate): the W10
     /// deadline units clear it to model a fully idle loop).
     pub(crate) dirty: bool,
@@ -396,6 +400,7 @@ impl Model {
             last_spin: Instant::now(),
             force_clear: false,
             dark: true,
+            requery: Requery::default(),
             dirty: true, // the first iteration paints the initial frame
             quit: false,
             progress: ProgressState::None,
@@ -450,6 +455,9 @@ impl Model {
         }
         let now = Instant::now();
         if let Some(next) = mouse::edge_due(self, now) {
+            d = d.min(next.max(Duration::from_millis(1)));
+        }
+        if let Some(next) = self.requery.next_wake(now) {
             d = d.min(next.max(Duration::from_millis(1)));
         }
         if self.copy_pending {
@@ -542,6 +550,16 @@ impl Model {
         }
     }
 
+    /// The background question's timers (`requery.rs`): the focus check and the reply deadline, and
+    /// keys that were held as a possible reply and are the user's after all.
+    pub(crate) fn tick_requery(&mut self) {
+        let now = Instant::now();
+        for ev in self.requery.stale(now) {
+            self.dispatch_event(ev);
+        }
+        self.requery.tick(now);
+    }
+
     /// One generation-guarded surface refresh when due (tabbed.go surfTickMsg).
     fn tick_surface_refresh(&mut self) {
         let live = self.surface_gen;
@@ -604,6 +622,8 @@ impl Model {
                 self.dark = dark;
                 self.dirty = true;
             }
+            // Nothing to draw: the query is written by this iteration, the answer is an event.
+            UiMsg::RequeryBackground(reply) => self.requery.ask(reply),
             #[cfg(unix)]
             UiMsg::Suspend => {
                 self.suspend = true;
@@ -738,8 +758,25 @@ impl Model {
         }
     }
 
-    /// Handles one crossterm event.
+    /// Handles one crossterm event. The terminal's answer to the background question arrives
+    /// here too, as the keys crossterm makes of it (`requery.rs`): it is taken out first, and a flip
+    /// is ONE ordinary dirty frame — the shades are read at draw time, so nothing is cleared.
     pub(crate) fn handle_event(&mut self, ev: Event) {
+        let fed = self.requery.feed(ev);
+        for ev in fed.pass {
+            self.dispatch_event(ev);
+        }
+        if let Some(reply) = fed.reply
+            && let Some(dark) = self.requery.answer(reply)
+            && dark != self.dark
+        {
+            self.dark = dark;
+            self.dirty = true;
+        }
+    }
+
+    /// Handles one event that is the user's (or the window's), not the terminal's reply.
+    fn dispatch_event(&mut self, ev: Event) {
         match ev {
             Event::Resize(w, h) => {
                 // A resize is only RECORDED here; `apply_resize` runs once the terminal has
@@ -751,16 +788,22 @@ impl Model {
                 mouse::end_drag(self, SelectOp::Release);
             }
             Event::Key(k) => {
+                self.requery.input(Instant::now());
                 self.handle_key(k);
                 self.dirty = true;
             }
             Event::Paste(data) => {
+                self.requery.input(Instant::now());
                 self.route_paste(&data);
                 self.dirty = true;
             }
-            // Focus exists for ONE reason: gating the attention ping (model.go:226-228).
-            // No redraw — nothing on screen depends on it.
-            Event::FocusGained => self.focused = true,
+            // Focus gates the attention ping (model.go:226-228), and coming back is when the
+            // terminal is asked for its background again: the OS may have switched its appearance
+            // while the window was away (X-108). No redraw — nothing on screen depends on focus.
+            Event::FocusGained => {
+                self.focused = true;
+                self.requery.focus_gained(Instant::now());
+            }
             Event::FocusLost => {
                 self.focused = false;
                 // The button may come up outside the window and never be reported: a drag held at
@@ -1194,6 +1237,12 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         m.tick_jobs();
         m.tick_surface_refresh();
         m.tick_mouse();
+        m.tick_requery();
+        // The background question, when one is due: written here, read nowhere — its answer is an
+        // event of a later iteration.
+        if !resizing && m.requery.take_query(Instant::now()) {
+            term.write_raw(osc::OSC11_QUERY)?;
+        }
         // A copy whose programs were running: their outcome is the status row's to say.
         if !resizing
             && term.copy_pending()

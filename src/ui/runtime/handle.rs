@@ -509,6 +509,18 @@ impl Ui for TuiHandle {
         let _ = self.tx.send(UiMsg::DarkBackground(dark));
     }
 
+    fn requery_background(&self) -> BoxFuture<'_, Option<bool>> {
+        Box::pin(async move {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.tx.send(UiMsg::RequeryBackground(reply_tx)).ok()?;
+            tokio::select! {
+                biased;
+                answer = reply_rx => answer.ok().flatten(),
+                () = self.done.cancelled() => None,
+            }
+        })
+    }
+
     fn width(&self) -> u16 {
         self.width.load(Ordering::Relaxed)
     }

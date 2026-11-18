@@ -107,6 +107,10 @@ pub(crate) enum UiMsg {
     ProgramStatus(String),
     /// Re-shade the composer for a background flip.
     DarkBackground(bool),
+    /// Ask the terminal for its background again (`Ui::requery_background`, `super::requery`): the
+    /// loop writes the query and answers with the reply it finds among its events — `None` when
+    /// the terminal does not answer, at once when it has not answered before.
+    RequeryBackground(oneshot::Sender<Option<bool>>),
     /// Job control from outside (SIGTSTP, the full screen only): hand the terminal back and stop
     /// until `fg` (tui-plan S4). Unix only: a Windows console has no job control.
     #[cfg(unix)]

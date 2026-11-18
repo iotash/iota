@@ -608,6 +608,11 @@ impl Ui for ScriptedUi {
         self.record(UiEvent::DarkBackground(dark));
     }
 
+    /// A scripted terminal has no colour to report: "no answer", so the REPL keeps what it has.
+    fn requery_background(&self) -> BoxFuture<'_, Option<bool>> {
+        Box::pin(std::future::ready(None))
+    }
+
     fn width(&self) -> u16 {
         self.width.load(Ordering::Relaxed)
     }
