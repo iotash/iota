@@ -698,7 +698,8 @@ fn tmux_fullscreen_signal() {
 
 /// L4 #46 (tui-plan S6) — the mouse: the wheel pauses and resumes following, a click places the
 /// composer's cursor, a drag held at the edge selects three screens and pastes elsewhere whole, a
-/// surface takes the interaction cap (half the screen, at most 15 rows) and scrolls.
+/// surface takes the interaction cap (half the screen, at most 15 rows) and scrolls; outside tmux a
+/// copy reaches the terminal as one OSC 52 beside the local tool.
 #[test]
 fn tmux_fullscreen_mouse() {
     run_scenario("46-fullscreen-mouse.sh");

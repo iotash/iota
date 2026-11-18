@@ -11,7 +11,10 @@
 #      pastes into another program whole;
 #   D. a surface (/status) takes the interaction cap — half the screen, at most 15 rows — and
 #      scrolls inside it; closing it gives the conversation back;
-#   E. in a pane the frame alone fills (6 rows), the dialog is still on the screen, whole.
+#   E. in a pane the frame alone fills (6 rows), the dialog is still on the screen, whole;
+#   F. outside tmux (`$TMUX` unset in the pane) a drag's copy goes to the local tool AND to the
+#      terminal: the pane's raw bytes carry exactly one OSC 52, its text the tool's, and the row
+#      says `(pbcopy + OSC 52)`.
 #
 # Scenario 47 sends the reports through a tmux with `mouse on` instead, and turns the mouse off.
 # shellcheck source=../lib.sh
@@ -178,5 +181,34 @@ tm resize-window -t s -x 80 -y 24
 _poll_until 100 _tall || miss "the pane never grew back from 6 rows"
 settle
 check_frame_intact "after the 6-row dialog" 80
+
+# --- F. outside tmux: the tool and OSC 52 ----------------------------------------------------------
+# A fresh run whose environment has no $TMUX (nor $STY): to iota it is a plain terminal. The pane's
+# raw bytes are tapped, since tmux itself does not pass the sequence on.
+IOTA_ENV="-u TMUX -u STY $IOTA_ENV"
+rm -f "$CLIP"
+start 80 24 || finish
+settle || miss "the run outside tmux never settled"
+pipe_raw
+type_ 'stream 3 2'
+key Enter
+wait_vis 'l#02 line' || miss "the short stream never ended"
+settle || miss "the short stream never settled"
+r1="$(row_of 'l#01 line')"
+mouse 0 1 "$r1"
+mouse 32 9 "$r1"
+mouse 0 9 "$r1" m
+wait_vis 'copied' || miss "the release outside tmux copied nothing"
+if _vis_has "($local_tool + OSC 52) · "; then
+    ok "outside tmux the row names the tool and the terminal ($local_tool + OSC 52)"
+else
+    bad "the row outside tmux: $(cap | grep -F copied)"
+fi
+_has_clip_l01() { [ -s "$CLIP" ] && grep -qF 'l#01' "$CLIP"; }
+_poll_until 100 _has_clip_l01 || miss "the local tool never got the selection outside tmux"
+_osc52s() { LC_ALL=C grep -aoE $'\033]52;c;[A-Za-z0-9+/=]*\a' "$RAW"; }
+check "exactly one OSC 52 reached the terminal" "$(_osc52s | wc -l | tr -d ' ')" 1
+sent="$(_osc52s | head -1 | sed -E $'s/^\033]52;c;//; s/\a$//' | base64 -d)"
+check "…carrying what the local tool got" "$sent" "$(cat "$CLIP")"
 
 finish
