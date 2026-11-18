@@ -1,7 +1,7 @@
 //! Where a selection's text goes (`docs/design/fullscreen-tui.md` "Selection"): the local
 //! clipboard tool, the tmux paste buffer, and OSC 52 for the terminal the user is looking at.
 //!
-//! - **Outside tmux and GNU screen: the local tool and OSC 52, both.** The tool (`pbcopy`; `wl-copy`, `xclip`,
+//! - **Outside tmux: the local tool and OSC 52, both.** The tool (`pbcopy`; `wl-copy`, `xclip`,
 //!   `xsel`; `clip`) writes the clipboard of the machine iota runs on; OSC 52
 //!   (`ESC ] 52 ; c ; <base64> BEL`) asks the terminal to set its own, on the machine the user
 //!   sits at. Which of the two the user is looking at cannot be read from the environment — a
@@ -12,14 +12,14 @@
 //!   `-w` asks tmux to hand it on to the outer terminal (OSC 52, as tmux's `set-clipboard`
 //!   allows) — plus the local tool unless over SSH (`$SSH_CONNECTION`/`$SSH_TTY`). OSC 52 is
 //!   written only when every one of them failed: tmux would swallow it otherwise.
-//! - **Inside GNU screen** (`$STY`): the local tool unless over SSH, and OSC 52 only when it
-//!   failed or there is none. Screen does not pass OSC 52 on: it swallows a short one and prints
-//!   the rest of a long one (past about 0.5 KB) on the screen as text, which iota's diff-based
-//!   repaint never erases.
+//! - **Inside GNU screen** (`$STY`) as outside, the sequence wrapped for screen ([`screen_dcs`]):
+//!   screen swallows a bare OSC 52 and prints most of a long one on the screen as text, but hands
+//!   the contents of DCS strings to the outer terminal as they are (hterm's `osc52.sh`, vim-oscyank).
 //!
-//! The tools run on a thread of their own — a clipboard tool that hangs never stalls the loop —
-//! and report back ([`Clipboard::poll`]); one that has not reported within [`COPY_DEADLINE`]
-//! counts as failed. The sequence is written at once, in order with the frame. A copy is done
+//! Each program runs as a child of its own, its text fed by a thread of its own — a clipboard tool
+//! that hangs stalls neither the loop nor the other programs — and [`Clipboard::poll`] collects
+//! their exits; one that has not exited within [`COPY_DEADLINE`] counts as failed and is killed.
+//! The sequence is written at once, in order with the frame. A copy is done
 //! when at least one way ran: a tool that succeeded, or the sequence written (OSC 52 cannot
 //! report). The outcome names the ways ([`Copied::Done`]), and the status row says them.
 //! A selection whose sequence would pass [`OSC52_MAX`] is not sent: terminals truncate or drop one
@@ -27,8 +27,8 @@
 //! and the outcome then says the sequence was left out.
 
 use std::io::{self, Write as _};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -37,8 +37,8 @@ use base64::Engine as _;
 /// hterm and tmux keep 100 000 bytes of an OSC 52; past it most terminals drop or cut it.
 pub(crate) const OSC52_MAX: usize = 100_000;
 
-/// How long a copy waits for its programs: one that has not reported by then (an `xclip` whose
-/// X forwarding is gone hangs) counts as failed, and the copy settles without it.
+/// How long a copy waits for its programs: one that has not exited by then (an `xclip` whose
+/// X forwarding is gone hangs) counts as failed and is killed, and the copy settles without it.
 pub(crate) const COPY_DEADLINE: Duration = Duration::from_secs(2);
 
 /// One way a copied text leaves iota.
@@ -60,7 +60,7 @@ pub(crate) const OSC52_WAY: &str = "OSC 52";
 pub(crate) enum Mux {
     /// tmux (`$TMUX`): its buffer is a way of its own, and it swallows a bare OSC 52.
     Tmux,
-    /// GNU screen (`$STY`): it prints a long OSC 52 on the screen.
+    /// GNU screen (`$STY`): it passes OSC 52 on only inside DCS strings ([`screen_dcs`]).
     Screen,
 }
 
@@ -93,6 +93,17 @@ pub(crate) enum Copied {
 /// A step of a copy: the OSC 52 sequence to write now, and the outcome once it is known.
 pub(crate) type Step = (Option<String>, Option<Copied>);
 
+/// One program of a copy.
+#[derive(Debug)]
+struct Run {
+    /// Its name among the ways ([`way`]).
+    name: String,
+    /// The child, until it has exited (or never started).
+    child: Option<Child>,
+    /// It exited successfully.
+    ok: bool,
+}
+
 /// A copy whose programs are still running.
 #[derive(Debug)]
 struct Pending {
@@ -103,8 +114,8 @@ struct Pending {
     osc: Osc,
     /// When the programs started, for [`COPY_DEADLINE`].
     started: Instant,
-    /// The names of the programs that succeeded, sent when they are all done.
-    rx: mpsc::Receiver<Vec<String>>,
+    /// The programs, in the order of the ways.
+    runs: Vec<Run>,
 }
 
 /// Where the selections of this session go: the programs a copy is piped into, whether OSC 52 goes
@@ -113,9 +124,9 @@ struct Pending {
 pub(crate) struct Clipboard {
     /// The programs a copy is piped into (the local tool, tmux's `load-buffer`).
     commands: Vec<Vec<String>>,
-    /// OSC 52 is written with every copy (outside a multiplexer); otherwise only when every
-    /// program failed.
-    osc: bool,
+    /// The multiplexer the session runs inside: OSC 52 is written with every copy except inside
+    /// tmux, where it goes only when every program failed; inside screen it is wrapped.
+    mux: Option<Mux>,
     /// A copy the programs are still running.
     pending: Option<Pending>,
     /// `Shift`, or `Option` in iTerm2 (whose bypass key it is).
@@ -150,20 +161,19 @@ impl Clipboard {
                 CopyPath::Osc52 => None,
             })
             .collect();
-        let osc = paths.contains(&CopyPath::Osc52);
-        Self::with_commands(commands, osc, if iterm { "Option" } else { "Shift" })
+        Self::with_commands(commands, mux, if iterm { "Option" } else { "Shift" })
     }
 
-    /// A clipboard piping into `commands`, with OSC 52 alongside them or only as their
-    /// fall-through (a test's: programs that succeed or fail on cue).
+    /// A clipboard piping into `commands`, with OSC 52 as `mux` takes it (a test's: programs that
+    /// succeed, fail or hang on cue).
     pub(crate) fn with_commands(
         commands: Vec<Vec<String>>,
-        osc: bool,
+        mux: Option<Mux>,
         native: &'static str,
     ) -> Self {
         Self {
             commands,
-            osc,
+            mux,
             pending: None,
             native,
             #[cfg(test)]
@@ -176,13 +186,13 @@ impl Clipboard {
     pub(crate) fn recording() -> Self {
         Self {
             recorded: Some(std::sync::Arc::default()),
-            ..Self::with_commands(Vec::new(), false, "Shift")
+            ..Self::with_commands(Vec::new(), None, "Shift")
         }
     }
 
     /// Starts copying `text`: the OSC 52 sequence to write now (when it goes with every copy and is
     /// within [`OSC52_MAX`]), and the outcome when nothing is left to run; otherwise the programs
-    /// run on a thread and [`Clipboard::poll`] has the outcome.
+    /// are started and [`Clipboard::poll`] has the outcome.
     pub(crate) fn start(&mut self, text: String) -> Step {
         let chars = text.chars().count();
         #[cfg(test)]
@@ -199,56 +209,73 @@ impl Clipboard {
                 }),
             );
         }
-        let (seq, osc) = if self.osc || self.commands.is_empty() {
-            offer(&text)
-        } else {
+        let in_tmux = self.mux == Some(Mux::Tmux);
+        let (seq, osc) = if in_tmux {
             (None, Osc::Unsent)
+        } else {
+            offer(&text, self.mux)
         };
         if self.commands.is_empty() {
             return (seq, Some(outcome(chars, Vec::new(), osc)));
         }
-        let (tx, rx) = mpsc::channel();
-        let commands = self.commands.clone();
-        let owned = text.clone();
-        std::thread::spawn(move || {
-            let took = commands
-                .iter()
-                .filter(|c| {
-                    let c: Vec<&str> = c.iter().map(String::as_str).collect();
-                    pipe(&c, &owned).is_ok()
-                })
-                .map(|c| way(&c[0]))
-                .collect();
-            let _ = tx.send(took);
-        });
+        let shared: Arc<str> = Arc::from(text.as_str());
+        let runs = self
+            .commands
+            .iter()
+            .map(|c| Run {
+                name: way(&c[0]),
+                child: feed(c, &shared),
+                ok: false,
+            })
+            .collect();
         self.pending = Some(Pending {
-            fallback: (!self.osc).then_some(text),
+            fallback: in_tmux.then_some(text),
             chars,
             osc,
             started: Instant::now(),
-            rx,
+            runs,
         });
         (seq, None)
     }
 
-    /// The outcome of the copy the programs are running, once they are done or past
-    /// [`COPY_DEADLINE`] (then none of them succeeded): the programs that succeeded and the
-    /// sequence written at the start; inside a multiplexer, when none succeeded, the OSC 52
-    /// fall-through (its sequence to write now).
+    /// The outcome of the copy the programs are running, once every one has exited or the copy is
+    /// past [`COPY_DEADLINE`] (those still running are killed and count as failed): the programs
+    /// that succeeded and the sequence written at the start; inside tmux, when none succeeded, the
+    /// OSC 52 fall-through (its sequence to write now).
     pub(crate) fn poll(&mut self) -> Step {
-        let Some(p) = self.pending.take() else {
+        let Some(mut p) = self.pending.take() else {
             return (None, None);
         };
-        let took = match p.rx.try_recv() {
-            Ok(took) => took,
-            Err(mpsc::TryRecvError::Empty) if p.started.elapsed() < COPY_DEADLINE => {
+        for r in &mut p.runs {
+            if let Some(child) = &mut r.child {
+                match child.try_wait() {
+                    Ok(None) => {}
+                    Ok(Some(status)) => {
+                        r.ok = status.success();
+                        r.child = None;
+                    }
+                    Err(_) => r.child = None,
+                }
+            }
+        }
+        if p.runs.iter().any(|r| r.child.is_some()) {
+            if p.started.elapsed() < COPY_DEADLINE {
                 self.pending = Some(p);
                 return (None, None);
             }
-            Err(_) => Vec::new(),
-        };
+            for mut child in p.runs.iter_mut().filter_map(|r| r.child.take()) {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        let took: Vec<String> = p
+            .runs
+            .into_iter()
+            .filter(|r| r.ok)
+            .map(|r| r.name)
+            .collect();
         let (seq, osc) = match &p.fallback {
-            Some(text) if took.is_empty() => offer(text),
+            Some(text) if took.is_empty() => offer(text, self.mux),
             _ => (None, p.osc),
         };
         (seq, Some(outcome(p.chars, took, osc)))
@@ -260,14 +287,31 @@ impl Clipboard {
     }
 }
 
-/// The OSC 52 sequence for `text` to write, or nothing when it would pass [`OSC52_MAX`].
-fn offer(text: &str) -> (Option<String>, Osc) {
+/// The OSC 52 sequence for `text` to write — inside screen wrapped for it — or nothing when the
+/// sequence would pass [`OSC52_MAX`].
+fn offer(text: &str, mux: Option<Mux>) -> (Option<String>, Osc) {
     let seq = osc52(text);
-    if seq.len() <= OSC52_MAX {
-        (Some(seq), Osc::Sent)
-    } else {
+    if seq.len() > OSC52_MAX {
         (None, Osc::TooLarge)
+    } else if mux == Some(Mux::Screen) {
+        (Some(screen_dcs(&seq)), Osc::Sent)
+    } else {
+        (Some(seq), Osc::Sent)
     }
+}
+
+/// The bytes of one DCS string screen passes on ([`screen_dcs`]): screen 4 keeps a string of up
+/// to 768 bytes; hterm and vim-oscyank cut at 76.
+const SCREEN_CHUNK: usize = 76;
+
+/// `seq` (ASCII) for GNU screen: cut into [`SCREEN_CHUNK`]-byte pieces, each in a DCS string
+/// `ESC P <piece> ESC \`, whose contents screen hands to the outer terminal as they are — so the
+/// terminal reads the pieces as the one sequence.
+fn screen_dcs(seq: &str) -> String {
+    seq.as_bytes()
+        .chunks(SCREEN_CHUNK)
+        .map(|piece| format!("\x1bP{}\x1b\\", String::from_utf8_lossy(piece)))
+        .collect()
 }
 
 /// A copy of `chars` characters that the programs named in `took` succeeded at, its sequence
@@ -300,16 +344,17 @@ fn argv(a: &[&str]) -> Vec<String> {
     a.iter().map(|s| (*s).to_owned()).collect()
 }
 
-/// The paths for a session inside a multiplexer or not, over SSH or not (module docs): outside
-/// one the local tool and OSC 52, SSH or not; inside tmux its buffer, and the local tool unless
-/// over SSH; inside screen the local tool unless over SSH. Without [`CopyPath::Osc52`], OSC 52 is
-/// the fall-through.
+/// The paths for a session inside a multiplexer or not, over SSH or not (module docs): inside
+/// tmux its buffer, and the local tool unless over SSH, OSC 52 being the fall-through; anywhere
+/// else (screen too) the local tool and OSC 52, SSH or not.
 pub(crate) fn paths(mux: Option<Mux>, ssh: bool) -> Vec<CopyPath> {
-    let local = (!ssh).then_some(CopyPath::Local);
     match mux {
-        None => vec![CopyPath::Local, CopyPath::Osc52],
-        Some(Mux::Tmux) => local.into_iter().chain([CopyPath::Tmux]).collect(),
-        Some(Mux::Screen) => local.into_iter().collect(),
+        Some(Mux::Tmux) => (!ssh)
+            .then_some(CopyPath::Local)
+            .into_iter()
+            .chain([CopyPath::Tmux])
+            .collect(),
+        None | Some(Mux::Screen) => vec![CopyPath::Local, CopyPath::Osc52],
     }
 }
 
@@ -359,6 +404,25 @@ pub(crate) fn copy_to_clipboard(text: &str) -> io::Result<()> {
     Err(io::Error::other("no clipboard tool found"))
 }
 
+/// Starts `argv` with `text` fed to its stdin by a thread (a child that never reads blocks the
+/// thread alone, until it exits or is killed); `None` when it could not start.
+fn feed(argv: &[String], text: &Arc<str>) -> Option<Child> {
+    let mut child = Command::new(&argv[0])
+        .args(&argv[1..])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let text = Arc::clone(text);
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(text.as_bytes());
+        });
+    }
+    Some(child)
+}
+
 /// Runs `argv` with `text` on its stdin; `NotFound` when the program is not there.
 fn pipe(argv: &[&str], text: &str) -> io::Result<()> {
     let mut child = Command::new(argv[0])
@@ -383,9 +447,10 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
-    /// Outside a multiplexer the local tool and OSC 52 both, over SSH or not; inside tmux its
-    /// buffer, and the local tool unless over SSH; inside screen the local tool unless over SSH —
-    /// OSC 52 is the fall-through in both.
+    const TMUX: Option<Mux> = Some(Mux::Tmux);
+
+    /// Inside tmux its buffer, and the local tool unless over SSH — OSC 52 the fall-through;
+    /// anywhere else, screen too, the local tool and OSC 52 both, over SSH or not.
     #[test]
     fn the_paths_follow_where_the_session_runs() {
         use CopyPath::{Local, Osc52, Tmux};
@@ -393,8 +458,8 @@ mod tests {
         assert_eq!(paths(None, true), vec![Local, Osc52]);
         assert_eq!(paths(Some(Mux::Tmux), false), vec![Local, Tmux]);
         assert_eq!(paths(Some(Mux::Tmux), true), vec![Tmux]);
-        assert_eq!(paths(Some(Mux::Screen), false), vec![Local]);
-        assert_eq!(paths(Some(Mux::Screen), true), vec![]);
+        assert_eq!(paths(Some(Mux::Screen), false), vec![Local, Osc52]);
+        assert_eq!(paths(Some(Mux::Screen), true), vec![Local, Osc52]);
     }
 
     /// OSC 52 carries the text whole — UTF-8, newlines and all — as base64 for the `c` selection.
@@ -441,7 +506,7 @@ mod tests {
     /// Outside tmux: the sequence is written at once, the tool runs too, and the outcome names both.
     #[test]
     fn outside_tmux_the_tool_and_osc52_both_run() {
-        let mut c = Clipboard::with_commands(vec![ok()], true, "Shift");
+        let mut c = Clipboard::with_commands(vec![ok()], None, "Shift");
         assert_eq!(c.start("abc".to_owned()), (Some(osc52("abc")), None));
         assert!(c.pending());
         assert_eq!(finish(&mut c), (None, Some(done(3, &["sh", "OSC 52"]))));
@@ -457,7 +522,7 @@ mod tests {
         let out = dir.path().join("got");
         std::fs::write(&tool, format!("#!/bin/sh\ncat >'{}'\n", out.display())).unwrap();
         std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut c = Clipboard::with_commands(vec![argv(&[tool.to_str().unwrap()])], true, "Shift");
+        let mut c = Clipboard::with_commands(vec![argv(&[tool.to_str().unwrap()])], None, "Shift");
         assert_eq!(c.start("héllo".to_owned()), (Some(osc52("héllo")), None));
         assert_eq!(finish(&mut c), (None, Some(done(5, &["pbcopy", "OSC 52"]))));
         assert_eq!(std::fs::read_to_string(out).unwrap(), "héllo");
@@ -468,7 +533,7 @@ mod tests {
     #[test]
     fn a_failing_tool_still_sends_osc52() {
         let mut c =
-            Clipboard::with_commands(vec![fail(), argv(&["no-such-tool-iota"])], true, "Shift");
+            Clipboard::with_commands(vec![fail(), argv(&["no-such-tool-iota"])], None, "Shift");
         assert_eq!(c.start("abc".to_owned()), (Some(osc52("abc")), None));
         assert_eq!(finish(&mut c), (None, Some(done(3, &["OSC 52"]))));
     }
@@ -476,7 +541,7 @@ mod tests {
     /// No tool outside tmux: OSC 52 alone, at once.
     #[test]
     fn with_no_tool_osc52_alone_is_at_once() {
-        let mut c = Clipboard::with_commands(Vec::new(), true, "Shift");
+        let mut c = Clipboard::with_commands(Vec::new(), None, "Shift");
         assert_eq!(
             c.start("hi".to_owned()),
             (Some(osc52("hi")), Some(done(2, &["OSC 52"])))
@@ -488,14 +553,14 @@ mod tests {
     /// and the OSC 52 fall-through only when every program failed.
     #[test]
     fn inside_tmux_osc52_is_only_the_fall_through() {
-        let mut c = Clipboard::with_commands(vec![fail(), ok()], false, "Shift");
+        let mut c = Clipboard::with_commands(vec![fail(), ok()], TMUX, "Shift");
         assert_eq!(c.start("abc".to_owned()), (None, None));
         assert_eq!(
             finish(&mut c),
             (None, Some(done(3, &["sh"]))),
             "one took it"
         );
-        let mut c = Clipboard::with_commands(vec![ok(), ok()], false, "Shift");
+        let mut c = Clipboard::with_commands(vec![ok(), ok()], TMUX, "Shift");
         c.start("abc".to_owned());
         assert_eq!(
             finish(&mut c),
@@ -503,7 +568,7 @@ mod tests {
             "both took it"
         );
         let mut c =
-            Clipboard::with_commands(vec![fail(), argv(&["no-such-tool-iota"])], false, "Shift");
+            Clipboard::with_commands(vec![fail(), argv(&["no-such-tool-iota"])], TMUX, "Shift");
         assert_eq!(c.start("abc".to_owned()), (None, None));
         assert_eq!(
             finish(&mut c),
@@ -521,7 +586,7 @@ mod tests {
             osc52(&"z".repeat(70_000)).len() <= OSC52_MAX,
             "70 KB still goes"
         );
-        let mut c = Clipboard::with_commands(vec![ok()], true, "Shift");
+        let mut c = Clipboard::with_commands(vec![ok()], None, "Shift");
         assert_eq!(c.start(big()), (None, None));
         let left_out = Copied::Done {
             chars: OSC52_MAX,
@@ -529,20 +594,20 @@ mod tests {
             osc_too_large: true,
         };
         assert_eq!(finish(&mut c), (None, Some(left_out)));
-        let mut c = Clipboard::with_commands(vec![ok()], false, "Shift");
+        let mut c = Clipboard::with_commands(vec![ok()], TMUX, "Shift");
         c.start(big());
         assert_eq!(
             finish(&mut c),
             (None, Some(done(OSC52_MAX, &["sh"]))),
             "inside tmux no sequence was to go"
         );
-        let mut c = Clipboard::with_commands(vec![fail()], true, "Shift");
+        let mut c = Clipboard::with_commands(vec![fail()], None, "Shift");
         c.start(big());
         let too = Some(Copied::TooLarge { chars: OSC52_MAX });
         assert_eq!(finish(&mut c), (None, too.clone()));
-        let mut c = Clipboard::with_commands(Vec::new(), true, "Shift");
+        let mut c = Clipboard::with_commands(Vec::new(), None, "Shift");
         assert_eq!(c.start(big()), (None, too.clone()));
-        let mut c = Clipboard::with_commands(vec![fail()], false, "Shift");
+        let mut c = Clipboard::with_commands(vec![fail()], TMUX, "Shift");
         c.start(big());
         assert_eq!(
             finish(&mut c),
@@ -551,40 +616,90 @@ mod tests {
         );
     }
 
-    /// Inside screen over SSH there is no program: OSC 52 is the fall-through at once (a long one
-    /// is refused, as everywhere).
+    /// Inside screen the sequence goes with the tool, at once, cut into DCS strings of 76 bytes
+    /// whose contents are the sequence again.
     #[test]
-    fn with_no_program_the_fall_through_is_at_once() {
-        let mut c = Clipboard::with_commands(Vec::new(), false, "Shift");
-        assert_eq!(
-            c.start("hi".to_owned()),
-            (Some(osc52("hi")), Some(done(2, &["OSC 52"])))
-        );
-        let big = "x".repeat(OSC52_MAX);
-        let too = Some(Copied::TooLarge { chars: OSC52_MAX });
-        assert_eq!(c.start(big), (None, too));
+    fn inside_screen_osc52_goes_in_dcs_pieces() {
+        let text = "y".repeat(200);
+        let mut c = Clipboard::with_commands(vec![ok()], Some(Mux::Screen), "Shift");
+        let (seq, none) = c.start(text.clone());
+        assert_eq!(none, None);
+        let seq = seq.unwrap();
+        let pieces: Vec<&str> = seq
+            .strip_prefix("\x1bP")
+            .unwrap()
+            .strip_suffix("\x1b\\")
+            .unwrap()
+            .split("\x1b\\\x1bP")
+            .collect();
+        assert!(pieces.len() > 1 && pieces.iter().all(|p| p.len() <= SCREEN_CHUNK));
+        assert_eq!(pieces.concat(), osc52(&text));
+        assert_eq!(finish(&mut c), (None, Some(done(200, &["sh", "OSC 52"]))));
     }
 
-    /// A tool that hangs settles the copy at [`COPY_DEADLINE`] as one that failed: outside a
-    /// multiplexer the sequence alone, inside one the fall-through.
+    /// A tool that hangs settles the copy at [`COPY_DEADLINE`] as one that failed, and is killed:
+    /// outside a multiplexer the sequence alone, inside tmux the fall-through.
     #[cfg(unix)]
     #[test]
     fn a_hung_tool_settles_at_the_deadline() {
-        let hang = || argv(&["sh", "-c", "cat >/dev/null; sleep 5"]);
-        let past = |c: &mut Clipboard| {
-            let p = c.pending.as_mut().unwrap();
-            p.started = Instant::now().checked_sub(COPY_DEADLINE).unwrap();
-        };
-        let mut c = Clipboard::with_commands(vec![hang()], true, "Shift");
+        let hang = || argv(&["sh", "-c", "exec sleep 30"]);
+        let mut c = Clipboard::with_commands(vec![hang()], None, "Shift");
         assert_eq!(c.start("abc".to_owned()), (Some(osc52("abc")), None));
+        let pid = c.pending.as_ref().unwrap().runs[0]
+            .child
+            .as_ref()
+            .unwrap()
+            .id();
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(c.poll(), (None, None), "within the deadline it waits");
         past(&mut c);
         assert_eq!(c.poll(), (None, Some(done(3, &["OSC 52"]))));
         assert!(!c.pending());
-        let mut c = Clipboard::with_commands(vec![hang()], false, "Shift");
+        let alive = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status();
+        assert!(!alive.unwrap().success(), "the hung child was killed");
+        let mut c = Clipboard::with_commands(vec![hang()], TMUX, "Shift");
         assert_eq!(c.start("abc".to_owned()), (None, None));
         past(&mut c);
         assert_eq!(c.poll(), (Some(osc52("abc")), Some(done(3, &["OSC 52"]))));
+    }
+
+    /// A hung first program does not hold back the second: inside tmux a hung `pbcopy` and a
+    /// `tmux` that succeeds settle at the deadline as the second one's way, with no fall-through —
+    /// not before the deadline, and not past it.
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_program_does_not_starve_the_next() {
+        let mut c = Clipboard::with_commands(
+            vec![argv(&["sh", "-c", "exec sleep 30"]), ok()],
+            TMUX,
+            "Shift",
+        );
+        assert_eq!(c.start("abc".to_owned()), (None, None));
+        let t0 = Instant::now();
+        while c.pending.as_ref().unwrap().runs[1].child.is_some() {
+            assert_eq!(
+                c.poll(),
+                (None, None),
+                "the hung one is still within the deadline"
+            );
+            assert!(
+                t0.elapsed() < Duration::from_secs(1),
+                "the second never ran"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(c.pending(), "it waits for the hung one until the deadline");
+        past(&mut c);
+        assert_eq!(c.poll(), (None, Some(done(3, &["sh"]))));
+        assert!(!c.pending());
+    }
+
+    /// Moves a pending copy's start back past [`COPY_DEADLINE`].
+    fn past(c: &mut Clipboard) {
+        let p = c.pending.as_mut().unwrap();
+        p.started = Instant::now().checked_sub(COPY_DEADLINE).unwrap();
     }
 }
