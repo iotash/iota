@@ -10,12 +10,19 @@
 //! those bytes would be: `Alt+]`, then one character key a byte, then `Ctrl+G` (or `Alt+\` for an
 //! ST terminator). [`ReplyMatcher`] recognizes exactly that run and takes it out of the stream;
 //! every other event passes through in the order it came, which is the whole input-safety
-//! argument: no byte is read anywhere but in crossterm, so no key can be swallowed, and the only
-//! events withheld are the reply's own.
+//! argument: no byte is read anywhere but in crossterm, so there is no second reader to take a
+//! key, and the only events withheld are the reply's own.
+//!
+//! One residual risk is accepted: a reply whose first byte, `ESC`, is the last byte of a read
+//! reaches the loop as a lone `Esc` key and then `]11;rgb:…` as typing. The matcher never
+//! withholds a lone `Esc` — it is the user's cancel key, and delaying it would be the worse fault
+//! — so that `Esc` cancels whatever is innermost and the rest lands in the composer. It needs a
+//! terminal (or a transport) that cuts the reply exactly after its first byte.
 //!
 //! [`Requery`] is the policy around it: when to ask (150 ms after the window regains focus, if
-//! the user is not typing; and when the REPL asks, between turns), how long to wait, and that a
-//! terminal which does not answer is never asked again.
+//! the user is not typing; and when the REPL asks, between turns), how long to wait, that a
+//! terminal which does not answer is never asked again, and that one whose host answers for it is
+//! never asked at all.
 
 use std::time::{Duration, Instant};
 
@@ -31,6 +38,11 @@ pub(crate) const FOCUS_SETTLE: Duration = Duration::from_millis(150);
 /// A focus check is skipped when a key or a paste arrived this recently: the user is typing, and
 /// the question waits for the next turn.
 pub(crate) const KEY_QUIET: Duration = Duration::from_millis(300);
+
+/// How long after a miss a late reply is still looked for. Within it the reply is removed instead
+/// of typed; past it the matcher stands down, so a terminal that never answers costs a real
+/// `Alt+]` nothing for the rest of the session.
+pub(crate) const MISS_GRACE: Duration = Duration::from_secs(1);
 
 /// How a reply begins, as bytes: `ESC ] 1 1 ;`.
 const PREFIX: &[u8] = b"\x1b]11;";
@@ -74,8 +86,10 @@ impl Reply {
 /// Finds the OSC 11 reply among the key events crossterm makes of it (the module doc).
 ///
 /// Idle until [`Self::expect`]: a session that never asks is never matched against. From then on
-/// it stays armed until a reply has been taken — also past the deadline, so an answer that comes
-/// late is still removed instead of being typed into the composer.
+/// it stays armed until a reply has been taken or [`Requery`] stands it down — which it does
+/// [`MISS_GRACE`] after a miss, so an answer that comes a little late is still removed instead of
+/// being typed into the composer, and a terminal that never answers is not matched against for
+/// the rest of the session.
 #[derive(Debug, Default)]
 pub(crate) struct ReplyMatcher {
     /// Whether a query is out and its reply has not been seen.
@@ -128,6 +142,16 @@ impl ReplyMatcher {
         self.expecting = true;
     }
 
+    /// Stops looking for a reply, once nothing is held: `false` while a run is still held (its
+    /// fate is [`Self::stale`]'s to decide first).
+    fn stand_down(&mut self) -> bool {
+        if self.since.is_some() {
+            return false;
+        }
+        self.expecting = false;
+        true
+    }
+
     /// Whether the held events are inside a reply (the prefix matched), not just a possible start.
     fn in_reply(&self) -> bool {
         self.bytes.len() >= PREFIX.len()
@@ -166,9 +190,18 @@ impl ReplyMatcher {
     /// One event from the terminal: passed on, held, or the end of a reply.
     pub(crate) fn feed(&mut self, ev: Event) -> Fed {
         let mut fed = Fed::default();
-        if !self.expecting || !matches!(ev, Event::Key(_)) {
-            // A resize, a mouse report, a paste or a focus change is no part of a reply and
-            // breaks none: it passes, and what is held stays held.
+        if !self.expecting {
+            fed.pass.push(ev);
+            return fed;
+        }
+        if !matches!(ev, Event::Key(_)) {
+            // A resize, a mouse report, a paste or a focus change is no part of a reply. Inside
+            // one it passes and breaks nothing (the reply's keys are one run of the terminal's
+            // bytes; a resize is a signal that may land between two reads of it). Behind a mere
+            // possible start it ends the wait: the held keys go first, so the order stands.
+            if !self.in_reply() {
+                self.give_up(&mut fed.pass);
+            }
             fed.pass.push(ev);
             return fed;
         }
@@ -241,6 +274,8 @@ pub(crate) struct Requery {
     sent: Option<Instant>,
     /// A question to write this iteration.
     wanted: bool,
+    /// After a miss: when the matcher stops looking for the late reply ([`MISS_GRACE`]).
+    stand_down: Option<Instant>,
     /// When the last key or paste arrived.
     last_input: Option<Instant>,
     /// The REPL's callers waiting for the answer.
@@ -257,6 +292,7 @@ impl Default for Requery {
             due: None,
             sent: None,
             wanted: false,
+            stand_down: None,
             last_input: None,
             waiters: Vec::new(),
         }
@@ -287,8 +323,8 @@ impl Requery {
         self.wanted = self.sent.is_none();
     }
 
-    /// The timers: a due focus check asks unless the user is typing, and a question out for
-    /// [`osc::REPLY_TIMEOUT`] is a miss.
+    /// The timers: a due focus check asks unless the user is typing, a question out for
+    /// [`osc::REPLY_TIMEOUT`] is a miss, and [`MISS_GRACE`] after a miss the matcher stands down.
     pub(crate) fn tick(&mut self, now: Instant) {
         if self.due.is_some_and(|at| now >= at) {
             self.due = None;
@@ -304,7 +340,21 @@ impl Requery {
             .is_some_and(|at| now.saturating_duration_since(at) >= osc::REPLY_TIMEOUT)
         {
             self.miss();
+            self.stand_down = Some(now + MISS_GRACE);
         }
+        if self.stand_down.is_some_and(|at| now >= at) && self.matcher.stand_down() {
+            self.stand_down = None;
+        }
+    }
+
+    /// A host answers for the background (cmux, asked by the REPL before every turn): the
+    /// terminal is not asked at all, so the two can never disagree on screen — a focus check
+    /// flipping the frame one way and the next turn flipping it back.
+    pub(crate) fn leave_to_host(&mut self, now: Instant) {
+        if self.sent.is_some() {
+            self.stand_down = Some(now + MISS_GRACE);
+        }
+        self.miss();
     }
 
     /// Whether the question is to be written now; the caller writes it.
@@ -361,6 +411,7 @@ impl Requery {
         let after = |at: Instant| (at + osc::REPLY_TIMEOUT).saturating_duration_since(now);
         [
             self.due.map(|at| at.saturating_duration_since(now)),
+            self.stand_down.map(|at| at.saturating_duration_since(now)),
             self.sent.map(after),
             self.matcher.since.map(after),
         ]
@@ -374,11 +425,11 @@ impl Requery {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::{FOCUS_SETTLE, Fed, KEY_QUIET, Reply, ReplyMatcher, Requery};
+    use super::{FOCUS_SETTLE, Fed, KEY_QUIET, MISS_GRACE, Reply, ReplyMatcher, Requery};
     use crate::ui::runtime::osc::REPLY_TIMEOUT;
     use crate::ui::testutil::reply_events;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
     use tokio::sync::oneshot;
 
     fn key(c: char) -> Event {
@@ -477,10 +528,21 @@ mod tests {
         let mut m = ReplyMatcher::default();
         m.expect();
         assert_eq!(m.feed(alt(']')), Fed::default());
-        assert_eq!(m.feed(Event::FocusLost).pass, [Event::FocusLost]);
         let now = Instant::now();
         assert!(m.stale(now).is_empty());
         assert_eq!(m.stale(now + REPLY_TIMEOUT), [alt(']')]);
+        // Behind a possible start, an event that is no key releases it first: the order stands.
+        assert_eq!(m.feed(alt(']')), Fed::default());
+        let paste = Event::Paste("p".to_owned());
+        assert_eq!(m.feed(paste.clone()).pass, [alt(']'), paste]);
+        // Inside a reply it passes and breaks nothing.
+        let (pass, replies) = run(&mut m, reply_events("rgb:ffff/", ""));
+        assert!(pass.is_empty() && replies.is_empty());
+        assert_eq!(m.feed(Event::FocusLost).pass, [Event::FocusLost]);
+        let (pass, replies) = run(&mut m, reply_events("ffff/ffff", "\x07").split_off(4));
+        assert!(pass.is_empty());
+        assert_eq!(replies, [Some(false)]);
+        m.expect();
 
         let (pass, replies) = run(&mut m, reply_events("rgb:ffff/ff", ""));
         assert!(pass.is_empty() && replies.is_empty());
@@ -531,10 +593,61 @@ mod tests {
         r.ask(tx);
         assert_eq!(rx.try_recv().unwrap(), None);
         r.focus_gained(t0);
-        r.tick(t0 + Duration::from_secs(1));
+        r.tick(t0 + REPLY_TIMEOUT * 2);
         assert!(!r.take_query(t0));
-        assert_eq!(r.next_wake(t0), None);
         assert_eq!(r.answer(Reply::Tone { dark: false }), None);
+    }
+
+    /// After a miss the reply is still looked for, for [`MISS_GRACE`]: one that comes late is
+    /// taken out of the stream (and ignored). Past the grace the matcher stands down — the same
+    /// keys are the user's again, and nothing is left to wake the loop for.
+    #[test]
+    fn a_late_reply_is_removed_within_the_grace_and_typing_after_it() {
+        let reply = || reply_events("rgb:ffff/ffff/ffff", "\x07");
+        let miss = |r: &mut Requery, t0: Instant| {
+            r.focus_gained(t0);
+            r.tick(t0 + FOCUS_SETTLE);
+            assert!(r.take_query(t0 + FOCUS_SETTLE));
+            let missed = t0 + FOCUS_SETTLE + REPLY_TIMEOUT;
+            r.tick(missed);
+            missed
+        };
+        let t0 = Instant::now();
+
+        let mut r = Requery::default();
+        let missed = miss(&mut r, t0);
+        r.tick(missed + MISS_GRACE / 2);
+        let mut taken = None;
+        for ev in reply() {
+            let fed = r.feed(ev);
+            assert!(fed.pass.is_empty(), "the late reply was typed");
+            taken = taken.or(fed.reply);
+        }
+        assert_eq!(r.answer(taken.unwrap()), None, "and it is not obeyed");
+
+        let mut r = Requery::default();
+        let missed = miss(&mut r, t0);
+        r.tick(missed + MISS_GRACE);
+        assert_eq!(r.next_wake(missed + MISS_GRACE), None);
+        let events = reply();
+        let passed: Vec<Event> = events.iter().flat_map(|e| r.feed(e.clone()).pass).collect();
+        assert_eq!(passed, events, "past the grace the keys are the user's");
+    }
+
+    /// A host that knows the background takes the question over: focus asks nothing, the REPL's
+    /// call hears `None` at once.
+    #[test]
+    fn a_host_that_knows_ends_the_asking() {
+        let t0 = Instant::now();
+        let mut r = Requery::default();
+        r.leave_to_host(t0);
+        r.focus_gained(t0);
+        r.tick(t0 + FOCUS_SETTLE);
+        assert!(!r.take_query(t0 + FOCUS_SETTLE));
+        let (tx, mut rx) = oneshot::channel();
+        r.ask(tx);
+        assert_eq!(rx.try_recv().unwrap(), None);
+        assert_eq!(r.next_wake(t0), None);
     }
 
     /// One question serves every caller that asked while it was out.

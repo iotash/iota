@@ -534,6 +534,11 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     };
     let tr = Arc::new(Transcript::new(Arc::clone(&ui), estimator));
     tr.set_dark(dark);
+    // A host that answers for the background is the one source of it: the UI loop is told once
+    // not to ask the terminal (its focus check could flip the frame against the host's answer).
+    if pres.knows_background() {
+        ui.background_from_host();
+    }
     tr.set_claimed_element(pres.message_element());
     // `/debug on` keeps activity groups expanded: the transcript reads the log live.
     {
@@ -1034,6 +1039,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // under its own deadline; `None` = no host knows.) Then the terminal itself is asked
         // again, through the UI loop (X-108): the OS may have switched its appearance since the
         // last turn. A terminal that does not answer keeps the pre-loop probe's answer.
+        // The ask costs the turn's start one terminal round trip — a few milliseconds, and the
+        // 100 ms reply deadline once, on a terminal that does not answer; after that nothing.
         let known = match pres.dark_background().await {
             Some(known) => Some(known),
             None => ui.requery_background().await,

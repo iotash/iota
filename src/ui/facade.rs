@@ -1131,6 +1131,11 @@ pub trait Ui: Send + Sync {
     /// already taken the answer when this resolves (X-108).
     fn requery_background(&self) -> BoxFuture<'_, Option<bool>>;
 
+    /// Says that a host answers for the background (cmux): the UI loop stops asking the terminal
+    /// — its focus check too — so the host's answer, which the REPL hands over before every turn
+    /// ([`Self::set_dark_background`]), is the only one the frame ever takes.
+    fn background_from_host(&self);
+
     // ---- cross-thread reads (atomics) ----
 
     /// Terminal width; starts 80.

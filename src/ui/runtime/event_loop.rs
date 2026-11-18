@@ -624,6 +624,7 @@ impl Model {
             }
             // Nothing to draw: the query is written by this iteration, the answer is an event.
             UiMsg::RequeryBackground(reply) => self.requery.ask(reply),
+            UiMsg::BackgroundFromHost => self.requery.leave_to_host(Instant::now()),
             #[cfg(unix)]
             UiMsg::Suspend => {
                 self.suspend = true;

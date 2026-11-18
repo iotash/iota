@@ -111,6 +111,9 @@ pub(crate) enum UiMsg {
     /// loop writes the query and answers with the reply it finds among its events — `None` when
     /// the terminal does not answer, at once when it has not answered before.
     RequeryBackground(oneshot::Sender<Option<bool>>),
+    /// A host answers for the background (`Ui::background_from_host`): the terminal is no longer
+    /// asked, on focus or otherwise.
+    BackgroundFromHost,
     /// Job control from outside (SIGTSTP, the full screen only): hand the terminal back and stop
     /// until `fg` (tui-plan S4). Unix only: a Windows console has no job control.
     #[cfg(unix)]

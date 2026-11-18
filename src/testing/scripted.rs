@@ -96,6 +96,8 @@ pub enum UiEvent {
     ProgramStatus(String),
     /// [`Ui::set_dark_background`].
     DarkBackground(bool),
+    /// [`Ui::background_from_host`].
+    BackgroundFromHost,
 }
 
 /// Shape assertion for one panel of a tabbed/select/view/confirm call — everything L3
@@ -615,6 +617,10 @@ impl Ui for ScriptedUi {
 
     fn set_dark_background(&self, dark: bool) {
         self.record(UiEvent::DarkBackground(dark));
+    }
+
+    fn background_from_host(&self) {
+        self.record(UiEvent::BackgroundFromHost);
     }
 
     /// What [`ScriptedUi::set_terminal_background`] set — by default "no answer", so the REPL keeps

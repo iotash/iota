@@ -308,10 +308,15 @@ async fn the_terminals_answer_reshades_the_turn_when_no_host_knows() {
             .await
             .expect("clean exit");
         assert_eq!(tones(&f.ui), want, "the terminal answered {answer:?}");
+        assert!(
+            !f.ui.events().contains(&UiEvent::BackgroundFromHost),
+            "no host knows the background"
+        );
     }
 }
 
-/// A host that knows its background (cmux) is believed: the terminal is not the one asked.
+/// A host that knows its background (cmux) is believed: the terminal is not the one asked, and
+/// the UI loop is told so once, before the first turn, so its focus check stays quiet too.
 #[tokio::test]
 async fn a_host_that_knows_the_background_outranks_the_terminal() {
     let mut f = Fixture::new(vec![input("hi"), Reply::Interrupted]);
@@ -322,6 +327,17 @@ async fn a_host_that_knows_the_background_outranks_the_terminal() {
         .await
         .expect("clean exit");
     assert_eq!(tones(&f.ui), vec![true]);
+    let told = |e: &UiEvent| *e == UiEvent::BackgroundFromHost;
+    let events = f.ui.events();
+    assert_eq!(events.iter().filter(|e| told(e)).count(), 1);
+    let before_the_turn = events.iter().position(told)
+        < events
+            .iter()
+            .position(|e| *e == UiEvent::DarkBackground(true));
+    assert!(
+        before_the_turn,
+        "the loop was told after the first turn began"
+    );
 }
 
 /// An image-only reply pings `"Image ready"`, decided AFTER

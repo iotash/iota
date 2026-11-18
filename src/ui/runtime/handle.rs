@@ -509,6 +509,10 @@ impl Ui for TuiHandle {
         let _ = self.tx.send(UiMsg::DarkBackground(dark));
     }
 
+    fn background_from_host(&self) {
+        let _ = self.tx.send(UiMsg::BackgroundFromHost);
+    }
+
     fn requery_background(&self) -> BoxFuture<'_, Option<bool>> {
         Box::pin(async move {
             let (reply_tx, reply_rx) = oneshot::channel();

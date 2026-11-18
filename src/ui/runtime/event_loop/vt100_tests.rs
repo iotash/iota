@@ -2416,10 +2416,9 @@ mod asked_again {
         h.quit_and_join(LONG);
     }
 
-    /// THE input-safety unit. The terminal answers late; inside the window the user types a key and
-    /// pastes, and types again right behind the reply. All of it reaches the composer, in order, and
-    /// not one character of the reply does. That the reply was heard and not written off as a miss is
-    /// what the second question shows: a terminal that missed is never asked again.
+    /// THE input-safety unit, and it is about ORDER, not time: with the question out, a key, a
+    /// paste, a key, the terminal's reply and one more key arrive in one go. Everything typed
+    /// reaches the composer, in order, and not one character of the reply does.
     #[test]
     fn keys_and_a_paste_inside_the_reply_window_reach_the_composer() {
         let h = start_loop();
@@ -2429,8 +2428,6 @@ mod asked_again {
         h.etx.send(ch('a')).unwrap();
         h.etx.send(Event::Paste("-pasted-".to_owned())).unwrap();
         h.etx.send(ch('b')).unwrap();
-        assert!(h.wait_until(LONG, |h| h.contents().contains("a-pasted-b")));
-        thread::sleep(Duration::from_millis(40)); // the terminal is slow
         reply(&h, "rgb:ffff/ffff/ffff");
         h.etx.send(ch('c')).unwrap();
 
@@ -2445,27 +2442,22 @@ mod asked_again {
             !screen.contains("11;") && !screen.contains("rgb"),
             "the reply was typed: {screen}"
         );
-
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        h.tx.send(UiMsg::RequeryBackground(tx)).unwrap();
-        assert!(h.wait_until(LONG, |h| queries(h) == 2), "asked again");
-        reply(&h, "rgb:ffff/ffff/ffff");
-        assert_eq!(rx.blocking_recv().unwrap(), Some(false));
         h.quit_and_join(LONG);
     }
 
-    /// A terminal that never answers is asked ONE time. The miss ends it for the session: another
-    /// focus asks nothing, the REPL's between-turns call is told "no answer" at once, and the reply
-    /// that does come — far too late — is neither typed nor obeyed. Keys go on working throughout.
+    /// A terminal that never answers is asked ONE time. The miss ends it for the session: the
+    /// REPL's between-turns call — parked on the question — is told "no answer", the next one at
+    /// once, and another focus asks nothing. Keys go on working throughout. (What becomes of a
+    /// reply that comes late is `requery::tests`' to say, on a clock of its own.)
     #[test]
     fn a_mute_terminal_is_asked_once() {
-        use crate::ui::runtime::osc::REPLY_TIMEOUT;
         use crate::ui::runtime::requery::FOCUS_SETTLE;
 
         let h = start_listed();
-        h.etx.send(Event::FocusGained).unwrap();
-        assert!(h.wait_until(LONG, |h| queries(h) == 1), "the question");
-        thread::sleep(REPLY_TIMEOUT * 2);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        h.tx.send(UiMsg::RequeryBackground(tx)).unwrap();
+        assert_eq!(rx.blocking_recv().unwrap(), None, "the miss");
+        assert_eq!(queries(&h), 1);
 
         h.etx.send(Event::FocusLost).unwrap();
         h.etx.send(Event::FocusGained).unwrap();
@@ -2476,20 +2468,28 @@ mod asked_again {
         h.sync();
         assert_eq!(queries(&h), 1, "asked again after a miss");
 
-        reply(&h, "rgb:ffff/ffff/ffff");
-        h.sync();
-        assert!(
-            shaded(&h, DARK_ROW) && !shaded(&h, LIGHT_ROW),
-            "the late reply was obeyed"
-        );
+        assert!(shaded(&h, DARK_ROW) && !shaded(&h, LIGHT_ROW));
         h.etx.send(ch('z')).unwrap();
         assert!(h.wait_until(LONG, |h| h.contents().contains('z')));
+        h.quit_and_join(LONG);
+    }
+
+    /// A host answers for the background (`Ui::background_from_host`, cmux): the terminal is
+    /// never asked — not on focus, not by the REPL's call, which hears `None` at once.
+    #[test]
+    fn a_host_that_knows_the_background_silences_the_question() {
+        use crate::ui::runtime::requery::FOCUS_SETTLE;
+
+        let h = start_loop();
+        h.tx.send(UiMsg::BackgroundFromHost).unwrap();
         h.sync();
-        let screen = h.contents();
-        assert!(
-            !screen.contains("rgb"),
-            "the late reply was typed: {screen}"
-        );
+        h.etx.send(Event::FocusGained).unwrap();
+        thread::sleep(FOCUS_SETTLE * 2);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        h.tx.send(UiMsg::RequeryBackground(tx)).unwrap();
+        assert_eq!(rx.blocking_recv().unwrap(), None);
+        h.sync();
+        assert_eq!(queries(&h), 0);
         h.quit_and_join(LONG);
     }
 

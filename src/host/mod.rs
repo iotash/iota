@@ -565,6 +565,12 @@ impl Presenter {
         }
     }
 
+    /// Whether a host answers for the background at all (cmux): the terminal itself is then not
+    /// asked again while the chat runs (X-108).
+    pub fn knows_background(&self) -> bool {
+        self.core.hosts.iter().any(|h| h.as_background().is_some())
+    }
+
     /// The first host that KNOWS the background tone (background.go:42-51), asked in order; the
     /// cmux probe is an RPC child under a one-second deadline.
     pub async fn dark_background(&self) -> Option<bool> {

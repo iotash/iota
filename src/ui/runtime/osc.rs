@@ -156,35 +156,25 @@ pub(crate) fn round_trip(_query: &[u8]) -> io::Result<Vec<u8>> {
 /// always trails the OSC answer (same write, in-order replies); the cap guards a garbage-spewing
 /// pty.
 ///
-/// Every byte is read only after the descriptor said one is there, and the wait is bounded by
-/// what is left of `timeout`: when it runs out the function returns with nothing in flight — no
-/// thread parked on the tty, no read that a later keystroke would complete. (Until 2026-11-18 a
-/// detached thread did the reading, and on a terminal that answered nothing it stayed parked and
-/// took the first key typed.) Nothing past the `R` is read either.
+/// Every byte is read only after the descriptor said one is there ([`readable`]), and the wait is
+/// bounded by what is left of `timeout`: when it runs out the function returns with nothing in
+/// flight — no thread parked on the tty, no read that a later keystroke would complete. (Until
+/// 2026-11-18 a detached thread did the reading, and on a terminal that answered nothing it stayed
+/// parked and took the first key typed.) Nothing past the `R` is read either.
 #[cfg(unix)]
 fn exchange(tty: &mut File, query: &[u8], timeout: Duration) -> io::Result<Vec<u8>> {
-    use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-    use std::os::fd::AsFd as _;
-
     tty.write_all(&[query, b"\x1b[6n"].concat())?;
     tty.flush()?;
     let deadline = Instant::now() + timeout;
-    let silent = || io::Error::new(io::ErrorKind::TimedOut, "no reply to the query or the DSR");
     let mut buf = Vec::with_capacity(64);
     let mut byte = [0u8; 1];
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(silent());
-        }
-        let mut fds = [PollFd::new(tty.as_fd(), PollFlags::POLLIN)];
-        let wait = PollTimeout::try_from(left).unwrap_or(PollTimeout::MAX);
-        match poll(&mut fds, wait) {
-            Ok(0) => return Err(silent()),
-            Ok(_) => {}
-            // A signal (SIGWINCH during startup): wait again for what is left.
-            Err(nix::errno::Errno::EINTR) => continue,
-            Err(e) => return Err(e.into()),
+        if left.is_zero() || !readable(tty, left)? {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "no reply to the query or the DSR",
+            ));
         }
         if tty.read(&mut byte)? == 0 {
             return Err(io::ErrorKind::UnexpectedEof.into());
@@ -193,6 +183,38 @@ fn exchange(tty: &mut File, query: &[u8], timeout: Duration) -> io::Result<Vec<u
         if byte[0] == b'R' || buf.len() > 256 {
             return Ok(buf);
         }
+    }
+}
+
+/// Waits up to `timeout` for `tty` to have a byte to read: `Ok(true)` only when a read will not
+/// block, `Ok(false)` when the time ran out (or a signal cut the wait short — the caller comes
+/// back with what is left).
+///
+/// `select(2)`, not `poll(2)`: macOS's `poll` does not work on a device. On `/dev/tty` it returns
+/// at once with `POLLNVAL`, so a wait written with it is no wait at all and the read after it
+/// blocks until a key is typed — which it then takes (measured 2026-11-18; the `filedescriptor`
+/// crate crossterm reads the tty through uses `select` on macOS for the same reason). A hung-up
+/// terminal reads as readable here and as end-of-file to the read that follows.
+#[cfg(unix)]
+fn readable(tty: &File, timeout: Duration) -> io::Result<bool> {
+    use nix::sys::select::{FD_SETSIZE, FdSet, select};
+    use nix::sys::time::{TimeVal, TimeValLike as _};
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+
+    let fd = tty.as_fd();
+    // `FdSet` cannot hold a descriptor past its size (and panics on one).
+    if usize::try_from(fd.as_raw_fd()).map_or(true, |n| n >= FD_SETSIZE) {
+        return Err(io::Error::other(
+            "the terminal's descriptor is out of select's range",
+        ));
+    }
+    let mut set = FdSet::new();
+    set.insert(fd);
+    let mut wait = TimeVal::microseconds(i64::try_from(timeout.as_micros()).unwrap_or(i64::MAX));
+    match select(None, &mut set, None, None, &mut wait) {
+        Ok(_) => Ok(set.contains(fd)),
+        Err(nix::errno::Errno::EINTR) => Ok(false),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -294,8 +316,9 @@ mod tests {
         )
     }
 
-    /// The timeout path: a terminal that answers nothing costs the deadline and leaves NOTHING
-    /// behind. The byte the terminal sends afterwards — the user's next key — is still there to be
+    /// The timeout path, over a socket pair (what a real `/dev/tty` does with the wait is the
+    /// `script(1)` test's to show, below): a terminal that answers nothing costs the deadline and
+    /// leaves NOTHING behind. The byte the terminal sends afterwards — the user's next key — is still there to be
     /// read by whoever reads the tty next; a reader left parked by `exchange` (the detached thread
     /// it used to have) would have taken it, and this read would then find nothing.
     #[cfg(unix)]
@@ -311,7 +334,7 @@ mod tests {
         let err = super::exchange(&mut tty, super::OSC11_QUERY, super::REPLY_TIMEOUT).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
         let took = started.elapsed();
-        // (`poll` counts whole milliseconds: the wait may end a fraction of one early.)
+        // (The margin is for the clock's grain, not for the wait.)
         assert!(
             took >= super::REPLY_TIMEOUT * 9 / 10 && took < Duration::from_secs(2),
             "waited {took:?}"
@@ -357,6 +380,91 @@ mod tests {
         let mut key = [0u8; 8];
         assert_eq!(tty.read(&mut key).unwrap(), 1);
         assert_eq!(key[0], b'k');
+    }
+
+    /// Where the child of [`a_real_terminal_that_answers_nothing_costs_the_deadline_and_no_more`]
+    /// writes what its round-trip came to.
+    #[cfg(unix)]
+    const REAL_TTY_OUT: &str = "IOTA_TEST_REAL_TTY_OUT";
+
+    /// The child half: this test binary run again under `script(1)`, whose pty is this process's
+    /// controlling terminal and answers nothing. Does nothing unless it is that child.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "the child of a_real_terminal_that_answers_nothing_costs_the_deadline_and_no_more"]
+    fn real_tty_child() {
+        let Some(out) = std::env::var_os(REAL_TTY_OUT) else {
+            return;
+        };
+        let started = std::time::Instant::now();
+        let result = super::round_trip(super::OSC11_QUERY);
+        let took = started.elapsed().as_millis();
+        let what = match result {
+            Ok(bytes) => format!("answered {bytes:?}"),
+            Err(e) => format!("{:?}", e.kind()),
+        };
+        std::fs::write(out, format!("{what} {took}")).unwrap();
+    }
+
+    /// The timeout path on a REAL `/dev/tty`, which is the only place it can go wrong: a socket
+    /// pair (the two tests above) and a pty's own device both wait correctly under `poll(2)`,
+    /// while macOS's `poll` on `/dev/tty` itself returns at once and left the read blocking until a
+    /// key was typed. `script(1)` gives the child a pty as its controlling terminal and answers
+    /// neither the OSC 11 query nor the DSR; its stdin is held open and silent, so nothing is ever
+    /// typed. The round-trip must come back `TimedOut` after the deadline — not hang.
+    #[cfg(unix)]
+    #[test]
+    fn a_real_terminal_that_answers_nothing_costs_the_deadline_and_no_more() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("round-trip");
+        let exe = std::env::current_exe().unwrap();
+        let child_args = [
+            "--exact",
+            "ui::runtime::osc::tests::real_tty_child",
+            "--ignored",
+            "--test-threads=1",
+        ];
+        let mut cmd = Command::new("script");
+        if cfg!(target_os = "linux") {
+            // util-linux: `script -qec <command> <file>`.
+            let line = format!("'{}' {}", exe.display(), child_args.join(" "));
+            cmd.args(["-qec", &line, "/dev/null"]);
+        } else {
+            // BSD (macOS): `script -q <file> <command…>`.
+            cmd.args(["-q", "/dev/null"]).arg(&exe).args(child_args);
+        }
+        let mut script = cmd
+            .env(REAL_TTY_OUT, &out)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !out.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let hung = !out.exists();
+        let _ = script.kill();
+        let _ = script.wait();
+        assert!(
+            !hung,
+            "the round-trip never came back: it is blocked on the tty"
+        );
+
+        std::thread::sleep(Duration::from_millis(50)); // the write is one call, but not atomic
+        let said = std::fs::read_to_string(&out).unwrap();
+        let (what, took) = said.rsplit_once(' ').unwrap();
+        assert_eq!(what, "TimedOut", "{said}");
+        let took: u128 = took.parse().unwrap();
+        assert!(
+            (90..2000).contains(&took),
+            "waited {took} ms, want about 100"
+        );
     }
 
     #[test]
