@@ -753,12 +753,11 @@ impl Model {
     /// here too, as the keys crossterm makes of it (`requery.rs`): it is taken out first, and a flip
     /// is ONE ordinary dirty frame — the shades are read at draw time, so nothing is cleared.
     pub(crate) fn handle_event(&mut self, ev: Event) {
-        let fed = self.requery.feed(ev, Instant::now());
-        if let Some(ev) = fed.pass {
+        let (pass, tone) = self.requery.feed(ev, Instant::now());
+        if let Some(ev) = pass {
             self.dispatch_event(ev);
         }
-        if let Some(reply) = fed.reply
-            && let Some(dark) = self.requery.answer(reply)
+        if let Some(dark) = tone
             && dark != self.dark
         {
             self.dark = dark;
