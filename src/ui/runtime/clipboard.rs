@@ -308,10 +308,13 @@ const SCREEN_CHUNK: usize = 76;
 /// `ESC P <piece> ESC \`, whose contents screen hands to the outer terminal as they are — so the
 /// terminal reads the pieces as the one sequence.
 fn screen_dcs(seq: &str) -> String {
-    seq.as_bytes()
-        .chunks(SCREEN_CHUNK)
-        .map(|piece| format!("\x1bP{}\x1b\\", String::from_utf8_lossy(piece)))
-        .collect()
+    let mut out = String::with_capacity(seq.len() + seq.len().div_ceil(SCREEN_CHUNK) * 4);
+    for piece in seq.as_bytes().chunks(SCREEN_CHUNK) {
+        out.push_str("\x1bP");
+        out.push_str(&String::from_utf8_lossy(piece));
+        out.push_str("\x1b\\");
+    }
+    out
 }
 
 /// A copy of `chars` characters that the programs named in `took` succeeded at, its sequence
