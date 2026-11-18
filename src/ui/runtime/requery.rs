@@ -406,12 +406,15 @@ impl Requery {
         }
     }
 
-    /// How long until [`Self::tick`] or [`Self::stale`] has something to do, when either does.
+    /// How long until [`Self::tick`] or [`Self::stale`] has something to do, when either does. The
+    /// stand-down waits for held events to be released ([`ReplyMatcher::stand_down`]), so while
+    /// any are held it is their release that is waited for, not a stand-down already due.
     pub(crate) fn next_wake(&self, now: Instant) -> Option<Duration> {
         let after = |at: Instant| (at + osc::REPLY_TIMEOUT).saturating_duration_since(now);
+        let stand_down = self.stand_down.filter(|_| self.matcher.since.is_none());
         [
             self.due.map(|at| at.saturating_duration_since(now)),
-            self.stand_down.map(|at| at.saturating_duration_since(now)),
+            stand_down.map(|at| at.saturating_duration_since(now)),
             self.sent.map(after),
             self.matcher.since.map(after),
         ]
@@ -632,6 +635,31 @@ mod tests {
         let events = reply();
         let passed: Vec<Event> = events.iter().flat_map(|e| r.feed(e.clone()).pass).collect();
         assert_eq!(passed, events, "past the grace the keys are the user's");
+    }
+
+    /// A stand-down that falls due while the matcher holds a possible start waits for the start to
+    /// be released: the loop is woken then, not at once and again every millisecond until then.
+    #[test]
+    fn a_stand_down_behind_a_held_start_wakes_at_the_release() {
+        let now = Instant::now();
+        let t0 = now
+            .checked_sub(FOCUS_SETTLE + REPLY_TIMEOUT + MISS_GRACE)
+            .unwrap();
+        let mut r = Requery::default();
+        r.focus_gained(t0);
+        r.tick(t0 + FOCUS_SETTLE);
+        assert!(r.take_query(t0 + FOCUS_SETTLE));
+        r.tick(t0 + FOCUS_SETTLE + REPLY_TIMEOUT); // the miss; the grace ends at `now`
+        assert_eq!(r.feed(alt(']')), Fed::default(), "held from here on");
+        r.tick(now);
+        let wake = r.next_wake(now).unwrap();
+        assert!(wake >= REPLY_TIMEOUT, "woken after {wake:?}");
+
+        let released = Instant::now() + REPLY_TIMEOUT;
+        assert_eq!(r.stale(released), [alt(']')]);
+        assert_eq!(r.next_wake(released), Some(std::time::Duration::ZERO));
+        r.tick(released);
+        assert_eq!(r.next_wake(released), None, "stood down");
     }
 
     /// A host that knows the background takes the question over: focus asks nothing, the REPL's
