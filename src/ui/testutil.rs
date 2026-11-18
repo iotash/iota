@@ -254,6 +254,7 @@ impl EventSource for ChannelEvents {
 /// The key events crossterm 0.29 makes of the terminal's OSC 11 reply `ESC ] 1 1 ; <colour> <end>`
 /// (`runtime::requery`): `Alt+]`, one character key a byte (an uppercase one with `Shift`), and for
 /// the terminator `Ctrl+G` (`end` = BEL), `Alt+\` (`end` = ST) or nothing (`end` empty).
+#[cfg(unix)]
 pub(crate) fn reply_events(colour: &str, end: &str) -> Vec<Event> {
     let key = |c: char, m: KeyModifiers| Event::Key(KeyEvent::new(KeyCode::Char(c), m));
     let mut events = vec![key(']', KeyModifiers::ALT)];
