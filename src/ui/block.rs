@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::text::ansi::wrap_ansi;
 use crate::tool::fmt::{LabelBody, ToolLabel};
-use crate::ui::render::theme::{BG_DEFAULT, RESET, REV_ON, USER_BAR};
+use crate::ui::render::theme::{BG_DEFAULT, HOST_BAR, RESET, REV_ON, USER_BAR};
 
 /// Lays a block out from its source at a width.
 pub trait Layout: Send + Sync {
@@ -128,13 +128,15 @@ impl Block {
 /// `printUserBlock`), laid out from the text at the width of the draw: every row is ONE reverse
 /// video span (the terminal's foreground behind it, its background as the text — what sets the
 /// block apart from body text in any theme), so no cell of it shows the terminal background
-/// (X-105). Column 0 is the bar: `▌` on every row, one continuous gray column down the block, drawn
-/// in the `USER_BAR` gray — set as the BACKGROUND, which the reverse turns into the glyph's colour, the
-/// cell behind it staying the block's — then `BG_DEFAULT`, the reverse kept. Column 1 is the
+/// (X-105). Column 0 is the bar: `▌` on every row, one continuous column down the block, drawn
+/// in the `USER_BAR` gray for what the user typed and the `HOST_BAR` teal for a block with a tab —
+/// set as the BACKGROUND, which the reverse turns into the glyph's colour, the cell behind it
+/// staying the block's — then `BG_DEFAULT`, the reverse kept. Column 1 is the
 /// gutter space, the text from column 2, padded by display width to width − 2 so the span runs to
 /// the edge at any width, one `RESET`. Under `ColorMode::Off` it writes no escape at all — the
 /// rows are committed text that the exit writes out raw, past the frame's colour gate, so a
-/// reverse attribute would leak there — and the bar's character carries the block. The live block
+/// reverse attribute would leak there — and the bar's character carries the block; a host's block
+/// then differs from a typed one by its tab row alone. The live block
 /// and the resume echo both lay out through this one, the same rows.
 ///
 /// A message that is exactly one element of the name a HOST claims (`<hc from="agent">…</hc>`
@@ -149,8 +151,8 @@ pub struct UserBlock {
 
 /// A tagged message's header: the element's name and its attributes in document order (a bare
 /// attribute has no value). Drawn as the user block's first row — a tool call's label without
-/// its brackets, `name k:v k:v`, on a fill of the bar's gray from column 0 to one column past the
-/// text, which starts at column 2 with the block's.
+/// its brackets, `name k:v k:v`, on a fill of the bar's colour (the `HOST_BAR` teal) from column 0
+/// to one column past the text, which starts at column 2 with the block's.
 pub struct Tab {
     /// The element's name.
     pub name: String,
@@ -239,9 +241,9 @@ impl Tab {
         }
     }
 
-    /// The tab's row at `width` (≥ 8): the label from column 2 on the bar's gray, from column 0
-    /// to one column past it; with colour off, the plain `  name k:v`.
-    fn row(&self, width: usize, color: bool) -> String {
+    /// The tab's row at `width` (≥ 8): the label from column 2 on `bar`, the block's bar colour,
+    /// from column 0 to one column past it; with colour off, the plain `  name k:v`.
+    fn row(&self, width: usize, color: bool, bar: &str) -> String {
         const LEAD: usize = 2;
         let label = self.label(width - LEAD - 1);
         if color {
@@ -250,7 +252,7 @@ impl Tab {
                 &crate::ui::render::label::TAB_INK,
             );
             let cols = LEAD + crate::text::width::str_width(&label.unbracketed()) + 1;
-            crate::text::ansi::paint_row(&format!("  {painted}"), USER_BAR, cols)
+            crate::text::ansi::paint_row(&format!("  {painted}"), bar, cols)
         } else {
             format!("  {}", label.unbracketed())
         }
@@ -262,7 +264,12 @@ impl Layout for UserBlock {
         const GUTTER: usize = 2;
         let w = width.max(8);
         let color = crate::app::color::enabled();
-        let tab = self.tab.as_ref().map(|t| t.row(w, color));
+        let bar = if self.tab.is_some() {
+            HOST_BAR
+        } else {
+            USER_BAR
+        };
+        let tab = self.tab.as_ref().map(|t| t.row(w, color, bar));
         tab.into_iter()
             .chain(
                 crate::text::ansi::wrap_by_width(&self.text, w - GUTTER)
@@ -271,7 +278,7 @@ impl Layout for UserBlock {
                         let pad = (w - GUTTER).saturating_sub(crate::text::width::str_width(&row));
                         let pad = " ".repeat(pad);
                         if color {
-                            format!("{REV_ON}{USER_BAR}▌{BG_DEFAULT} {row}{pad}{RESET}")
+                            format!("{REV_ON}{bar}▌{BG_DEFAULT} {row}{pad}{RESET}")
                         } else {
                             format!("▌ {row}{pad}")
                         }
@@ -355,16 +362,17 @@ mod tests {
         );
     }
 
-    /// A message that is one element: the tab is the block's first row — the bar's gray from
-    /// column 0, the label's segments in the tab's dark ink from column 2 (the gray re-asserted after each of their
-    /// resets), one trailing gray space, reset — and the block below shows the inner text alone.
+    /// A message that is one element: the tab is the block's first row — the host bar's teal
+    /// (`48;5;30`) from column 0, the label's segments in the tab's dark ink from column 2 (the
+    /// teal re-asserted after each of their resets), one trailing teal space, reset — and the block
+    /// below shows the inner text alone, its bar in the same teal where a typed block's is 245.
     #[test]
     fn a_tagged_message_gets_a_tab_row_above_its_inner_text() {
         let b = UserBlock::new(r#"<hc from="worker-2" urgent>build is green</hc>"#, HC);
         assert_eq!(b.text, "build is green");
         let rows = b.lines(40);
         assert_eq!(rows.len(), 2, "tab + one block row: {rows:?}");
-        let g = "\x1b[48;5;245m";
+        let g = "\x1b[48;5;30m";
         assert_eq!(
             rows[0],
             format!(
@@ -375,7 +383,7 @@ mod tests {
         assert_eq!(
             rows[1],
             format!(
-                "\x1b[7m\x1b[48;5;245m▌\x1b[49m build is green{}\x1b[0m",
+                "\x1b[7m\x1b[48;5;30m▌\x1b[49m build is green{}\x1b[0m",
                 " ".repeat(24)
             )
         );

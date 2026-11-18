@@ -13,6 +13,10 @@
 //! - red    — alerts ([`ERR_PREFIX`])
 //! - revOn  — strong emphasis, "this is yours / this is focused": user blocks, focused tab chips,
 //!   search hits
+//! - bar    — a user block's `▌` column: gray ([`USER_BAR`]) for what the user typed, teal
+//!   ([`HOST_BAR`]) for a message a host handed over; the host block's tab is filled with its bar's
+//!   colour (DIVERGENCES X-105, X-107). Under `NO_COLOR` both drop and the tab row alone tells the
+//!   two apart
 //!
 //! Chat-side TEXT colors live in `crate::repl::render::styles`; markdown/code rendering owns its
 //! own theme in `crate::markdown::style`. One home per layer.
@@ -56,7 +60,13 @@ pub(crate) const SEARCH_CUR: &str = "\x1b[7;33m";
 /// while the cell behind it shows the default foreground, the block's own background. A
 /// foreground here would become the cell's background under the reverse instead.
 pub(crate) const USER_BAR: &str = "\x1b[48;5;245m";
-/// Default background (SGR 49): ends [`USER_BAR`] after the bar, keeping the reverse.
+/// The bar of a user block that carries a tab — a message a host handed over — and the tab's
+/// fill: a teal (#008787) set as a background for the same reason as [`USER_BAR`]. Its luminance
+/// is close to the gray's, so the hue alone says "another sender", and it reads on a dark terminal
+/// (2.94:1 against the block) and a light one (3.82:1) alike; the tab's dark ink stays AA on it
+/// (4.82:1).
+pub(crate) const HOST_BAR: &str = "\x1b[48;5;30m";
+/// Default background (SGR 49): ends the bar's colour after the bar, keeping the reverse.
 pub(crate) const BG_DEFAULT: &str = "\x1b[49m";
 
 /// The input field's background for a dark or light terminal: one gray step off the
