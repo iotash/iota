@@ -285,6 +285,45 @@ async fn a_successful_turn_reports_busy_then_idle_with_a_digest() {
     );
 }
 
+/// The background flags the frame was handed, in order (`Ui::set_dark_background`).
+fn tones(ui: &ScriptedUi) -> Vec<bool> {
+    ui.events()
+        .into_iter()
+        .filter_map(|e| match e {
+            UiEvent::DarkBackground(dark) => Some(dark),
+            _ => None,
+        })
+        .collect()
+}
+
+/// X-108, between turns: no host knows the background, so the terminal is asked again (through
+/// the facade) and its answer — light, on a run that started dark — goes to the frame before the
+/// turn. A terminal that does not answer changes nothing.
+#[tokio::test]
+async fn the_terminals_answer_reshades_the_turn_when_no_host_knows() {
+    for (answer, want) in [(Some(false), vec![false]), (None, vec![])] {
+        let f = Fixture::new(vec![input("hi"), Reply::Interrupted]);
+        f.ui.set_terminal_background(answer);
+        iota::repl::run(f.params(plain(Answer::Text("ok".to_owned())), no_tools(), true))
+            .await
+            .expect("clean exit");
+        assert_eq!(tones(&f.ui), want, "the terminal answered {answer:?}");
+    }
+}
+
+/// A host that knows its background (cmux) is believed: the terminal is not the one asked.
+#[tokio::test]
+async fn a_host_that_knows_the_background_outranks_the_terminal() {
+    let mut f = Fixture::new(vec![input("hi"), Reply::Interrupted]);
+    f.host.caps.background = true;
+    f.host.dark = Some(true);
+    f.ui.set_terminal_background(Some(false));
+    iota::repl::run(f.params(plain(Answer::Text("ok".to_owned())), no_tools(), true))
+        .await
+        .expect("clean exit");
+    assert_eq!(tones(&f.ui), vec![true]);
+}
+
 /// An image-only reply pings `"Image ready"`, decided AFTER
 /// `collectImages` attached the pictures (an empty reply with no attachments is still a digest).
 #[tokio::test]

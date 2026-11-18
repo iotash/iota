@@ -258,6 +258,8 @@ pub struct ScriptedUi {
     dialogs: Dialogs,
     /// The `claimed` element name each [`Ui::user_block`] was handed, in order.
     claims: Mutex<Vec<Option<String>>>,
+    /// What [`Ui::requery_background`] answers ([`ScriptedUi::set_terminal_background`]).
+    terminal_dark: Mutex<Option<bool>>,
 }
 
 impl ScriptedUi {
@@ -275,7 +277,14 @@ impl ScriptedUi {
             blocking_calls: AtomicUsize::new(0),
             dialogs: Dialogs::default(),
             claims: Mutex::new(Vec::new()),
+            terminal_dark: Mutex::new(None),
         })
+    }
+
+    /// What the terminal says its background is when asked again (`Ui::requery_background`):
+    /// `None`, the default, is a terminal that does not answer.
+    pub fn set_terminal_background(&self, dark: Option<bool>) {
+        *lock(&self.terminal_dark) = dark;
     }
 
     /// The element name each user block was handed (`Ui::user_block`'s `claimed`), in order.
@@ -608,9 +617,10 @@ impl Ui for ScriptedUi {
         self.record(UiEvent::DarkBackground(dark));
     }
 
-    /// A scripted terminal has no colour to report: "no answer", so the REPL keeps what it has.
+    /// What [`ScriptedUi::set_terminal_background`] set — by default "no answer", so the REPL keeps
+    /// what it has.
     fn requery_background(&self) -> BoxFuture<'_, Option<bool>> {
-        Box::pin(std::future::ready(None))
+        Box::pin(std::future::ready(*lock(&self.terminal_dark)))
     }
 
     fn width(&self) -> u16 {

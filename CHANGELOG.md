@@ -3,6 +3,25 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Changed
+
+- **iota follows a dark/light switch without a restart.** When the system
+  changes its appearance while iota runs, the highlighted row of a list, a
+  panel's input field, code blocks and diffs take the new shades: iota asks the
+  terminal for its background again when its window regains focus and before
+  each turn. Text already on screen keeps the shades it was drawn with. A
+  terminal that does not report its background (the Linux console, PuTTY, mosh,
+  GNU screen, and any terminal on Windows) keeps the shades it started with,
+  and inside herdr 0.9.5 the terminal may still report the old background.
+
+### Fixed
+
+- **The first key typed is no longer lost on a terminal that answers no
+  queries.** The startup check of the terminal's background used to leave a
+  reader waiting on such a terminal, and it took the next key.
+
 ## 0.11.1 - 2026-11-18
 
 ### Changed
