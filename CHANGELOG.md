@@ -21,6 +21,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 - **The first key typed is no longer lost on a terminal that answers no
   queries.** The startup check of the terminal's background used to leave a
   reader waiting on such a terminal, and it took the next key.
+- **iota no longer exits at once on macOS when its input is not a terminal.**
+  With stdin redirected, the full screen could end at startup as if the
+  terminal had hung up.
+- **Resizing the window while iota starts no longer picks the dark shades on a
+  light terminal.** The resize cut the wait for the terminal's answer short.
 
 ## 0.11.1 - 2026-11-18
 

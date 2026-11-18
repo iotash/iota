@@ -144,7 +144,7 @@ impl EventSource for CrosstermEvents {
 #[cfg(unix)]
 const CROSSTERM_SLICE: Duration = Duration::from_millis(1);
 
-/// The terminal crossterm reads, polled for a hangup before crossterm is (see [`CrosstermEvents`]).
+/// The terminal crossterm reads, watched for a hangup before crossterm is (see [`CrosstermEvents`]).
 #[cfg(unix)]
 enum HangupWatch {
     /// stdin is a terminal: crossterm's `tty_fd()` reads it.
@@ -166,32 +166,32 @@ impl HangupWatch {
     }
 
     /// Waits up to `timeout` for the terminal to have input; `Err` once it has hung up (or the
-    /// descriptor is gone). Readable or timed out are both `Ok` — the caller asks crossterm next.
+    /// descriptor is gone). Readable, timed out or cut short by a signal are all `Ok` — the caller
+    /// asks crossterm next. The wait and the hang-up test are [`super::tty`]'s: `poll(2)` on
+    /// `/dev/tty` answers `POLLNVAL` on macOS whatever the terminal's state, which once ended the
+    /// loop at startup whenever stdin was not a terminal.
     fn wait(&self, timeout: Duration) -> io::Result<()> {
-        use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+        use super::tty::{hung_up, readable};
         use std::os::fd::AsFd as _;
         let stdin = io::stdin();
         let fd = match self {
             Self::Stdin => stdin.as_fd(),
             Self::DevTty(f) => f.as_fd(),
         };
-        let mut fds = [PollFd::new(fd, PollFlags::POLLIN)];
-        // The W10 deadline is at most a few seconds; the fallback is never reached.
-        let timeout = PollTimeout::try_from(timeout).unwrap_or(PollTimeout::MAX);
-        match poll(&mut fds, timeout) {
-            Ok(_) | Err(nix::errno::Errno::EINTR) => {}
-            Err(e) => return Err(e.into()),
-        }
-        let gone = PollFlags::POLLHUP | PollFlags::POLLERR | PollFlags::POLLNVAL;
-        if fds[0].revents().is_some_and(|r| r.intersects(gone)) {
-            return Err(io::Error::new(
+        match readable(fd, timeout) {
+            Ok(true) if hung_up(fd)? => Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "the terminal hung up",
-            ));
+            )),
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(()),
+            Err(e) => Err(e),
         }
-        Ok(())
     }
 }
+
+#[cfg(all(test, unix))]
+mod hangup_tests;
 
 /// A parked `read_input` caller (model.go `waiter`): replaced wholesale by a newer
 /// request; revoked eagerly by [`UiMsg::ReadCancel`] with the same id.

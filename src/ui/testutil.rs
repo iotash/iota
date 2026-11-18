@@ -2,7 +2,8 @@
 //! drives it ([`Surf`]), the key constructors, and a loop [`Model`] over the test-seam region
 //! ([`test_model`]) with the model-level key helpers, and the headless terminal stack's two ends —
 //! a shared byte sink ([`SharedBuf`]) and a scripted event source ([`ChannelEvents`]) — plus the spinner
-//! glyphs ([`SPINNER_GLYPHS`]) that a "nothing is spinning" scan looks for.
+//! glyphs ([`SPINNER_GLYPHS`]) that a "nothing is spinning" scan looks for. On unix, a test run
+//! again on a real terminal ([`under_script`]) and how it tells the parent what happened.
 #![allow(clippy::panic, clippy::expect_used)]
 
 use std::io::{self, Write};
@@ -379,5 +380,61 @@ impl Streamed {
     pub(crate) fn end(&mut self) -> Vec<crate::ui::block::Block> {
         self.w.flush();
         std::mem::take(&mut *lock(&self.out))
+    }
+}
+
+/// A test of this binary run again under `script(1)`, `--ignored` and alone: `script`'s pty is the
+/// child's controlling terminal — a real `/dev/tty`, which a socket pair or a pty's own device
+/// cannot stand in for (`ui::runtime::tty`) — and it answers nothing. `script`'s stdin is a pipe held
+/// open and silent, so nothing is ever typed; killing `script` closes the pty's master end, which is
+/// the terminal going away. `envs` tell the child where to [`report`]; a child run without them
+/// must do nothing.
+#[cfg(unix)]
+pub(crate) fn under_script(
+    child_test: &str,
+    envs: &[(&str, &std::ffi::OsStr)],
+) -> std::process::Child {
+    use std::process::{Command, Stdio};
+    let exe = std::env::current_exe().expect("the test binary");
+    let child_args = ["--exact", child_test, "--ignored", "--test-threads=1"];
+    let mut cmd = Command::new("script");
+    if cfg!(target_os = "linux") {
+        // util-linux: `script -qec <command> <file>`.
+        let line = format!("'{}' {}", exe.display(), child_args.join(" "));
+        cmd.args(["-qec", &line, "/dev/null"]);
+    } else {
+        // BSD (macOS): `script -q <file> <command…>`.
+        cmd.args(["-q", "/dev/null"]).arg(&exe).args(child_args);
+    }
+    cmd.envs(envs.iter().copied())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("script(1)")
+}
+
+/// The child of [`under_script`] says what happened: written beside `path` and renamed onto it, so
+/// [`await_report`] finds the whole of it or nothing.
+#[cfg(unix)]
+pub(crate) fn report(path: &std::path::Path, what: &str) {
+    let mut part = path.as_os_str().to_owned();
+    part.push(".part");
+    std::fs::write(&part, what).expect("the report");
+    std::fs::rename(&part, path).expect("the report, renamed into place");
+}
+
+/// What a child [`report`]ed at `path`, once it has; `None` when it has not within `within`.
+#[cfg(unix)]
+pub(crate) fn await_report(path: &std::path::Path, within: Duration) -> Option<String> {
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        if let Ok(said) = std::fs::read_to_string(path) {
+            return Some(said);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(20));
     }
 }

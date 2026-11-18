@@ -1452,6 +1452,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rmcp",
+ "rustix",
  "serde",
  "serde_json",
  "serde_norway",

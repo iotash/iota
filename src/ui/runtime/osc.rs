@@ -20,6 +20,8 @@ use std::fs::{File, OpenOptions};
 #[cfg(unix)]
 use std::io::Read;
 use std::io::{self, Write};
+#[cfg(unix)]
+use std::os::fd::AsFd as _;
 use std::time::Duration;
 #[cfg(unix)]
 use std::time::Instant;
@@ -156,8 +158,9 @@ pub(crate) fn round_trip(_query: &[u8]) -> io::Result<Vec<u8>> {
 /// always trails the OSC answer (same write, in-order replies); the cap guards a garbage-spewing
 /// pty.
 ///
-/// Every byte is read only after the descriptor said one is there ([`readable`]), and the wait is
-/// bounded by what is left of `timeout`: when it runs out the function returns with nothing in
+/// Every byte is read only after the descriptor said one is there ([`super::tty::readable`], which
+/// says why `select(2)` and not `poll(2)`), and the wait is bounded by what is left of `timeout` —
+/// a signal that cuts it short is waited out, not taken for the deadline: when it runs out the function returns with nothing in
 /// flight — no thread parked on the tty, no read that a later keystroke would complete. (Until
 /// 2026-11-18 a detached thread did the reading, and on a terminal that answered nothing it stayed
 /// parked and took the first key typed.) Nothing past the `R` is read either.
@@ -170,7 +173,12 @@ fn exchange(tty: &mut File, query: &[u8], timeout: Duration) -> io::Result<Vec<u
     let mut byte = [0u8; 1];
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() || !readable(tty, left)? {
+        let ready = match super::tty::readable(tty.as_fd(), left) {
+            // A signal (a resize at startup) is no answer: wait out what is left.
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            ready => ready?,
+        };
+        if !ready {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "no reply to the query or the DSR",
@@ -183,38 +191,6 @@ fn exchange(tty: &mut File, query: &[u8], timeout: Duration) -> io::Result<Vec<u
         if byte[0] == b'R' || buf.len() > 256 {
             return Ok(buf);
         }
-    }
-}
-
-/// Waits up to `timeout` for `tty` to have a byte to read: `Ok(true)` only when a read will not
-/// block, `Ok(false)` when the time ran out (or a signal cut the wait short — the caller comes
-/// back with what is left).
-///
-/// `select(2)`, not `poll(2)`: macOS's `poll` does not work on a device. On `/dev/tty` it returns
-/// at once with `POLLNVAL`, so a wait written with it is no wait at all and the read after it
-/// blocks until a key is typed — which it then takes (measured 2026-11-18; the `filedescriptor`
-/// crate crossterm reads the tty through uses `select` on macOS for the same reason). A hung-up
-/// terminal reads as readable here and as end-of-file to the read that follows.
-#[cfg(unix)]
-fn readable(tty: &File, timeout: Duration) -> io::Result<bool> {
-    use nix::sys::select::{FD_SETSIZE, FdSet, select};
-    use nix::sys::time::{TimeVal, TimeValLike as _};
-    use std::os::fd::{AsFd as _, AsRawFd as _};
-
-    let fd = tty.as_fd();
-    // `FdSet` cannot hold a descriptor past its size (and panics on one).
-    if usize::try_from(fd.as_raw_fd()).map_or(true, |n| n >= FD_SETSIZE) {
-        return Err(io::Error::other(
-            "the terminal's descriptor is out of select's range",
-        ));
-    }
-    let mut set = FdSet::new();
-    set.insert(fd);
-    let mut wait = TimeVal::microseconds(i64::try_from(timeout.as_micros()).unwrap_or(i64::MAX));
-    match select(None, &mut set, None, None, &mut wait) {
-        Ok(_) => Ok(set.contains(fd)),
-        Err(nix::errno::Errno::EINTR) => Ok(false),
-        Err(e) => Err(e.into()),
     }
 }
 
@@ -382,13 +358,60 @@ mod tests {
         assert_eq!(key[0], b'k');
     }
 
+    /// A signal that cuts the wait short is not the deadline: the round-trip waits out the rest and
+    /// hears a reply that comes after it. The signal is aimed at the waiting thread (a resize at
+    /// startup is SIGWINCH to the process; a thread that has it caught returns `EINTR` from
+    /// `select` on macOS and Linux alike, `SA_RESTART` or not).
+    #[cfg(unix)]
+    #[test]
+    fn a_signal_in_the_wait_is_waited_out() {
+        use nix::sys::pthread::{pthread_kill, pthread_self};
+        use nix::sys::signal::Signal;
+        use std::io::{Read as _, Write as _};
+        use std::time::Duration;
+        use tokio::signal::unix::{SignalKind, signal};
+
+        // A handler, so the signal interrupts instead of killing (tokio's, as any caught signal).
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut caught = rt
+            .block_on(async { signal(SignalKind::user_defined1()) })
+            .unwrap();
+
+        let (mut tty, mut terminal) = fake_tty();
+        let waiting = pthread_self();
+        let answer = std::thread::spawn(move || {
+            let mut asked = [0u8; 64];
+            let _ = terminal.read(&mut asked).unwrap(); // the query is out: the wait has begun
+            std::thread::sleep(Duration::from_millis(20));
+            pthread_kill(waiting, Signal::SIGUSR1).unwrap();
+            std::thread::sleep(Duration::from_millis(60));
+            terminal
+                .write_all(b"\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[24;1R")
+                .unwrap();
+            terminal
+        });
+        let reply = super::exchange(&mut tty, super::OSC11_QUERY, Duration::from_millis(300));
+        let _terminal = answer.join().unwrap();
+        assert_eq!(reply.unwrap(), b"\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[24;1R");
+        // …and the signal did arrive, inside the wait.
+        assert!(
+            rt.block_on(async {
+                tokio::time::timeout(Duration::from_secs(1), caught.recv()).await
+            })
+            .is_ok()
+        );
+    }
+
     /// Where the child of [`a_real_terminal_that_answers_nothing_costs_the_deadline_and_no_more`]
-    /// writes what its round-trip came to.
+    /// reports what its round-trip came to.
     #[cfg(unix)]
     const REAL_TTY_OUT: &str = "IOTA_TEST_REAL_TTY_OUT";
 
-    /// The child half: this test binary run again under `script(1)`, whose pty is this process's
-    /// controlling terminal and answers nothing. Does nothing unless it is that child.
+    /// The child half: this test binary run again under `script(1)`
+    /// ([`crate::ui::testutil::under_script`]). Does nothing unless it is that child.
     #[cfg(unix)]
     #[test]
     #[ignore = "the child of a_real_terminal_that_answers_nothing_costs_the_deadline_and_no_more"]
@@ -403,61 +426,31 @@ mod tests {
             Ok(bytes) => format!("answered {bytes:?}"),
             Err(e) => format!("{:?}", e.kind()),
         };
-        std::fs::write(out, format!("{what} {took}")).unwrap();
+        crate::ui::testutil::report(std::path::Path::new(&out), &format!("{what} {took}"));
     }
 
     /// The timeout path on a REAL `/dev/tty`, which is the only place it can go wrong: a socket
-    /// pair (the two tests above) and a pty's own device both wait correctly under `poll(2)`,
-    /// while macOS's `poll` on `/dev/tty` itself returns at once and left the read blocking until a
-    /// key was typed. `script(1)` gives the child a pty as its controlling terminal and answers
-    /// neither the OSC 11 query nor the DSR; its stdin is held open and silent, so nothing is ever
-    /// typed. The round-trip must come back `TimedOut` after the deadline — not hang.
+    /// pair (the tests above) and a pty's own device both wait correctly under `poll(2)`, while
+    /// macOS's `poll` on `/dev/tty` itself returns at once and left the read blocking until a key
+    /// was typed. The terminal answers neither the OSC 11 query nor the DSR and nothing is typed:
+    /// the round-trip must come back `TimedOut` after the deadline — not hang.
     #[cfg(unix)]
     #[test]
     fn a_real_terminal_that_answers_nothing_costs_the_deadline_and_no_more() {
-        use std::process::{Command, Stdio};
-        use std::time::{Duration, Instant};
+        use crate::ui::testutil::{await_report, under_script};
+        use std::time::Duration;
 
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("round-trip");
-        let exe = std::env::current_exe().unwrap();
-        let child_args = [
-            "--exact",
+        let mut script = under_script(
             "ui::runtime::osc::tests::real_tty_child",
-            "--ignored",
-            "--test-threads=1",
-        ];
-        let mut cmd = Command::new("script");
-        if cfg!(target_os = "linux") {
-            // util-linux: `script -qec <command> <file>`.
-            let line = format!("'{}' {}", exe.display(), child_args.join(" "));
-            cmd.args(["-qec", &line, "/dev/null"]);
-        } else {
-            // BSD (macOS): `script -q <file> <command…>`.
-            cmd.args(["-q", "/dev/null"]).arg(&exe).args(child_args);
-        }
-        let mut script = cmd
-            .env(REAL_TTY_OUT, &out)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while !out.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let hung = !out.exists();
+            &[(REAL_TTY_OUT, out.as_os_str())],
+        );
+        let said = await_report(&out, Duration::from_secs(20));
         let _ = script.kill();
         let _ = script.wait();
-        assert!(
-            !hung,
-            "the round-trip never came back: it is blocked on the tty"
-        );
+        let said = said.expect("the round-trip never came back: it is blocked on the tty");
 
-        std::thread::sleep(Duration::from_millis(50)); // the write is one call, but not atomic
-        let said = std::fs::read_to_string(&out).unwrap();
         let (what, took) = said.rsplit_once(' ').unwrap();
         assert_eq!(what, "TimedOut", "{said}");
         let took: u128 = took.parse().unwrap();
