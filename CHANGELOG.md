@@ -22,6 +22,16 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **A copy reaches the clipboard of the machine you are sitting at.** Outside
+  tmux, a mouse selection now goes both to the local clipboard tool (`pbcopy`,
+  `xclip`, …) and to the terminal (OSC 52). Before, iota picked one: in a
+  terminal attached from another machine that did not look like SSH, the text
+  went to the remote machine's clipboard and nothing reached yours. Over SSH,
+  a remote host with a clipboard tool now has its clipboard written as well.
+  Inside tmux nothing changes. The status row now says which way the text
+  went — `copied 14 characters (pbcopy + OSC 52)`, or `(OSC 52)`, `(pbcopy)`,
+  `(tmux)`. A selection too long for OSC 52 (about 73 KB) goes to the local
+  tool alone and the row says `(pbcopy)`.
 - **The first key typed is no longer lost on a terminal that answers no
   queries.** The startup check of the terminal's background used to leave a
   reader waiting on such a terminal, and it took the next key.

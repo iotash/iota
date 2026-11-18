@@ -243,14 +243,15 @@ parses them). The GUI terminals are not drivable from the test runner: tick thes
       `↓ … Ctrl+End`, down to the bottom follows the output again. In tmux with `mouse on` and with
       `mouse off` alike (tmux 3.8 passes reports to a pane that asks).
 - [ ] **4c.2** Ghostty, iTerm2, herdr (a real wheel, a real drag): the same as 4c.1; a drag held at
-      the top row keeps scrolling; the release says `copied N characters · Shift+drag …`
+      the top row keeps scrolling; the release says `copied N characters (pbcopy + OSC 52) · Shift+drag …`
       (`Option+drag` in iTerm2) and ⌘V elsewhere pastes the lines whole. In iTerm2 with "Report mouse
       clicks & drags" off in the profile nothing reaches iota: the keys still scroll, nothing wedges.
 - [ ] **4c.3** Shift-drag (Option-drag in iTerm2) is the terminal's own selection, on the current
       screen; it is not iota's.
-- [ ] **4c.4** Over SSH (outside tmux) the copy lands in your LOCAL clipboard (OSC 52; Ghostty and
-      iTerm2 may ask once). Inside tmux it lands in tmux's buffer (`prefix ]`) and, with tmux's
-      `set-clipboard` on or external, in the terminal's clipboard.
+- [ ] **4c.4** Over SSH, or in a herdr-core terminal attached from another machine (outside tmux),
+      the copy lands in your LOCAL clipboard (OSC 52; Ghostty and iTerm2 may ask once) and the row
+      names `OSC 52`. Inside tmux it lands in tmux's buffer (`prefix ]`) and, with tmux's
+      `set-clipboard` on or external, in the terminal's clipboard; the row names `tmux`.
 - [x] 自动化：scenario 46 **4c.5** A click on the composer puts the cursor there; a click on a
       surface row moves the cursor, a second click on it chooses it.
 - [x] 自动化：scenario 46 **4c.6** A long surface (`/status`) takes the interaction cap — half the

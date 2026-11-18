@@ -169,8 +169,12 @@ crossterm 0.29 默认的 unix 事件源（mio、边沿触发）有两处会让�
 - **画**：只改屏幕 cell 的 `REVERSED`，行本身不动——**写出（Ctrl+O、退出）永远不带选择的样式**（`screen::tests::the_selection_is_drawn_reversed_and_never_written_out`）。
 - **复制的内容**：屏幕上看得见的纯文本——SGR 和 OSC 8 超链接都去掉（链接只复制它的文字，搜索也不会命中看不见的 URL）；一个布局出零行的块占一行空行（块的行数只有 `Entry::lines` 一个来源，视口、命中和三击都按它算）；**屏幕**把一行折成的几段拼回成那一行（缓冲按 `Block::display` 标出哪些显示行是续段）；其余的行，包括块与块之间、布局块自己的行（表格的、代码块的），之间都是 `\n`；行尾空白去掉。三击选指针下那一行连同它的续段，不是整块（S7a 评审 B1）。双击的"词"＝字母数字加路径/URL/标识符的标点 `_-./~+:@\`，句末的 `.` `,` `:` 不算。
 - **按键清掉选择**（也结束一次没收到松开的拖动）；单击（不拖，或只抖一格）什么也不选、不复制。
-- **三条复制路径**（`runtime/clipboard.rs`，Claude Code 的做法）：不在 SSH 下用本机工具（`pbcopy`；`wl-copy`/`xclip`/`xsel`；`clip`）；在 tmux 里（`$TMUX`）写 `tmux load-buffer -w -`（`-w` 让 tmux 按 `set-clipboard` 再交给外层终端）；SSH 下且不在 tmux 里写 OSC 52；本机工具一个也没有时也退回 OSC 52。外部工具在自己的线程里跑，卡住也不拖住循环，**跑完把结果报回循环**：只有某个工具成功才说 `copied`；全部失败（没有 `$DISPLAY` 的 `xclip`、出错的 `pbcopy`）就落到 OSC 52。OSC 52 自己报不回结果，但状态行不提它：`OSC 52` 对用户没有意义，两条成功路径显示同一句（`Copied::Done { osc }` 仍在内部区分）。OSC 52 序列有上限 `OSC52_MAX`（100 000 字节，约 73 KB 文本；hterm、tmux 也在这个量级截断）：超过就不发，状态行写 `not copied: N characters is too large — use Ctrl+O`。
-- **提示**：复制后状态行 4 秒内显示 `copied N characters · Shift+drag selects in the terminal`（走哪条路径都一样；iTerm2——`TERM_PROGRAM=iTerm.app` 或 `LC_TERMINAL=iTerm2`——显示 `Option`）。一句话，不是段落。
+- **复制路径**（`runtime/clipboard.rs`；X-109，owner 2026-11-19，推翻 11-16 的"只走一条"与"状态行不提路径"）：
+  - **不在 tmux 里：本机工具和 OSC 52 同时走**，SSH 与否都一样。本机工具（`pbcopy`；`wl-copy`/`xclip`/`xsel`；`clip`）写的是 iota **所在机器**的剪贴板；OSC 52 让**用户面前的终端**写它自己的。用户在看哪台机器，环境变量判断不了：herdr-core（`hc`）从另一台机器 attach 的终端里没有任何 `SSH_*`、没有 `$TMUX`，`TERM_PROGRAM` 还是对端的 `ghostty`——只挑一条时 iota 跑了 `pbcopy`，文字进了远端 iMac 的剪贴板，owner 在笔记本上什么也粘不出（诊断：`copy-why.md`）。两条都发：真在本机时同一段文字写两次，无害；终端不认 OSC 52 时序列被丢弃，无害；代价是 SSH 到一台有 `pbcopy`/`xclip` 的远端时，远端的剪贴板也被写（以前不会）。**不做**"`127.0.0.1` 算本机"之类的启发式：那台机器上的回环地址恰好是 Surge 的中转，人在别处。
+  - **在 tmux 里（`$TMUX`）照旧**：写 `tmux load-buffer -w -`（`-w` 让 tmux 按 `set-clipboard` 再交给外层终端），不在 SSH 下时再加本机工具；OSC 52 只在这些全部失败时才发（tmux 本来就会把它转出去，不该写两次）。
+  - 外部工具在自己的线程里跑，卡住也不拖住循环；OSC 52 序列在复制开始时就和那一帧一起写出，不等工具。**至少一条路走通就算复制成功**：工具成功，或序列写出了（OSC 52 报不回结果）；工具失败不影响 OSC 52。
+  - OSC 52 序列有上限 `OSC52_MAX`（100 000 字节，约 73 KB 文本；hterm、tmux 也在这个量级截断）：超过就不发，但本机工具照样能接——那时状态行只写工具名 `copied N characters (pbcopy)`，没有 `OSC 52`，远程的用户由此知道自己这边没收到；没有工具接住才是 `not copied: N characters is too large — use Ctrl+O`。
+- **提示**：复制后状态行 4 秒内显示 `copied N characters (pbcopy + OSC 52) · Shift+drag selects in the terminal`，括号里是**实际走通的路**：成功的程序按文件名（`pbcopy`、`xclip`、`tmux` …），再加写出了的 `OSC 52`——两条都走 `(pbcopy + OSC 52)`，只有一条 `(OSC 52)` 或 `(pbcopy)`，tmux 里 `(pbcopy + tmux)`。**为什么要说**：11-16 的决定认为"`OSC 52` 对用户没有意义"，但"进了另一台机器的剪贴板"和"真的复制了"说成同一句，用户和排查的人都分不出来——这次排查绕了两轮正因为此。iTerm2（`TERM_PROGRAM=iTerm.app` 或 `LC_TERMINAL=iTerm2`）显示 `Option`。一句话，不是段落（`vt100_tests::the_copy_status_names_the_ways`）。
 
 ## 关闭开关（`mouse: false`）
 

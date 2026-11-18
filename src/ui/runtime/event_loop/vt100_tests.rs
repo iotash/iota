@@ -1342,7 +1342,12 @@ fn a_drag_through_the_loop_copies_and_the_status_row_says_so() {
         copied[0].starts_with(&first) && copied[0].lines().count() == 3,
         "{copied:?}"
     );
-    assert!(h.contents().contains("Shift+drag selects in the terminal"));
+    assert!(
+        h.contents()
+            .contains("(recorded) · Shift+drag selects in the terminal"),
+        "the status row names the way: {}",
+        h.contents()
+    );
     h.etx.send(at(MouseEventKind::ScrollUp, 2)).unwrap();
     assert!(
         h.wait_until(Duration::from_secs(2), |h| h
@@ -1354,27 +1359,42 @@ fn a_drag_through_the_loop_copies_and_the_status_row_says_so() {
     h.quit_and_join(Duration::from_secs(5));
 }
 
+/// The copy status names what was copied, the ways it went — so a copy that reached only this
+/// machine's clipboard never reads like one that reached the terminal's — and the native-selection
+/// key; a text too long for OSC 52 that no tool took says so.
+#[test]
+fn the_copy_status_names_the_ways() {
+    use crate::ui::runtime::clipboard::Copied;
+    let mut m = test_model();
+    let mut said = Vec::new();
+    for ways in [
+        &["pbcopy", "OSC 52"][..],
+        &["OSC 52"],
+        &["pbcopy"],
+        &["tmux"],
+    ] {
+        let ways = ways.iter().map(|w| (*w).to_owned()).collect();
+        m.copy_done(Copied::Done { chars: 14, ways });
+        said.push(m.copied.as_ref().map(|(t, _)| t.clone()).unwrap());
+    }
+    m.copy_done(Copied::TooLarge { chars: 1 });
+    said.push(m.copied.as_ref().map(|(t, _)| t.clone()).unwrap());
+    assert_eq!(
+        said,
+        [
+            "copied 14 characters (pbcopy + OSC 52) · Shift+drag selects in the terminal",
+            "copied 14 characters (OSC 52) · Shift+drag selects in the terminal",
+            "copied 14 characters (pbcopy) · Shift+drag selects in the terminal",
+            "copied 14 characters (tmux) · Shift+drag selects in the terminal",
+            "not copied: 1 character is too large — use Ctrl+O",
+        ]
+    );
+}
+
 /// C13: an open surface is drawn over the conversation's viewport, which yields it the rows — but
 /// a long View stays under the interaction cap (half the 24-row screen: 12 rows), the
 /// conversation keeps the rest, and closing it gives the viewport back, the conversation where it
 /// was.
-/// The copy status names what was copied and the native-selection key, never the way it went:
-/// a tool and OSC 52 read the same to the user.
-#[test]
-fn the_copy_status_never_names_the_way() {
-    use crate::ui::runtime::clipboard::Copied;
-    let mut m = test_model();
-    let mut said = Vec::new();
-    for osc in [false, true] {
-        m.copy_done(Copied::Done { chars: 46, osc });
-        said.push(m.copied.as_ref().map(|(t, _)| t.clone()).unwrap());
-    }
-    assert_eq!(
-        said,
-        ["copied 46 characters · Shift+drag selects in the terminal"; 2]
-    );
-}
-
 #[test]
 fn a_surface_takes_the_interaction_cap_and_gives_the_viewport_back() {
     use crate::ui::facade::{Panel, TabbedSpec};

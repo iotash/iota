@@ -404,8 +404,8 @@ the wheel scrolls the conversation (pausing and resuming the follow like the key
 composer's cursor or picks a surface row (twice to choose it), a drag over the conversation selects by
 buffer position (row number, wrap line, column) and scrolls at the viewport's edge, so it crosses
 screens. The selection is drawn on the screen's cells only, never into the rows, so a write-out never
-carries it; its release copies plain text to the local tool, tmux's buffer and/or OSC 52 by where the
-session runs. An open surface takes the viewport's rows (C13): its room is the screen less the frame's
+carries it; its release copies plain text to the local tool and OSC 52 both outside tmux, to tmux's
+buffer (and the local tool unless over SSH) inside it (X-109), and the status row names the ways that ran. An open surface takes the viewport's rows (C13): its room is the screen less the frame's
 own rows, and a panel with no `height` — like the completion list — stays under the interaction cap:
 an interaction area never exceeds half the screen or 15 rows (`ui::interaction_rows`).
 

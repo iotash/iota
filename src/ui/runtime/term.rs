@@ -138,17 +138,14 @@ impl<W: Write> Term<W> {
     /// outcome of the copy under way (the clipboard's programs run on a thread). An OSC 52 sequence
     /// is written here, in order with the frame. `None`: nothing to say yet.
     pub(crate) fn copy_selection(&mut self) -> io::Result<Option<Copied>> {
-        let done = match self.screen.take_copied() {
+        let (seq, copied) = match self.screen.take_copied() {
             Some(text) => self.clipboard.start(text),
             None => self.clipboard.poll(),
-        };
-        let Some((copied, seq)) = done else {
-            return Ok(None);
         };
         if let Some(seq) = seq {
             self.write_raw(seq.as_bytes())?;
         }
-        Ok(Some(copied))
+        Ok(copied)
     }
 
     /// Whether a copy's programs are still running (the loop then polls soon).
