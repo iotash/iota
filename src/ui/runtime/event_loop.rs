@@ -472,7 +472,8 @@ impl Model {
 
     /// What a copy became, for the status row: done, naming the ways it went (`pbcopy + OSC 52`
     /// — which clipboard has it is the user's to know: a tool's is this machine's, which may not
-    /// be the one they sit at), or too large for OSC 52 with no tool to take it.
+    /// be the one they sit at) and saying when the terminal's sequence was left out as too large
+    /// (`pbcopy; too large for OSC 52`), or too large for OSC 52 with no tool to take it.
     pub(crate) fn copy_done(&mut self, c: Copied) {
         let n = |chars: usize| {
             let what = if chars == 1 {
@@ -483,10 +484,19 @@ impl Model {
             format!("{chars} {what}")
         };
         let text = match c {
-            Copied::Done { chars, ways } => format!(
-                "copied {} ({}) · {}+drag selects in the terminal",
+            Copied::Done {
+                chars,
+                ways,
+                osc_too_large,
+            } => format!(
+                "copied {} ({}{}) · {}+drag selects in the terminal",
                 n(chars),
                 ways.join(" + "),
+                if osc_too_large {
+                    "; too large for OSC 52"
+                } else {
+                    ""
+                },
                 self.native
             ),
             Copied::TooLarge { chars } => {

@@ -1367,14 +1367,19 @@ fn the_copy_status_names_the_ways() {
     use crate::ui::runtime::clipboard::Copied;
     let mut m = test_model();
     let mut said = Vec::new();
-    for ways in [
-        &["pbcopy", "OSC 52"][..],
-        &["OSC 52"],
-        &["pbcopy"],
-        &["tmux"],
+    for (ways, osc_too_large) in [
+        (&["pbcopy", "OSC 52"][..], false),
+        (&["OSC 52"], false),
+        (&["pbcopy"], false),
+        (&["pbcopy"], true),
+        (&["tmux"], false),
     ] {
         let ways = ways.iter().map(|w| (*w).to_owned()).collect();
-        m.copy_done(Copied::Done { chars: 14, ways });
+        m.copy_done(Copied::Done {
+            chars: 14,
+            ways,
+            osc_too_large,
+        });
         said.push(m.copied.as_ref().map(|(t, _)| t.clone()).unwrap());
     }
     m.copy_done(Copied::TooLarge { chars: 1 });
@@ -1385,6 +1390,7 @@ fn the_copy_status_names_the_ways() {
             "copied 14 characters (pbcopy + OSC 52) · Shift+drag selects in the terminal",
             "copied 14 characters (OSC 52) · Shift+drag selects in the terminal",
             "copied 14 characters (pbcopy) · Shift+drag selects in the terminal",
+            "copied 14 characters (pbcopy; too large for OSC 52) · Shift+drag selects in the terminal",
             "copied 14 characters (tmux) · Shift+drag selects in the terminal",
             "not copied: 1 character is too large — use Ctrl+O",
         ]
