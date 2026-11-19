@@ -3527,12 +3527,11 @@ async fn allow_and_revoke_address_a_flag_server_by_its_url() {
     ] {
         assert!(lines.contains(&want), "{want:?} missing:\n{lines:#?}");
     }
-    use iota::tool::grants::{Level, McpTool, ServerId, ToolKey};
     assert_eq!(
-        grants.snapshot(Level::Session).tools,
-        [ToolKey::Mcp {
-            server: ServerId::Flag(url.clone()),
-            tool: McpTool::Named("echo".to_owned()),
+        grants.snapshot(iota::tool::grants::Level::Session).tools,
+        [iota::tool::grants::ToolKey::Mcp {
+            server: iota::tool::grants::ServerId::Flag(url.clone()),
+            tool: iota::tool::grants::McpTool::Named("echo".to_owned()),
         }],
         "the wildcard is gone, the named tool stays"
     );
