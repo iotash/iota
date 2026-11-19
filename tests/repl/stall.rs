@@ -146,6 +146,7 @@ impl Fixture {
             imported_history: Vec::new(),
             dispatch: dispatch as Arc<dyn Dispatcher>,
             grants: std::sync::Arc::default(),
+            footing: iota::testing::footing(&self.store, ""),
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: McpHooks::default(),
             session: SessionCtx {

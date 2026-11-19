@@ -112,7 +112,7 @@ pub(crate) struct ShellTool {
     /// defaults to `root`).
     cwd: PathBuf,
     sandboxed: bool,
-    /// `ToolEnv::write_roots`, the STATIC roots: writable inside the sandbox beside the root and the temp/cache
+    /// `ToolEnv::static_roots`, the STATIC roots: writable inside the sandbox beside the root and the temp/cache
     /// dirs. The live directory grants join them at every call ([`Self::writable`]).
     write_roots: Vec<PathBuf>,
     /// The run's grant store (`ToolEnv::grants`): its live directory grants are sandbox roots too, read per
@@ -177,7 +177,7 @@ pub fn new_shell_set(
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default(),
         sandboxed,
-        write_roots: env.write_roots.clone(),
+        write_roots: env.static_roots(),
         grants: Arc::clone(&env.grants),
         exe: env.dirs.exe.clone(),
         dirs: env.dirs.clone(),
@@ -330,17 +330,11 @@ impl Tool for ShellTool {
 }
 
 impl ShellTool {
-    /// The sandbox's extra writable roots for one call: the static `write_roots:`, then the live directory
-    /// grants read now ([`Grants::live_dirs`]) — a stale grant is none of them. The protected table's extra
-    /// roots are the same list (`exec::protected_paths`), so a granted repository keeps its git rows.
+    /// The sandbox's extra writable roots for one call: the static ones, then the live directory grants read now
+    /// ([`Grants::roots`]) — a stale grant is none of them. The protected table's extra roots are the same list
+    /// (`exec::protected_paths`), so a granted repository keeps its git rows.
     fn writable(&self) -> Vec<PathBuf> {
-        let mut roots = self.write_roots.clone();
-        for d in self.grants.live_dirs() {
-            if !roots.contains(&d) {
-                roots.push(d);
-            }
-        }
-        roots
+        self.grants.roots(&self.write_roots)
     }
 
     /// Whether `command` is iota itself with arguments (`crate::shell::selfcall`): the one call a sandboxed

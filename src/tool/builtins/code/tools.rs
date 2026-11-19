@@ -1338,10 +1338,9 @@ mod tests {
     #[cfg(unix)]
     fn grant(cs: &super::super::CodeSet, a: &JsonObject) {
         let s = super::writer_subject(cs, a).expect("an outside write");
-        cs.grants.grant_dir(
-            crate::tool::grants::Level::Session,
-            s.scope.expect("a directory offered"),
-        );
+        cs.grants.update(crate::tool::grants::Level::Session, |g| {
+            g.add_dir(s.scope.expect("a directory offered"))
+        });
     }
 
     /// Empties the set's session grants (`/new`).
@@ -1404,8 +1403,9 @@ mod tests {
             ..RunCtx::default()
         };
         assert!(write_file_call(&cs, &cx, &w).is_error);
-        cs.grants
-            .grant_dir(crate::tool::grants::Level::Session, real_out.join("deep"));
+        cs.grants.update(crate::tool::grants::Level::Session, |s| {
+            s.add_dir(real_out.join("deep"))
+        });
         assert!(write_file_call(&cs, &RunCtx::default(), &w).is_error);
         assert!(!out.join("new.txt").exists());
         forget(&cs);
@@ -1494,7 +1494,7 @@ mod tests {
         relink(&root.join("outdir"), &out);
         // 4. The call, after the gate granted that directory.
         cs.grants
-            .grant_dir(crate::tool::grants::Level::Session, scope);
+            .update(crate::tool::grants::Level::Session, |s| s.add_dir(scope));
         assert!(write_file_call(&cs, &RunCtx::default(), &w).is_error);
         assert!(
             !out.join("x.txt").exists() && !out2.join("x.txt").exists(),
@@ -1623,7 +1623,7 @@ mod tests {
                         for dir in [root.clone(), super::super::grant_dir(&real).to_path_buf()] {
                             let dir = crate::app::fs::physical(&dir).expect("real");
                             cs.grants
-                                .grant_dir(crate::tool::grants::Level::Session, dir);
+                                .update(crate::tool::grants::Level::Session, |s| s.add_dir(dir));
                         }
                         for approved in [None, Some(Approved::Once(root.join("a.txt")))] {
                             let cx = RunCtx {
@@ -1733,8 +1733,9 @@ mod tests {
                             std::sync::Arc::default(),
                         )
                         .expect("set");
-                        cs.grants
-                            .grant_dir(crate::tool::grants::Level::Session, sessions.clone());
+                        cs.grants.update(crate::tool::grants::Level::Session, |s| {
+                            s.add_dir(sessions.clone())
+                        });
                         let write = super::WriteFile(std::sync::Arc::clone(&cs));
                         let edit = super::EditFile(std::sync::Arc::clone(&cs));
                         for file in [&bundle, &bucket] {

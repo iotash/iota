@@ -11,7 +11,8 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   and `iota resume` take it (repeatable) beside the config's `write_roots:`,
   so a `-m` run, CI or a script can write outside the project without a config
   file. A relative path is taken from the directory you run iota in. A resumed
-  session does not remember it: pass it again.
+  session does not remember it: pass it again. `/allow` names it: such a
+  directory is listed, and refused as already writable, with `(--add-dir)`.
 - **iota follows a dark/light switch without a restart.** When the system
   changes its appearance while iota runs, the highlighted row of a list, a
   panel's input field, code blocks and diffs take the new shades: iota asks the

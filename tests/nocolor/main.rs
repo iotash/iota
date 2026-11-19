@@ -144,6 +144,7 @@ fn params(ui: &Arc<ScriptedUi>, store: &SessionStore) -> RunParams {
         imported_history: Vec::new(),
         dispatch: Arc::new(Editor),
         grants: std::sync::Arc::default(),
+        footing: iota::testing::footing(store, ""),
         jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
         mcp: McpHooks::default(),
         session: SessionCtx {

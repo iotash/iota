@@ -99,7 +99,9 @@ mod tests {
             }
         );
         for tool in ["write_file", "edit_file"] {
-            grants.grant_tool(Level::Session, ToolKey::Builtin(tool.to_owned()));
+            grants.update(Level::Session, |s| {
+                s.add_tool(ToolKey::Builtin(tool.to_owned()))
+            });
         }
         for tool in ["write_file", "edit_file"] {
             assert_eq!(gate(&reg, &grants, tool, &inside), Gate::Run, "{tool}");

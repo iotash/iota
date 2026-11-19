@@ -192,7 +192,7 @@ pub(crate) fn status_lines(
         },
     ));
     items.push(item("MCP", mcp));
-    if let Some(counted) = crate::repl::commands::allow::counted(grants.0, grants.1) {
+    if let Some(counted) = crate::repl::grants::counted(grants.0, grants.1) {
         items.push(item("Grants", format!("{counted} (/allow lists them)")));
     }
     items.push(item("Version", crate::app::VERSION));

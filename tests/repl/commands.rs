@@ -80,6 +80,7 @@ impl Fixture {
             imported_history: Vec::new(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
             grants: std::sync::Arc::default(),
+            footing: iota::testing::footing(&self.store, ""),
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: no_mcp(),
             session,
@@ -1969,7 +1970,7 @@ async fn session_resume_restores_the_bundles_grants() {
         .with_tools()
         .rounds([write_round(), iota::testing::Round::reply("done")]);
     let mut params = f.params(p, f.session(Some(f.writer())));
-    params.harness.env.project_root = root;
+    params.footing.project.root = root;
     params.grants = Arc::clone(&grants);
     params.dispatch =
         Arc::new(StaticDispatcher::new(&["write_file"]).with_approval(&["write_file"]));
@@ -2026,7 +2027,7 @@ async fn session_switch_replaces_and_never_merges() {
         iota::testing::Round::reply("two"),
     ]);
     let mut params = f.params(p, f.session(Some(mine)));
-    params.harness.env.project_root = root;
+    params.footing.project.root = root;
     params.grants = Arc::clone(&grants);
     params.dispatch =
         Arc::new(StaticDispatcher::new(&["write_file"]).with_approval(&["write_file"]));
@@ -2406,7 +2407,7 @@ async fn save_keeps_the_grants_made_while_ephemeral() {
     };
     let grants = Arc::new(Grants::default());
     let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
-    params.harness.env.project_root = root;
+    params.footing.project.root = root;
     params.grants = Arc::clone(&grants);
     iota::repl::run(params).await.expect("exit");
 
@@ -2887,6 +2888,7 @@ async fn persist_warns_and_retries_the_backlog() {
         imported_history: Vec::new(),
         dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
         grants: std::sync::Arc::default(),
+        footing: iota::testing::footing(&store, ""),
         jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
         mcp: no_mcp(),
         session: SessionCtx {
@@ -3391,7 +3393,7 @@ fn allow_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
 /// The chat runs at `root` and shares `grants` with the test.
 fn allow_params(f: &Fixture, root: &Path, grants: &Arc<iota::tool::grants::Grants>) -> RunParams {
     let mut params = f.params(provider("gpt-4o", Ok(vec![])), f.session(Some(f.writer())));
-    params.harness.env.project_root = root.to_path_buf();
+    params.footing.project.root = root.to_path_buf();
     params.grants = Arc::clone(grants);
     params
 }
@@ -3637,6 +3639,7 @@ async fn allow_project_writes_the_bucket_file() {
     grants.replace_project(f.store.project_grants(&root).expect("read"));
     let mut params = allow_params(&f2, &root, &grants);
     params.session.store = f.store.clone();
+    params.footing.project.store = f.store.clone();
     iota::repl::run(params).await.expect("clean exit");
     assert!(grants.live_dirs().is_empty());
     assert!(f.store.project_grants(&root).expect("read").is_empty());
@@ -3766,6 +3769,7 @@ async fn allow_server_star_covers_every_tool() {
     assert!(fresh.allows(&later));
     let mut params = allow_params(&g, &root, &fresh);
     params.session.store = f.store.clone();
+    params.footing.project.store = f.store.clone();
     iota::repl::run(params).await.expect("clean exit");
     assert!(!fresh.allows(&later));
     assert!(f.store.project_grants(&root).expect("read").is_empty());

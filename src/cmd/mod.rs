@@ -110,6 +110,10 @@ pub(crate) struct ToolAssembly {
     pub(crate) child_env: crate::host::ChildEnv,
     /// Agent-mode options.
     pub(crate) agent: AgentOptions,
+    /// The project's grants file, keyed by the root the tools read paths against (`ToolEnv::root`), built once
+    /// beside the project load: the chat's doors write through it, and both branches enter a resumed session
+    /// with it. `None` without a home or a working directory: no project grants then.
+    pub(crate) project: Option<crate::repl::ProjectFile>,
     /// The built-in harness prompt's inputs (`agents::harness`), read once here for both branches and
     /// composed by each once its `Presenter` exists — the hosts add their facts to `<environment>`.
     pub(crate) harness: crate::agents::harness::HarnessInputs,
@@ -531,12 +535,14 @@ fn assemble_tools(
     // The project's grants (docs/design/grants.md §4.2), in every mode and before any tool or the harness reads
     // the store: what the user granted for this project holds from the first call — in `-m` too, which has no
     // door of its own, and so in a child `iota run … -m` started from a chat in the same project.
-    if let (Ok(store), Ok(root)) = (
+    let project = match (
         crate::session::SessionStore::from_dirs(dirs),
         tool_env.root(),
-    ) && let Some(w) =
-        crate::repl::commands::allow::load_project(&store, &root, &tool_env.grants)
-    {
+    ) {
+        (Ok(store), Ok(root)) => Some(crate::repl::ProjectFile { store, root }),
+        _ => None,
+    };
+    if let Some(w) = project.as_ref().and_then(|p| p.load(&tool_env.grants)) {
         io.caution(&w);
     }
     let interactor = settings
@@ -553,7 +559,7 @@ fn assemble_tools(
     // its hosts are detected: they have facts for `<environment>` too.
     let harness = crate::agents::harness::HarnessInputs {
         env: crate::agents::harness::Environment {
-            write_roots: tool_env.write_roots.clone(),
+            write_roots: tool_env.static_roots(),
             ..assemble::harness_environment(
                 dirs,
                 project_root.as_deref(),
@@ -579,6 +585,7 @@ fn assemble_tools(
         host,
         child_env,
         agent,
+        project,
         harness,
         messaging,
     })
@@ -663,6 +670,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         host,
         child_env,
         agent,
+        project,
         harness,
         messaging: _,
     } = tools;
@@ -675,8 +683,8 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     // The run's own provider is open unless it resumes: then the session names the one it runs on.
     let resumed = if let Some(opened) = opened {
         // A fresh run's grants are the project's, loaded at assembly.
-        if let Some(line) = crate::repl::commands::allow::loaded(&tool_env.grants) {
-            io.warning(&line);
+        if let Some(count) = crate::repl::grants::summary(&tool_env.grants) {
+            io.warning(&crate::repl::grants::loaded(&count));
         }
         Err(opened)
     } else {
@@ -685,6 +693,9 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
             .clone()
             .ok_or(SetupError::NoSessionToResume)?;
         let store = crate::session::SessionStore::from_dirs(&dirs)?;
+        // The project file a resumed session's grants are entered beside: with a home, missing only without a
+        // working directory.
+        let project = project.ok_or_else(|| SetupError::Cwd(cwd_err()))?;
         // root.go:298: agent mode tries the project's own bucket first and only widens on no match; normal
         // mode looks at the flat root (Go passes an empty `agentOpts.Root`).
         let scope = settings
@@ -760,10 +771,13 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
             "Resumed session {id} ({} messages)",
             resumed.messages.len()
         ));
-        // The session's grants are in force for its one turn, beside the project's loaded at assembly — before
-        // the tools and the harness read them, never changed: `-m` has no door to grant through.
-        tool_env.grants.replace_session(resumed.meta.grants.clone());
-        if let Some(line) = crate::repl::commands::allow::loaded(&tool_env.grants) {
+        // The session's grants are in force for its one turn, beside the project's — before the tools and the
+        // harness read them, never changed: `-m` has no door to grant through. The project's were loaded, and
+        // a file that cannot be read said, at assembly.
+        if let Some(line) = project
+            .enter(&tool_env.grants, resumed.meta.grants.clone())
+            .line()
+        {
             io.warning(&line);
         }
         if let Some(notice) = resumed.repair_notice() {
@@ -823,7 +837,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         harness: harness.compose(
             &harness.today(),
             pres.environment(),
-            &tool_env.grants.live_dirs(),
+            &tool_env.grants.roots(&harness.env.write_roots),
         ),
         agent,
         max_turns: settings.max_turns,

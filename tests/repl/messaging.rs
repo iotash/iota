@@ -96,6 +96,7 @@ impl Chat {
                 StaticDispatcher::new(&self.tools)
             }) as Arc<dyn Dispatcher>,
             grants: Arc::clone(&self.grants),
+            footing: iota::testing::footing(&self.store, ""),
             jobs: Jobs::new(self.tmp.path()),
             mcp: McpHooks::default(),
             session: SessionCtx {

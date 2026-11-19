@@ -1430,7 +1430,7 @@ async fn a_granted_directory_is_writable_in_the_sandbox_from_the_next_call() {
     assert!(is_err, "nothing granted yet: {text}");
     assert!(!out.join("before.txt").exists());
 
-    assert!(grants.grant_dir(Level::Session, out.clone()));
+    assert!(grants.update(Level::Session, |s| s.add_dir(out.clone())));
     fs::create_dir(out.join("sub")).expect("sub");
     for name in ["after.txt", "sub/deeper.txt"] {
         let (text, is_err) = call(&shell, write(name)).await;
@@ -1460,7 +1460,7 @@ async fn a_stale_grant_is_not_a_sandbox_root() {
     let moved = out.join("moved");
     fs::create_dir(&granted).expect("granted");
     fs::create_dir(&elsewhere).expect("elsewhere");
-    assert!(grants.grant_dir(Level::Session, granted.clone()));
+    assert!(grants.update(Level::Session, |s| s.add_dir(granted.clone())));
     let write = || json!({"command": format!("echo ok > {}/f.txt", shell_path(&granted))});
     let (text, is_err) = call(&shell, write()).await;
     assert!(!is_err, "a live grant: {text}");
@@ -1497,7 +1497,7 @@ async fn a_granted_repository_keeps_its_hooks_and_config() {
     assert!(st.status.success(), "{st:?}");
     fs::create_dir_all(out.join(".git/hooks")).expect("hooks");
     let config = fs::read(out.join(".git/config")).expect("config");
-    assert!(grants.grant_dir(Level::Session, out.clone()));
+    assert!(grants.update(Level::Session, |s| s.add_dir(out.clone())));
     let repo = shell_path(&out);
     for command in [
         format!("echo x > {repo}/.git/hooks/pre-commit"),

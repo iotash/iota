@@ -164,6 +164,7 @@ impl Fixture {
             imported_history: resumed.unwrap_or_else(|| self.imported.clone()),
             dispatch,
             grants: std::sync::Arc::default(),
+            footing: iota::testing::footing(&self.store, ""),
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: McpHooks::default(),
             session: SessionCtx {

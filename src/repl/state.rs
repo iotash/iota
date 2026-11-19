@@ -62,8 +62,8 @@ pub(crate) struct Conversation {
     pub(crate) harness: String,
     /// The day `harness` was composed on (`YYYY-MM-DD`): its `date:` line (docs/design/bot-mode.md §2.5).
     pub(crate) harness_day: String,
-    /// The live directory grants `harness` was composed with (`Grants::live_dirs`): its `write roots:` line
-    /// lists them after the static roots, and a turn that finds them changed re-composes it.
+    /// The write roots `harness` was composed with (`Grants::roots`: the static ones, then the live directory
+    /// grants): its `write roots:` line, which a turn that finds them changed re-composes.
     pub(crate) harness_roots: Vec<std::path::PathBuf>,
     /// What `harness` is composed from, the clock included.
     pub(crate) harness_inputs: crate::agents::harness::HarnessInputs,
@@ -184,6 +184,8 @@ pub(crate) struct UiHandles {
     /// The run's ONE grant store, shared with the tools: `/new` empties its session level, a `/session` switch
     /// replaces it with the bundle's.
     pub(crate) grants: Arc<crate::tool::grants::Grants>,
+    /// What the grant doors stand on: the project's file and the static write roots, resolved at assembly.
+    pub(crate) footing: crate::repl::grants::Footing,
     /// MCP display hooks.
     pub(crate) mcp: McpHooks,
     /// Whether the terminal background is dark; a host that knows better re-answers it

@@ -448,11 +448,9 @@ struct Inner { session: GrantSet, project: GrantSet }
 
 impl Grants {
     pub fn live_dirs(&self) -> Vec<PathBuf>;                 // both levels, stale ones dropped
-    pub fn allows(&self, key: &ToolKey) -> bool;             // either level; Any covers Named
-    pub fn grant_dir(&self, level: Level, dir: PathBuf) -> bool;
-    pub fn grant_tool(&self, level: Level, key: ToolKey) -> bool;
-    pub fn revoke_dir(&self, dir: &Path) -> Vec<Level>;
-    pub fn revoke_tool(&self, key: &ToolKey) -> Vec<Level>;
+    pub fn roots(&self, statics: &[PathBuf]) -> Vec<PathBuf>; // statics, then live_dirs, each once
+    pub fn allows(&self, key: &ToolKey) -> bool;             // GrantSet::allows at either level
+    pub fn update<R>(&self, level: Level, f: impl FnOnce(&mut GrantSet) -> R) -> R; // the one mutator
     pub fn snapshot(&self, level: Level) -> GrantSet;
     pub fn replace_session(&self, set: GrantSet);
     pub fn replace_project(&self, set: GrantSet);
@@ -464,9 +462,13 @@ The store does no I/O. `GrantSet` derives serde; `session::meta` embeds it and
 (`Default` is an empty store, so the `..ToolEnv::default()` literals stand);
 `write_roots` stays the STATIC list. `CodeSet` and `ShellTool` clone the `Arc` at
 assembly and read it per call; the MCP manager does not hold it (it only names its
-key). One helper in `repl` (`grants::apply`) is what both chat doors call: mutate,
-persist, recompose the harness, print. `/new`, a resume and `/session` swap contents,
-never the handle (§7).
+key). One service in `repl::grants` is what every chat door calls: `Door::apply(level, f)`
+mutates and persists (the session level through `update_meta`, the project level file
+first) — the dialog, `/allow`, `/revoke` and `/save`; `ProjectFile::enter` is what a start
+resume, `-m` resume, `/new` and `/session` do (replace the session level, reload the
+project's, count). The harness is recomposed by the next turn (`refresh_harness`), not by
+the door. `/new`, a resume and `/session` swap contents, never the handle (§7). (As built,
+task `grants-refactor`.)
 
 **Q11. Trust.** Nothing new is trusted. The trust gate (X-94) exists because a
 repository can ship a config; `grants.json` and every `meta.json` live under `~/.iota`,

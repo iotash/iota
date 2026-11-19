@@ -176,6 +176,9 @@ pub struct RunParams {
     /// The run's grant store — the one the dispatcher's tools were assembled with (`ToolEnv::grants`), so a
     /// directory the user grants in the dialog is a root the writers read at their next call.
     pub grants: Arc<crate::tool::grants::Grants>,
+    /// What the grant doors stand on, resolved once at assembly beside the project load: the project's grants
+    /// file (keyed by `ToolEnv::root`) and the static write roots by where they were declared.
+    pub footing: crate::repl::grants::Footing,
     /// The run's background-job registry: the loop installs the delivery sink on it and kills whatever is
     /// still running on the way out.
     pub jobs: Arc<crate::shell::jobs::Jobs>,
@@ -413,6 +416,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         imported_history,
         dispatch,
         grants,
+        footing,
         jobs,
         mcp,
         session,
@@ -481,7 +485,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     // The harness, now that the hosts it names in `<environment>` are known; the day and the live grants it
     // was composed with are what each turn compares against (`refresh_harness`).
     let harness_day = harness.today();
-    let harness_roots = grants.live_dirs();
+    let harness_roots = grants.roots(&harness.env.write_roots);
     let harness_text = harness.compose(&harness_day, pres.environment(), &harness_roots);
     let mut budget = ContextBudget::new(params.context_window.value);
     if bot_state.is_some() {
@@ -681,6 +685,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             table,
             gate: Arc::clone(&gate),
             grants,
+            footing,
             mcp,
             dark,
             cancel: root_cancel.clone(),
@@ -1303,6 +1308,15 @@ async fn admit_held_message(repl: &Repl, headline: &str) -> bool {
 }
 
 impl Repl {
+    /// The grants' door-side service over this chat's store, bundle slot and project file.
+    pub(crate) fn door(&self) -> crate::repl::grants::Door {
+        crate::repl::grants::Door {
+            grants: Arc::clone(&self.handles.grants),
+            writer: Arc::clone(&self.session.writer),
+            project: self.handles.footing.project.clone(),
+        }
+    }
+
     /// The turn's context for one message (chat/run.go:1007-1012): the shared handles plus
     /// the harness and the overlay this message composed.
     /// A bot's flush turn (`flush`) sees the memory set alone and takes no steering (bot-mode.md §3.6.1).
@@ -1318,9 +1332,7 @@ impl Repl {
             tr: Arc::clone(&self.handles.tr),
             dispatch,
             gate: Arc::clone(&self.handles.gate),
-            grants: Arc::clone(&self.handles.grants),
-            writer: Arc::clone(&self.session.writer),
-            project: crate::repl::commands::allow::ProjectFile::of(self),
+            door: self.door(),
             harness: self.conv.harness.clone(),
             overlay,
             images_dir: Arc::clone(&self.session.images_dir),
@@ -1486,7 +1498,10 @@ async fn after_bot_turn(
 /// same breath as a new day (§3.4's third moment), so the two changes cost one miss, not two.
 async fn refresh_harness(repl: &mut Repl) {
     let today = repl.conv.harness_inputs.today();
-    let roots = repl.handles.grants.live_dirs();
+    let roots = repl
+        .handles
+        .grants
+        .roots(&repl.conv.harness_inputs.env.write_roots);
     let new_day = today != repl.conv.harness_day;
     if !new_day && roots == repl.conv.harness_roots {
         return;

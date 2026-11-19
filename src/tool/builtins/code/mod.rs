@@ -120,7 +120,7 @@ pub(crate) enum Write {
 /// policy and the read ledger.
 pub(crate) struct CodeSet {
     root: Root,
-    /// `ToolEnv::write_roots`: further roots the write jail accepts, fixed at assembly. Relative arguments and
+    /// `ToolEnv::static_roots`: further roots the write jail accepts, fixed at assembly. Relative arguments and
     /// every display stay anchored on `root`.
     extra: Vec<Root>,
     /// The run's grant store: its live directory grants are roots too, read at every call
@@ -244,11 +244,11 @@ impl CodeSet {
     /// the shell's "`x` next to where `link` points"); check and open use that same path.
     pub(crate) fn write_path(&self, arg: &str) -> Result<Write, ToolOutput> {
         let p = self.read_path(arg)?;
-        let granted = self.grants.live_dirs();
+        let roots = self.roots();
         Ok(match fs::physical(&p) {
-            Some(real) => match self.protected_at(&real, &granted) {
+            Some(real) => match self.protected_at(&real, &roots) {
                 Some(why) => Write::Protected { path: p, real, why },
-                None if self.admits_real(&real, &granted) => Write::Inside(p),
+                None if self.admits_real(&real, &roots) => Write::Inside(p),
                 None => Write::Outside { path: p, real },
             },
             None => Write::Unverifiable,
@@ -258,19 +258,19 @@ impl CodeSet {
     /// Why `real` is protected, if it is: compared with each table entry's real location, worked out now (a
     /// `.git/hooks` linked elsewhere since the set was built is matched where it points now). A
     /// [`protected::Reach::Tree`] entry holds everything under it, a [`protected::Reach::Entry`] only itself. The table's extra
-    /// roots are the static ones and the live directory grants `granted`, so a granted repository keeps its
-    /// git rows.
-    fn protected_at(&self, real: &Path, granted: &[PathBuf]) -> Option<Why> {
-        let extra: Vec<PathBuf> = self
-            .extra
-            .iter()
-            .map(|r| r.path.clone())
-            .chain(granted.iter().cloned())
-            .collect();
+    /// roots are `roots` ([`Self::roots`]), so a granted repository keeps its git rows.
+    fn protected_at(&self, real: &Path, roots: &[PathBuf]) -> Option<Why> {
         protected::why_protected(
-            &protected::table(&self.root.path, &extra, self.home.as_deref()),
+            &protected::table(&self.root.path, roots, self.home.as_deref()),
             real,
         )
+    }
+
+    /// The extra roots in force now: the static ones as configured, then the live directory grants
+    /// ([`Grants::roots`]).
+    fn roots(&self) -> Vec<PathBuf> {
+        let statics: Vec<PathBuf> = self.extra.iter().map(|r| r.path.clone()).collect();
+        self.grants.roots(&statics)
     }
 
     /// Where a writer's call may write, decided at call time — after any prompt, so a link swapped since is
@@ -410,41 +410,31 @@ impl CodeSet {
     /// `the project root`, or `the project root or the extra write roots ({e1}, {e2})` — where the
     /// writers' descriptions say a write may land.
     pub(crate) fn write_scope(&self) -> String {
-        match self.extra_list(&[]) {
+        let statics: Vec<PathBuf> = self.extra.iter().map(|r| r.path.clone()).collect();
+        match extra_list(&statics) {
             None => "the project root".to_owned(),
             Some(extra) => format!("the project root or the extra write roots ({extra})"),
         }
-    }
-
-    /// The static extra roots as configured, then `granted`, `, `-joined; `None` when there are none.
-    fn extra_list(&self, granted: &[PathBuf]) -> Option<String> {
-        let extra: Vec<String> = self
-            .extra
-            .iter()
-            .map(|r| &r.path)
-            .chain(granted)
-            .map(|p| p.display().to_string())
-            .collect();
-        (!extra.is_empty()).then(|| extra.join(", "))
     }
 
     /// `{root}`, or `{root}) and the extra write roots ({e1}, {e2}` — the inside of the error
     /// texts' parentheses: the static roots and the live directory grants, read now.
     fn roots_clause(&self) -> String {
         let root = self.root.path.display();
-        match self.extra_list(&self.grants.live_dirs()) {
+        match extra_list(&self.roots()) {
             None => root.to_string(),
             Some(extra) => format!("{root}) and the extra write roots ({extra}"),
         }
     }
 
-    /// Whether a real location lies inside the real location of any root: the project root, a static
-    /// extra root, or one of the live directory grants `granted` (each already a real path).
-    fn admits_real(&self, real: &Path, granted: &[PathBuf]) -> bool {
+    /// Whether a real location lies inside the real location of any root: the project root, a static extra
+    /// root, or one of `roots` ([`Self::roots`]: a live directory grant is already a real path; a static one as
+    /// configured holds a real location only where it is its own real location).
+    fn admits_real(&self, real: &Path, roots: &[PathBuf]) -> bool {
         std::iter::once(&self.root)
             .chain(&self.extra)
             .map(|r| r.real.as_path())
-            .chain(granted.iter().map(PathBuf::as_path))
+            .chain(roots.iter().map(PathBuf::as_path))
             .any(|r| paths::within(r, real))
     }
 
@@ -512,7 +502,7 @@ pub fn new_code_set(env: &ToolEnv, node: Option<&RawNode>) -> Result<Vec<Arc<dyn
     };
     let cs = CodeSet::new(
         root,
-        env.write_roots.clone(),
+        env.static_roots(),
         cfg.auto_write,
         outside,
         env.dirs.home.clone(),
@@ -529,6 +519,12 @@ pub fn new_code_set(env: &ToolEnv, node: Option<&RawNode>) -> Result<Vec<Arc<dyn
         tools.push(Arc::new(WriteFile(cs)));
     }
     Ok(tools)
+}
+
+/// The extra roots `roots`, `, `-joined; `None` when there are none.
+fn extra_list(roots: &[PathBuf]) -> Option<String> {
+    let extra: Vec<String> = roots.iter().map(|p| p.display().to_string()).collect();
+    (!extra.is_empty()).then(|| extra.join(", "))
 }
 
 /// The directory a write to `real` would be granted under: its parent, or `real` itself when it has none
@@ -1056,7 +1052,9 @@ mod tests {
         // asked about, and neither an approval the call could carry nor a directory grant over it admits it.
         let grants = std::sync::Arc::new(crate::tool::grants::Grants::default());
         let real_t = std::fs::canonicalize(t.path()).expect("real t");
-        grants.grant_dir(crate::tool::grants::Level::Session, real_t.clone());
+        grants.update(crate::tool::grants::Level::Session, |s| {
+            s.add_dir(real_t.clone())
+        });
         let asking =
             CodeSet::new(root.clone(), Vec::new(), true, Outside::Ask, None, grants).expect("set");
         let mut unknown = vec!["la", "la/new.txt"];

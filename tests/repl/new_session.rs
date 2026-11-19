@@ -101,6 +101,7 @@ impl Fixture {
             imported_history: Vec::new(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
             grants: std::sync::Arc::default(),
+            footing: iota::testing::footing(&self.store, ""),
             jobs: iota::shell::jobs::Jobs::new(Path::new("")),
             mcp: McpHooks::default(),
             session,
@@ -660,7 +661,7 @@ async fn new_forgets_the_session_grants() {
     let granted = tempfile::tempdir().expect("tempdir");
     let dir = std::fs::canonicalize(granted.path()).expect("real dir");
     let grants = Arc::new(Grants::default());
-    grants.grant_dir(Level::Session, dir.clone());
+    grants.update(Level::Session, |s| s.add_dir(dir.clone()));
     assert_eq!(grants.live_dirs(), [dir]);
     let session = f.session(Some(f.writer()));
     let mut params = f.params(provider, session);
@@ -698,14 +699,14 @@ async fn new_keeps_the_project_grants() {
         .expect("a project grant");
     let grants = Arc::new(Grants::default());
     grants.replace_project(f.store.project_grants(&root).expect("read"));
-    grants.grant_dir(Level::Session, mine.clone());
+    grants.update(Level::Session, |s| s.add_dir(mine.clone()));
     // Another chat in the project grants a directory while this one runs.
     f.store
         .update_project_grants(&root, |s| s.dirs.push(other.clone()))
         .expect("another grant");
     let session = f.session(Some(f.writer()));
     let mut params = f.params(provider, session);
-    params.harness.env.project_root = root.clone();
+    params.footing.project.root = root.clone();
     params.grants = Arc::clone(&grants);
     iota::repl::run(params).await.expect("exit");
 

@@ -35,6 +35,7 @@ fn params(
         imported_history: Vec::new(),
         dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
         grants: std::sync::Arc::default(),
+        footing: iota::testing::footing(store, ""),
         jobs,
         mcp: McpHooks::default(),
         session: SessionCtx {

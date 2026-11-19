@@ -256,6 +256,7 @@ pub(crate) async fn run_interactive(
         host,
         child_env,
         agent,
+        project,
         harness,
         messaging,
     } = tools;
@@ -283,6 +284,10 @@ pub(crate) async fn run_interactive(
     // root.go:292-334 (the picker half): the store is listed BEFORE anything is spawned, so an empty bucket or
     // an unreadable store fails with nothing to clean up, and the spec the picker will show is ready.
     let store = SessionStore::from_dirs(&ctx.env.dirs)?;
+    // The project's grants file the chat's doors write through: with a home, missing only without a working
+    // directory, whose project root it is keyed by.
+    let project =
+        project.ok_or_else(|| crate::cmd::error::SetupError::Cwd(crate::cmd::cwd_err()))?;
     let scope: Option<PathBuf> = settings.mode.has_workspace().then(|| agent.root.clone());
     let resume_given = inv.resume.is_some();
     // `iota resume` with no id IS the picker; `iota resume <id>` resolves the fragment instead.
@@ -332,6 +337,7 @@ pub(crate) async fn run_interactive(
             mcp_count,
             ctx: &ctx,
             tool_env: &tool_env,
+            project: &project,
             io,
             store: &store,
             scope: scope.as_deref(),
@@ -387,6 +393,11 @@ pub(crate) async fn run_interactive(
         imported_history: wiring.history,
         dispatch: Arc::clone(&wiring.dispatch),
         grants: Arc::clone(&tool_env.grants),
+        footing: crate::repl::Footing {
+            write_roots: tool_env.write_roots.clone(),
+            added_dirs: tool_env.added_dirs.clone(),
+            project,
+        },
         jobs,
         mcp,
         session,
@@ -440,6 +451,8 @@ struct Wire<'a> {
     ctx: &'a RunContext,
     /// The tool environment the dispatcher is built over.
     tool_env: &'a ToolEnv,
+    /// The project's grants file a resumed session is entered beside.
+    project: &'a crate::repl::ProjectFile,
     /// The process streams: the resume announcement and the warnings.
     io: &'a mut crate::cmd::io::Streams,
     /// The session store.
@@ -458,17 +471,18 @@ struct Wire<'a> {
     mcp_defers: Vec<DeferredGroup>,
 }
 
-/// A resumed bundle's session grants REPLACE the store's (docs/design/grants.md §7) before anything reads
-/// them — the dispatcher's tools and the harness's `write roots:` line are assembled after this; the project's
-/// were loaded at assembly. Says so on stdout when either level holds any, then the blank line Go prints after
+/// Enters a resumed bundle ([`ProjectFile::enter`](crate::repl::ProjectFile)): its session grants REPLACE the
+/// store's (docs/design/grants.md §7) before anything reads them — the dispatcher's tools and the harness's
+/// `write roots:` line are assembled after this — beside the project's, read again (a file that cannot be read
+/// was said at assembly). Says so on stdout when either level holds any, then the blank line Go prints after
 /// the resume line.
 fn restore_grants(
+    project: &crate::repl::ProjectFile,
     grants: &crate::tool::grants::Grants,
     meta: &crate::session::SessionMeta,
     io: &mut crate::cmd::io::Streams,
 ) {
-    grants.replace_session(meta.grants.clone());
-    if let Some(line) = crate::repl::commands::allow::loaded_in_chat(grants) {
+    if let Some(line) = project.enter(grants, meta.grants.clone()).line_in_chat() {
         let _ = writeln!(io.stdout, "{line}");
     }
     let _ = writeln!(io.stdout);
@@ -487,6 +501,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         mcp_count,
         ctx,
         tool_env,
+        project,
         io,
         store,
         scope,
@@ -569,7 +584,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
                 opened.writer.id(),
                 opened.history.len()
             );
-            restore_grants(&tool_env.grants, opened.writer.meta(), io);
+            restore_grants(project, &tool_env.grants, opened.writer.meta(), io);
             grants_said = true;
             if let Some(notice) = &opened.repair_notice {
                 io.warning(notice);
@@ -629,7 +644,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             "Resumed session {id} ({} messages)",
             history.len()
         );
-        restore_grants(&tool_env.grants, &resumed.meta, io);
+        restore_grants(project, &tool_env.grants, &resumed.meta, io);
         grants_said = true;
         if let Some(notice) = repair_notice {
             io.warning(&notice);
@@ -643,10 +658,8 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     }
 
     // A fresh start's grants are the project's, loaded at assembly: said once, among the opening lines.
-    if !grants_said
-        && let Some(line) = crate::repl::commands::allow::loaded_in_chat(&tool_env.grants)
-    {
-        notices.push(line);
+    if !grants_said && let Some(count) = crate::repl::grants::summary(&tool_env.grants) {
+        notices.push(crate::repl::grants::loaded_in_chat(&count));
     }
     let session_cwd = session_cwd(ctx, scope);
     if writer.is_none() && !ephemeral {

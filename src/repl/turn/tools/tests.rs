@@ -196,9 +196,11 @@ impl Fx {
                 tr,
                 dispatch,
                 gate,
-                grants: Arc::default(),
-                writer: Arc::default(),
-                project: no_project(),
+                door: crate::repl::grants::Door {
+                    grants: Arc::default(),
+                    writer: Arc::default(),
+                    project: no_project(),
+                },
                 harness: String::new(),
                 overlay: String::new(),
                 images_dir,
@@ -249,20 +251,20 @@ impl Fx {
 
     /// The turn reading and writing `grants` — the store the dispatcher's tools were assembled with.
     fn granting(mut self, grants: &Arc<crate::tool::grants::Grants>) -> Self {
-        self.cx.grants = Arc::clone(grants);
+        self.cx.door.grants = Arc::clone(grants);
         self
     }
 
     /// The same turn, keeping project grants in `project`.
-    fn with_project(mut self, project: crate::repl::commands::allow::ProjectFile) -> Self {
-        self.cx.project = project;
+    fn with_project(mut self, project: crate::repl::ProjectFile) -> Self {
+        self.cx.door.project = project;
         self
     }
 }
 
 /// A project file no write can reach (its store is under `/dev/null`): a project grant is refused.
-fn no_project() -> crate::repl::commands::allow::ProjectFile {
-    crate::repl::commands::allow::ProjectFile {
+fn no_project() -> crate::repl::ProjectFile {
+    crate::repl::ProjectFile {
         store: crate::session::SessionStore::new("/dev/null/sessions"),
         root: PathBuf::from("/"),
     }
@@ -1840,9 +1842,11 @@ fn order_fixture(script: Vec<Reply>) -> OrderFx {
             Arc::clone(&tr),
             Arc::clone(&pres),
         )),
-        grants: Arc::default(),
-        writer: Arc::default(),
-        project: no_project(),
+        door: crate::repl::grants::Door {
+            grants: Arc::default(),
+            writer: Arc::default(),
+            project: no_project(),
+        },
         harness: String::new(),
         overlay: String::new(),
         images_dir: Arc::new(|| None),
@@ -2327,8 +2331,8 @@ impl CodeChat {
     }
 
     /// The project's grants file, in a sessions root inside the temp dir.
-    fn project(&self) -> crate::repl::commands::allow::ProjectFile {
-        crate::repl::commands::allow::ProjectFile {
+    fn project(&self) -> crate::repl::ProjectFile {
+        crate::repl::ProjectFile {
             store: crate::session::SessionStore::new(self.t.path().join("sessions")),
             root: self.root.clone(),
         }

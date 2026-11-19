@@ -12,6 +12,8 @@ pub(crate) mod commands;
 pub(crate) mod context;
 pub(crate) mod editpicker;
 pub(crate) mod errors;
+/// The grants' door-side service: the one path from a door to a grant that lasts (docs/design/grants.md §5).
+pub mod grants;
 pub mod inbound;
 /// The layered model parameters as the chat runs them: read, re-evaluated on a `/model` switch, written
 /// back (brain page `model-param-layering`).
@@ -31,6 +33,7 @@ pub(crate) mod title;
 pub(crate) mod turn;
 
 pub use catalog::ModelCatalog;
+pub use grants::{Footing, ProjectFile};
 pub use inbound::Messaging;
 
 pub use run::{

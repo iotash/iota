@@ -47,11 +47,11 @@ pub(crate) fn cmd_save(repl: &mut Repl, arg: &str) {
         *slot = Some(writer);
         if let Some(w) = slot.as_mut() {
             let _ = w.move_to(&moved);
-            // What was granted while nothing was saving is this conversation's, and goes with it.
-            let grants = repl.handles.grants.snapshot(Level::Session);
-            let _ = w.update_meta(|m| m.grants = grants);
         }
     }
+    // What was granted while nothing was saving is this conversation's, and goes with it: the session level,
+    // unchanged, kept as every door keeps it.
+    let _ = repl.door().apply(Level::Session, |_| ());
     // The watermark stayed at 0 while the chat was ephemeral, so this lands the WHOLE
     // conversation in one append.
     repl.persist_turn();

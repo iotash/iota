@@ -87,6 +87,7 @@ async fn run_one(p: FakeProvider) -> (Arc<ScriptedUi>, tempfile::TempDir, Log, S
         imported_history: Vec::new(),
         dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
         grants: std::sync::Arc::default(),
+        footing: iota::testing::footing(&store, ""),
         jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
         mcp: no_mcp(),
         session: SessionCtx {

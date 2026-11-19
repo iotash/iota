@@ -825,6 +825,7 @@ mod tests {
             imported_history: opened.history,
             dispatch: Arc::new(StaticDispatcher::new(&[])),
             grants: std::sync::Arc::default(),
+            footing: crate::testing::footing(&h.store, ""),
             jobs: crate::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: crate::repl::McpHooks::default(),
             session: crate::repl::SessionCtx {

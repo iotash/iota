@@ -23,6 +23,22 @@ pub use growing::{CallKind, FACT_MARK, GrowingCall, GrowingProvider, TURN_MARK};
 pub use provider::{Call, Failure, FakeProvider, Interrupt, Log, Path, Round};
 pub use scripted::{PanelSummary, RecordingHost, Reply, ScriptedUi, TabbedSummary, UiEvent};
 
+/// A chat's grant footing over `store` with the project root `root` and no static write root — what a test's
+/// `RunParams::footing` is when the test does not care where the project is (`root` empty).
+pub fn footing(
+    store: &crate::session::SessionStore,
+    root: impl Into<std::path::PathBuf>,
+) -> crate::repl::Footing {
+    crate::repl::Footing {
+        project: crate::repl::ProjectFile {
+            store: store.clone(),
+            root: root.into(),
+        },
+        write_roots: Vec::new(),
+        added_dirs: Vec::new(),
+    }
+}
+
 /// Locks a fixture mutex, tolerating poisoning (a panicking test must not hide the state from the next assertion).
 pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     crate::sync::lock(m)

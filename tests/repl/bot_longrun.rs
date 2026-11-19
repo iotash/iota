@@ -233,6 +233,7 @@ impl Bot {
             imported_history: history.clone(),
             dispatch,
             grants: std::sync::Arc::default(),
+            footing: iota::testing::footing(&self.store, ""),
             jobs: iota::shell::jobs::Jobs::new(Path::new("")),
             mcp: McpHooks::default(),
             session: SessionCtx {

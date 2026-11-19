@@ -38,10 +38,10 @@ pub struct Environment {
     pub exe: Option<PathBuf>,
     /// The config files this run reads.
     pub configs: ConfigFiles,
-    /// The roots beyond the project root the code tools reach and a sandboxed shell writes: the top-level
-    /// `write_roots:` as the tools hold them (`ToolEnv::write_roots`, resolved once at assembly), then — in a
-    /// composition through [`HarnessInputs::compose`] — the live directory grants. Empty prints no line, so a
-    /// config without the key and a run without a grant keep the block's bytes.
+    /// The roots beyond the project root the code tools reach and a sandboxed shell writes: the STATIC ones —
+    /// the top-level `write_roots:`, then `--add-dir`, as the tools hold them (`ToolEnv::static_roots`, resolved
+    /// once at assembly) — and, in a composition through [`HarnessInputs::compose`], the roots in force now. Empty
+    /// prints no line, so a config without the key and a run without a grant keep the block's bytes.
     pub write_roots: Vec<PathBuf>,
     /// What the detected hosts tell the model (`host::Presenter::environment`): `(key, value)` pairs, one
     /// line each after the run's own facts — `host: herdr`, `herdr pane: w1:p3`. Empty in a plain terminal.
@@ -117,20 +117,16 @@ impl HarnessInputs {
         (self.clock)()
     }
 
-    /// The harness text for `day`, with the hosts' `host` facts and the live directory grants `granted`
-    /// (`Grants::live_dirs`, read by the caller) listed after the static write roots, each root once: `""` for
-    /// an agent without tools.
-    pub fn compose(&self, day: &str, host: Vec<(String, String)>, granted: &[PathBuf]) -> String {
-        let mut env = Environment {
+    /// The harness text for `day`, with the hosts' `host` facts and the write roots in force `roots` — the
+    /// static ones and the live directory grants, each once, as the caller read them (`Grants::roots` over
+    /// [`Environment::write_roots`]): `""` for an agent without tools.
+    pub fn compose(&self, day: &str, host: Vec<(String, String)>, roots: &[PathBuf]) -> String {
+        let env = Environment {
             date: day.to_owned(),
             host,
+            write_roots: roots.to_vec(),
             ..self.env.clone()
         };
-        for d in granted {
-            if !env.write_roots.contains(d) {
-                env.write_roots.push(d.clone());
-            }
-        }
         compose(&env, &self.toolsets)
     }
 }
@@ -414,8 +410,8 @@ mod tests {
         assert!(!text.contains("write roots"), "{text}");
     }
 
-    /// The live directory grants join the static roots on the one `write roots:` line, after them and each
-    /// root once; a grant alone makes the line, and none leaves the bytes of a run without one.
+    /// The roots in force — the static ones, then the live directory grants (`Grants::roots`) — are the one
+    /// `write roots:` line; a grant alone makes the line, and none leaves the bytes of a run without one.
     #[test]
     fn write_roots_line_lists_the_live_grants() {
         let inputs = HarnessInputs {
@@ -435,7 +431,7 @@ mod tests {
             text.contains("\nwrite roots: /Users/someone/scratch, /data/granted\n"),
             "{text}"
         );
-        let text = inputs.compose("2026-11-19", Vec::new(), &[]);
+        let text = inputs.compose("2026-11-19", Vec::new(), &inputs.env.write_roots);
         assert!(
             text.contains("\nwrite roots: /Users/someone/scratch\n"),
             "{text}"

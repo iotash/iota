@@ -22,6 +22,7 @@ use crate::headless::batch::{BatchOutcome, parallel_run};
 use crate::host::{Event, Kind, State};
 use crate::provider::ToolProvider;
 use crate::provider::model::{AssistantBody, Message, ToolCall, ToolDef};
+use crate::repl::grants::{Unsaved, unsaved_session};
 use crate::repl::turn::approval::{Answer, Offer};
 use crate::tool::approval::{Gate, gate};
 use crate::tool::context::RunCtx;
@@ -250,12 +251,13 @@ async fn walk(
         // call must hit all come from that one answer, so they cannot disagree. A grant goes to the store
         // before the call runs; only "allow once" travels with the call (`RunCtx::approved`).
         let mut approved = None;
-        if let Gate::Ask { subject, key } = gate(&*dispatch, &t.cx.grants, &tc.name, &tc.arguments)
+        if let Gate::Ask { subject, key } =
+            gate(&*dispatch, &t.cx.door.grants, &tc.name, &tc.arguments)
         {
             let detail = subject
                 .as_ref()
                 .map_or_else(|| tool_call_detail(&*dispatch, tc), |s| s.detail.clone());
-            let label = crate::repl::commands::allow::label(&key);
+            let label = crate::repl::grants::label(&key);
             let offer = match (&subject, &key) {
                 (None, ToolKey::Mcp { .. }) => Offer::Mcp(&label),
                 (None, ToolKey::Builtin(_)) => Offer::Tool,
@@ -281,7 +283,9 @@ async fn walk(
                 }
                 // A call bound to no location runs either way: `approved` is for locations.
                 (Answer::Granted(level), None) => {
-                    grant(t.cx, level, |s| push_new(&mut s.tools, key));
+                    grant(t.cx, level, |s| {
+                        s.add_tool(key);
+                    });
                 }
                 // The directory becomes a root: the call, re-resolved when it runs, is an inside write. A
                 // project grant that could not be saved is not made, and the call runs once.
@@ -293,7 +297,9 @@ async fn walk(
                         ..
                     }),
                 ) => {
-                    if !grant(t.cx, level, |s| push_new(&mut s.dirs, dir)) {
+                    if !grant(t.cx, level, |s| {
+                        s.add_dir(dir);
+                    }) {
                         approved = Some(Approved::Once(target));
                     }
                 }
@@ -438,42 +444,28 @@ async fn run_parallel_batch(t: &Turn<'_>, calls: &[ToolCall]) -> Vec<Message> {
     msgs
 }
 
-/// The user cancelled: no partials (a tool walk streams nothing), so the turn's finalize
-/// keeps whatever rounds completed.
-/// Makes the dialog's grant at `level` (`/allow`'s writes): the session level in memory, then into the bundle;
-/// the project level into the project's file FIRST, then memory. False when a project grant could not be saved
-/// — nothing was granted, and the user is told.
+/// Makes the dialog's grant at `level` through the grants service ([`Door::apply`]). False when a project grant
+/// could not be saved — nothing was granted, and the user is told; a session grant stands either way.
+///
+/// [`Door::apply`]: crate::repl::grants::Door::apply
 fn grant(cx: &TurnCtx, level: Level, add: impl FnOnce(&mut GrantSet)) -> bool {
-    match level {
-        Level::Session => {
-            let mut set = cx.grants.snapshot(Level::Session);
-            add(&mut set);
-            cx.grants.replace_session(set);
-            if let Err(e) = crate::repl::commands::allow::save_session(&cx.writer, &cx.grants) {
-                cx.tr
-                    .error(&format!("Warning: failed to save session: {e}"));
-            }
+    match cx.door.apply(level, add) {
+        Ok(()) => true,
+        Err(Unsaved::Session(e)) => {
+            cx.tr.error(&unsaved_session(&e));
             true
         }
-        Level::Project => match cx.project.update(&cx.grants, add) {
-            Ok(_) => true,
-            Err(e) => {
-                cx.tr.error(&format!(
-                    "Warning: could not save the grant ({e}); allowed once"
-                ));
-                false
-            }
-        },
+        Err(Unsaved::Project(e)) => {
+            cx.tr.error(&format!(
+                "Warning: could not save the grant ({e}); allowed once"
+            ));
+            false
+        }
     }
 }
 
-/// Appends `item` unless `list` already holds it.
-fn push_new<T: PartialEq>(list: &mut Vec<T>, item: T) {
-    if !list.contains(&item) {
-        list.push(item);
-    }
-}
-
+/// The user cancelled: no partials (a tool walk streams nothing), so the turn's finalize
+/// keeps whatever rounds completed.
 fn interrupted() -> TurnFailure {
     TurnFailure::Chat(ChatError::Interrupted)
 }

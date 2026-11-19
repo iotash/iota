@@ -145,6 +145,35 @@ impl GrantSet {
     pub fn len(&self) -> usize {
         self.dirs.len() + self.tools.len()
     }
+
+    /// Whether the set grants the tool `key`: by name, or — an MCP tool — by its server's `*`. The one rule that
+    /// decides whether a tool runs unasked.
+    pub fn allows(&self, key: &ToolKey) -> bool {
+        self.tools.contains(key)
+            || matches!(key, ToolKey::Mcp { server, .. } if self.tools.contains(&ToolKey::Mcp {
+                server: server.clone(),
+                tool: McpTool::Any,
+            }))
+    }
+
+    /// Adds the directory `dir` — an absolute REAL path — unless the set holds it: false when it did.
+    pub fn add_dir(&mut self, dir: PathBuf) -> bool {
+        push_new(&mut self.dirs, dir)
+    }
+
+    /// Adds the tool `key` unless the set holds it: false when it did.
+    pub fn add_tool(&mut self, key: ToolKey) -> bool {
+        push_new(&mut self.tools, key)
+    }
+}
+
+/// Appends `item` unless `list` holds it: false when it did.
+fn push_new<T: PartialEq>(list: &mut Vec<T>, item: T) -> bool {
+    if list.contains(&item) {
+        return false;
+    }
+    list.push(item);
+    true
 }
 
 /// The store. `Default` is empty.
@@ -181,69 +210,38 @@ impl Grants {
             let inner = lock(&self.inner);
             let mut dirs: Vec<PathBuf> = Vec::new();
             for d in inner.levels().into_iter().flat_map(|s| &s.dirs) {
-                if !dirs.contains(d) {
-                    dirs.push(d.clone());
-                }
+                push_new(&mut dirs, d.clone());
             }
             dirs
         };
         dirs.into_iter().filter(|d| is_live(d)).collect()
     }
 
-    /// Whether any level grants the tool `key` — for an MCP tool, by name or by its server's `*`.
+    /// Whether any level grants the tool `key` ([`GrantSet::allows`]).
     pub fn allows(&self, key: &ToolKey) -> bool {
-        let any = match key {
-            ToolKey::Mcp { server, .. } => Some(ToolKey::Mcp {
-                server: server.clone(),
-                tool: McpTool::Any,
-            }),
-            ToolKey::Builtin(_) => None,
-        };
         lock(&self.inner)
             .levels()
             .into_iter()
-            .any(|s| s.tools.contains(key) || any.as_ref().is_some_and(|a| s.tools.contains(a)))
+            .any(|s| s.allows(key))
     }
 
-    /// Grants the directory `dir` — an absolute REAL path, resolved by the caller when the user chose it — at
-    /// `level`. False when that level already held it.
-    pub fn grant_dir(&self, level: Level, dir: PathBuf) -> bool {
-        let mut inner = lock(&self.inner);
-        let set = inner.level(level);
-        if set.dirs.contains(&dir) {
-            return false;
+    /// The write roots in force now: the static `statics` (the top-level `write_roots:`, then `--add-dir`), then
+    /// the live directory grants ([`Self::live_dirs`]) not already among them — what the code jail, the shell
+    /// sandbox and the harness's `write roots:` line read, each root once.
+    pub fn roots(&self, statics: &[PathBuf]) -> Vec<PathBuf> {
+        let mut roots = statics.to_vec();
+        for d in self.live_dirs() {
+            push_new(&mut roots, d);
         }
-        set.dirs.push(dir);
-        true
+        roots
     }
 
-    /// Grants the tool `key` at `level`. False when that level already held it.
-    pub fn grant_tool(&self, level: Level, key: ToolKey) -> bool {
-        let mut inner = lock(&self.inner);
-        let set = inner.level(level);
-        if set.tools.contains(&key) {
-            return false;
-        }
-        set.tools.push(key);
-        true
-    }
-
-    /// Takes the directory `dir` back from `level`. False when that level did not hold it.
-    pub fn revoke_dir(&self, level: Level, dir: &Path) -> bool {
-        let mut inner = lock(&self.inner);
-        let set = inner.level(level);
-        let before = set.dirs.len();
-        set.dirs.retain(|d| d != dir);
-        set.dirs.len() != before
-    }
-
-    /// Takes the tool `key` back from `level`. False when that level did not hold it.
-    pub fn revoke_tool(&self, level: Level, key: &ToolKey) -> bool {
-        let mut inner = lock(&self.inner);
-        let set = inner.level(level);
-        let before = set.tools.len();
-        set.tools.retain(|k| k != key);
-        set.tools.len() != before
+    /// Changes `level` through `change` under the store's lock, and returns what `change` returns: the ONE
+    /// mutator. A directory is an absolute REAL path, resolved by the caller when the user chose it
+    /// ([`GrantSet::add_dir`]). The store does no I/O: keeping the change is the door's
+    /// (`repl::grants::Door::apply`).
+    pub fn update<R>(&self, level: Level, change: impl FnOnce(&mut GrantSet) -> R) -> R {
+        change(lock(&self.inner).level(level))
     }
 
     /// A copy of what `level` holds, in the order it was granted — stale directories included.
@@ -318,9 +316,9 @@ mod tests {
         let cs = jail(&root, &grants);
         assert!(!inside(&cs, &out.join("x.txt")), "nothing granted yet");
 
-        assert!(grants.grant_dir(Level::Session, out.clone()));
+        assert!(grants.update(Level::Session, |s| s.add_dir(out.clone())));
         assert!(
-            !grants.grant_dir(Level::Session, out.clone()),
+            !grants.update(Level::Session, |s| s.add_dir(out.clone())),
             "granted once"
         );
         assert_eq!(grants.live_dirs(), std::slice::from_ref(&out));
@@ -338,7 +336,9 @@ mod tests {
         }
 
         // A tool grant is another axis: it opens no directory.
-        assert!(grants.grant_tool(Level::Session, ToolKey::Builtin("write_file".to_owned())));
+        assert!(grants.update(Level::Session, |s| {
+            s.add_tool(ToolKey::Builtin("write_file".to_owned()))
+        }));
         assert!(grants.allows(&ToolKey::Builtin("write_file".to_owned())));
         assert!(!grants.allows(&ToolKey::Builtin("edit_file".to_owned())));
         assert_eq!(grants.live_dirs(), std::slice::from_ref(&out));
@@ -360,7 +360,7 @@ mod tests {
         std::fs::create_dir(&elsewhere).expect("elsewhere");
         let grants = Arc::new(Grants::default());
         let cs = jail(&root, &grants);
-        grants.grant_dir(Level::Session, out.clone());
+        grants.update(Level::Session, |s| s.add_dir(out.clone()));
         assert_eq!(grants.live_dirs(), std::slice::from_ref(&out));
 
         std::fs::rename(&out, t.path().join("moved")).expect("move away");
@@ -393,7 +393,7 @@ mod tests {
         let g = Grants::default();
         let github = || ServerId::Config("github".to_owned());
         assert!(!g.allows(&mcp(github(), "search_issues")));
-        assert!(g.grant_tool(Level::Project, mcp(github(), "*")));
+        assert!(g.update(Level::Project, |s| s.add_tool(mcp(github(), "*"))));
         for tool in ["search_issues", "a_tool_added_next_month"] {
             assert!(g.allows(&mcp(github(), tool)), "{tool}");
         }
@@ -403,7 +403,7 @@ mod tests {
 
         // One tool by name is that tool only.
         let flag = || ServerId::Flag("npx -y @acme/mcp".to_owned());
-        g.grant_tool(Level::Session, mcp(flag(), "push"));
+        g.update(Level::Session, |s| s.add_tool(mcp(flag(), "push")));
         assert!(g.allows(&mcp(flag(), "push")));
         assert!(!g.allows(&mcp(flag(), "pull")));
         assert!(!g.allows(&mcp(ServerId::Flag("npx -y @other/mcp".to_owned()), "push")));
@@ -426,7 +426,37 @@ mod tests {
             ]})
         );
         assert_eq!(serde_json::from_value::<GrantSet>(json).unwrap(), set);
-        assert!(g.revoke_tool(Level::Project, &mcp(github(), "*")));
+        g.update(Level::Project, |s| {
+            s.tools.retain(|k| *k != mcp(github(), "*"));
+        });
         assert!(!g.allows(&mcp(github(), "search_issues")));
+    }
+
+    /// Levels only add (docs/design/grants.md §3): a grant held at both levels is in force while either holds it
+    /// — taking it from one leaves the other's — and the roots in force are the static ones, then each live
+    /// directory grant once.
+    #[test]
+    fn levels_only_add() {
+        let (_t, _root, out) = fixture();
+        let g = Grants::default();
+        let tool = || ToolKey::Builtin("edit_file".to_owned());
+        for level in [Level::Session, Level::Project] {
+            g.update(level, |s| {
+                s.add_dir(out.clone());
+                s.add_tool(tool());
+            });
+        }
+        let statics = [PathBuf::from("/data/a")];
+        assert_eq!(g.roots(&statics), [statics[0].clone(), out.clone()]);
+
+        g.update(Level::Session, |s| *s = GrantSet::default());
+        assert!(g.allows(&tool()), "the project's still holds");
+        assert_eq!(g.live_dirs(), std::slice::from_ref(&out));
+
+        g.update(Level::Session, |s| s.add_tool(tool()));
+        g.update(Level::Project, |s| *s = GrantSet::default());
+        assert!(g.allows(&tool()), "the session's still holds");
+        assert!(g.live_dirs().is_empty());
+        assert_eq!(g.roots(&statics), statics);
     }
 }

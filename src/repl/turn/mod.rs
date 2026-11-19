@@ -89,12 +89,9 @@ pub(crate) struct TurnCtx {
     pub(crate) dispatch: Arc<dyn Dispatcher>,
     /// The conversation's ONE approval dialog.
     pub(crate) gate: Arc<ApprovalGate>,
-    /// The run's grant store: the walk reads it through `tool::approval::gate` and writes what the user grants.
-    pub(crate) grants: Arc<crate::tool::grants::Grants>,
-    /// The session's bundle (`None` inside while ephemeral): a session-level grant is written into its meta.
-    pub(crate) writer: crate::repl::title::WriterSlot,
-    /// The project's grants file: a project-level grant is written there.
-    pub(crate) project: crate::repl::commands::allow::ProjectFile,
+    /// The grants service: the walk reads the store through `tool::approval::gate` and keeps what the user
+    /// grants through [`Door::apply`](crate::repl::grants::Door::apply).
+    pub(crate) door: crate::repl::grants::Door,
     /// The built-in harness prompt ahead of every send (`""` for an agent without tools).
     pub(crate) harness: String,
     /// The agent-mode overlay woven into every send.
