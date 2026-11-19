@@ -134,6 +134,15 @@ pub enum SessionError {
     /// `os.UserHomeDir`; the same text `iota-chat` prints).
     #[error("$HOME is not defined")]
     HomeNotDefined,
+    /// A project's `grants.json` exists but is not a v1 grants file (docs/design/grants.md §4.2): it grants
+    /// nothing, and a project-level write refuses rather than replace it.
+    #[error("cannot read {} ({reason})", .path.display())]
+    GrantsUnreadable {
+        /// The file.
+        path: std::path::PathBuf,
+        /// Why: the I/O or parse error, or the version it carries.
+        reason: String,
+    },
     /// Any other filesystem failure.
     #[error("{0}")]
     Io(#[from] std::io::Error),

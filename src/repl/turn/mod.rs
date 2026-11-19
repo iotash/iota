@@ -93,6 +93,8 @@ pub(crate) struct TurnCtx {
     pub(crate) grants: Arc<crate::tool::grants::Grants>,
     /// The session's bundle (`None` inside while ephemeral): a session-level grant is written into its meta.
     pub(crate) writer: crate::repl::title::WriterSlot,
+    /// The project's grants file: a project-level grant is written there.
+    pub(crate) project: crate::repl::commands::allow::ProjectFile,
     /// The built-in harness prompt ahead of every send (`""` for an agent without tools).
     pub(crate) harness: String,
     /// The agent-mode overlay woven into every send.

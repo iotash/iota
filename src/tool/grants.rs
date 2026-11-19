@@ -11,7 +11,9 @@
 //! both walks and the chat state; `/new` and a `/session` switch swap its contents, never the handle. The
 //! store does no I/O and holds its lock only to copy or change its lists — never across an await, never
 //! while it looks at the filesystem. The session level is kept in the bundle's `meta.json`
-//! ([`SessionMeta::grants`](crate::session::SessionMeta::grants)), written by the chat's doors.
+//! ([`SessionMeta::grants`](crate::session::SessionMeta::grants)), written by the chat's doors; the project
+//! level in the project's bucket ([`SessionStore::project_grants`](crate::session::SessionStore::project_grants)).
+//! Levels only add: a grant at either one is in force, and revoking at one leaves the other alone.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -24,6 +26,9 @@ use crate::sync::lock;
 pub enum Level {
     /// This conversation: kept in its bundle, emptied by `/new`, replaced by a resume and a `/session` switch.
     Session,
+    /// This project, in every session and every mode: kept in the bucket's `grants.json`, reloaded at every
+    /// start, `/new` and resume.
+    Project,
 }
 
 /// What a tool grant names. On disk, `{"builtin": "<name>"}`.
@@ -67,17 +72,19 @@ pub struct Grants {
 #[derive(Debug, Default)]
 struct Inner {
     session: GrantSet,
+    project: GrantSet,
 }
 
 impl Inner {
     fn level(&mut self, level: Level) -> &mut GrantSet {
         match level {
             Level::Session => &mut self.session,
+            Level::Project => &mut self.project,
         }
     }
 
-    fn levels(&self) -> [&GrantSet; 1] {
-        [&self.session]
+    fn levels(&self) -> [&GrantSet; 2] {
+        [&self.session, &self.project]
     }
 }
 
@@ -149,6 +156,12 @@ impl Grants {
     /// `/session` switch with the bundle's — and nothing of the last one, ever merged.
     pub fn replace_session(&self, set: GrantSet) {
         lock(&self.inner).session = set;
+    }
+
+    /// Replaces the project level's grants with what the project's file holds now: at every start, `/new` and
+    /// resume, and after every project-level write (which read the file afresh).
+    pub fn replace_project(&self, set: GrantSet) {
+        lock(&self.inner).project = set;
     }
 }
 

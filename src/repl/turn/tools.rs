@@ -27,6 +27,7 @@ use crate::tool::approval::{Gate, gate};
 use crate::tool::context::RunCtx;
 use crate::tool::context::{Approved, ArtifactSlot};
 use crate::tool::fmt::{display_tool_name, tool_call_detail, tool_label};
+use crate::tool::grants::{GrantSet, Level};
 use crate::tool::{ApprovalSubject, Presentation};
 use crate::ui::facade::UiError;
 
@@ -276,19 +277,23 @@ async fn walk(
                     history.push(Message::tool_result(tc, DECLINED, true));
                     continue;
                 }
+                // A call bound to no location runs either way: `approved` is for locations.
                 (Answer::Granted(level), None) => {
-                    t.cx.grants.grant_tool(level, key);
-                    save_grants(t.cx);
+                    grant(t.cx, level, |s| push_new(&mut s.tools, key));
                 }
-                // The directory becomes a root: the call, re-resolved when it runs, is an inside write.
+                // The directory becomes a root: the call, re-resolved when it runs, is an inside write. A
+                // project grant that could not be saved is not made, and the call runs once.
                 (
                     Answer::Granted(level),
                     Some(ApprovalSubject {
-                        scope: Some(dir), ..
+                        scope: Some(dir),
+                        target,
+                        ..
                     }),
                 ) => {
-                    t.cx.grants.grant_dir(level, dir);
-                    save_grants(t.cx);
+                    if !grant(t.cx, level, |s| push_new(&mut s.dirs, dir)) {
+                        approved = Some(Approved::Once(target));
+                    }
                 }
                 (_, s) => approved = s.map(|s| Approved::Once(s.target)),
             }
@@ -433,11 +438,37 @@ async fn run_parallel_batch(t: &Turn<'_>, calls: &[ToolCall]) -> Vec<Message> {
 
 /// The user cancelled: no partials (a tool walk streams nothing), so the turn's finalize
 /// keeps whatever rounds completed.
-/// Writes the store's session level into the bundle after the dialog granted something (`/allow`'s write).
-fn save_grants(cx: &TurnCtx) {
-    if let Err(e) = crate::repl::commands::allow::save_session(&cx.writer, &cx.grants) {
-        cx.tr
-            .error(&format!("Warning: failed to save session: {e}"));
+/// Makes the dialog's grant at `level` (`/allow`'s writes): the session level in memory, then into the bundle;
+/// the project level into the project's file FIRST, then memory. False when a project grant could not be saved
+/// — nothing was granted, and the user is told.
+fn grant(cx: &TurnCtx, level: Level, add: impl FnOnce(&mut GrantSet)) -> bool {
+    match level {
+        Level::Session => {
+            let mut set = cx.grants.snapshot(Level::Session);
+            add(&mut set);
+            cx.grants.replace_session(set);
+            if let Err(e) = crate::repl::commands::allow::save_session(&cx.writer, &cx.grants) {
+                cx.tr
+                    .error(&format!("Warning: failed to save session: {e}"));
+            }
+            true
+        }
+        Level::Project => match cx.project.update(&cx.grants, add) {
+            Ok(_) => true,
+            Err(e) => {
+                cx.tr.error(&format!(
+                    "Warning: could not save the grant ({e}); allowed once"
+                ));
+                false
+            }
+        },
+    }
+}
+
+/// Appends `item` unless `list` already holds it.
+fn push_new<T: PartialEq>(list: &mut Vec<T>, item: T) {
+    if !list.contains(&item) {
+        list.push(item);
     }
 }
 

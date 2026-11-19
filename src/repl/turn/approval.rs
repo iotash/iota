@@ -29,8 +29,8 @@ pub(crate) enum Answer {
 pub(crate) enum Offer<'a> {
     /// A tool grant — `Allow for this session` (a call bound to no location).
     Tool,
-    /// A directory grant — `Allow, and make <dir> writable for this session` (a `code` write outside every
-    /// root, `<dir>` its real parent).
+    /// A directory grant — `Allow, and make <dir> writable for this session`, then `…for this project` (a
+    /// `code` write outside every root, `<dir>` its real parent).
     Dir(&'a Path),
     /// Nothing: a protected path, or a directory never offered as a root (`/`, the home directory or an
     /// ancestor of it) — `Allow once` / `Deny`, asked every time.
@@ -51,7 +51,7 @@ impl ApprovalGate {
     }
 
     /// Asks about one gated call (approval.go:47-80). `detail` is what the call is about (the path it writes,
-    /// the command it runs); `offer` is the grant the second item gives ([`Offer`]). The error is reserved for
+    /// the command it runs); `offer` is the grants the items after the first give ([`Offer`]). The error is reserved for
     /// the prompt itself failing; a refusal is `Ok(Answer::Denied)`, and a turn that continues after a denial
     /// is the point of asking.
     pub(crate) async fn ask(
@@ -61,15 +61,20 @@ impl ApprovalGate {
         offer: Offer<'_>,
         detail: &str,
     ) -> Result<Answer, UiError> {
-        let grant = match offer {
-            Offer::Tool => Some("Allow for this session".to_owned()),
-            Offer::Dir(dir) => Some(format!(
-                "Allow, and make {} writable for this session",
-                dir.display()
-            )),
-            Offer::Nothing => None,
+        // The grant items, in the order their answers are: session, then project.
+        let grants: Vec<(String, Level)> = match offer {
+            Offer::Tool => vec![("Allow for this session".to_owned(), Level::Session)],
+            Offer::Dir(dir) => [(Level::Session, "session"), (Level::Project, "project")]
+                .into_iter()
+                .map(|(level, word)| {
+                    (
+                        format!("Allow, and make {} writable for this {word}", dir.display()),
+                        level,
+                    )
+                })
+                .collect(),
+            Offer::Nothing => Vec::new(),
         };
-        let offered = grant.is_some();
         let mut label = display_tool_name(name);
         if !detail.is_empty() {
             label = format!("{label} {detail}");
@@ -89,7 +94,7 @@ impl ApprovalGate {
                 SelectSpec {
                     title: format!("{label} — allow?"),
                     items: std::iter::once("Allow once".to_owned())
-                        .chain(grant)
+                        .chain(grants.iter().map(|(item, _)| item.clone()))
                         .chain(["Deny".to_owned()])
                         .collect(),
                     cursor: 0,
@@ -104,8 +109,9 @@ impl ApprovalGate {
         }
         Ok(match choice.index {
             0 => Answer::Once,
-            1 if offered => Answer::Granted(Level::Session),
-            _ => Answer::Denied,
+            i => grants
+                .get(i - 1)
+                .map_or(Answer::Denied, |(_, level)| Answer::Granted(*level)),
         })
     }
 }

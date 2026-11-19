@@ -84,7 +84,8 @@ pub(crate) struct TokenStatus {
 /// against a bare provider: `mcp` is `Some((connected, configured))` only where the binary
 /// wired the hook, `tokens` is `Some` only while accounting is live, `session_id` is
 /// empty while the chat is ephemeral, `title` is the name the window shows (`""` before
-/// it has one), and `grants` counts what this session granted — its row exists only when that is not zero.
+/// it has one), and `grants` counts what this session and this project granted — its row exists only when
+/// either is not zero.
 #[allow(clippy::too_many_arguments)] // plain values, so the gating stays unit-testable
 pub(crate) fn status_lines(
     provider: &mut dyn crate::provider::Provider,
@@ -96,7 +97,7 @@ pub(crate) fn status_lines(
     tokens: Option<&TokenStatus>,
     session_id: &str,
     title: &str,
-    grants: usize,
+    grants: (usize, usize),
 ) -> Vec<StatusItem> {
     let provider_type = provider.kind().as_str().to_owned();
     let model = provider.model().to_owned();
@@ -191,11 +192,8 @@ pub(crate) fn status_lines(
         },
     ));
     items.push(item("MCP", mcp));
-    if grants > 0 {
-        items.push(item(
-            "Grants",
-            format!("{grants} for this session (/allow lists them)"),
-        ));
+    if let Some(counted) = crate::repl::commands::allow::counted(grants.0, grants.1) {
+        items.push(item("Grants", format!("{counted} (/allow lists them)")));
     }
     items.push(item("Version", crate::app::VERSION));
     items.push(item("Mode", mode.as_str()));
@@ -267,8 +265,10 @@ pub(crate) async fn cmd_status(repl: &mut Repl) {
     let pending = repl.conv.pending.len();
     let session_id = repl.session.session_id();
     let title = repl.session.session_title();
-    let session = repl.handles.grants.snapshot(Level::Session);
-    let grants = session.dirs.len() + session.tools.len();
+    let grants = (
+        repl.handles.grants.snapshot(Level::Session).len(),
+        repl.handles.grants.snapshot(Level::Project).len(),
+    );
     // Go asserts `provider.UsageReporter`; the Rust twin is the meter's own gate, which is
     // built from exactly that capability (`provider.reports_usage()`).
     let tokens = repl.conv.ctxm.is_enabled().then(|| TokenStatus {
@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn status_rows_are_capability_gated() {
         let mut p = FakeProvider::looping(0, 1);
-        let items = status_lines(&mut p, AgentMode::Chat, 4, 0, 2, None, None, "", "", 0);
+        let items = status_lines(&mut p, AgentMode::Chat, 4, 0, 2, None, None, "", "", (0, 0));
         assert_eq!(
             names(&items),
             [
@@ -356,7 +356,7 @@ mod tests {
             None,
             "k7qz3xv9m2ht",
             "",
-            0,
+            (0, 0),
         );
         assert_eq!(
             names(&items),
@@ -388,7 +388,7 @@ mod tests {
             None,
             "",
             "",
-            0,
+            (0, 0),
         );
         assert_eq!(value(&items, "MCP"), "none configured");
     }
@@ -404,7 +404,18 @@ mod tests {
             (AgentMode::Agent, "agent"),
             (AgentMode::Bot, "bot"),
         ] {
-            let items = status_lines(&mut p, mode, 0, 0, 0, None, None, "k7qz3xv9m2ht", "", 0);
+            let items = status_lines(
+                &mut p,
+                mode,
+                0,
+                0,
+                0,
+                None,
+                None,
+                "k7qz3xv9m2ht",
+                "",
+                (0, 0),
+            );
             assert_eq!(value(&items, "Version"), crate::app::VERSION);
             assert_eq!(value(&items, "Mode"), word);
         }
@@ -419,7 +430,7 @@ mod tests {
             None,
             "k7qz3xv9m2ht",
             "Fix the status page",
-            0,
+            (0, 0),
         );
         assert_eq!(names(&titled).last(), Some(&"Title"));
         assert_eq!(value(&titled, "Title"), "Fix the status page");
@@ -435,7 +446,7 @@ mod tests {
             None,
             "k7qz3xv9m2ht",
             "",
-            0,
+            (0, 0),
         );
         assert_eq!(value(&untitled, "Title"), "(untitled)");
 
@@ -450,12 +461,12 @@ mod tests {
             None,
             "",
             "Fix the status page",
-            0,
+            (0, 0),
         );
         assert_eq!(value(&ephemeral, "Session"), "not saved (ephemeral)");
         assert_eq!(names(&ephemeral).last(), Some(&"Title"));
         assert_eq!(value(&ephemeral, "Title"), "Fix the status page");
-        let ephemeral = status_lines(&mut p, AgentMode::Chat, 0, 0, 0, None, None, "", "", 0);
+        let ephemeral = status_lines(&mut p, AgentMode::Chat, 0, 0, 0, None, None, "", "", (0, 0));
         assert_eq!(value(&ephemeral, "Title"), "(untitled)");
     }
 
@@ -487,7 +498,7 @@ mod tests {
             Some(&bare),
             "",
             "",
-            0,
+            (0, 0),
         );
         assert_eq!(
             names(&items),
@@ -543,7 +554,7 @@ mod tests {
             Some(&cached),
             "",
             "",
-            0,
+            (0, 0),
         );
         assert_eq!(value(&items, "Context"), "1k / 0 tokens (0%)");
         assert_eq!(value(&items, "Token count"), "estimated (local tokenizer)");
@@ -557,13 +568,68 @@ mod tests {
         );
     }
 
-    /// The Grants row exists only when this session granted something, after MCP, and points at `/allow`.
+    /// The Grants row exists only when this session or this project granted something, after MCP, counts each
+    /// level that holds any, and points at `/allow`.
     #[test]
     fn the_grants_row_only_when_granted() {
         let mut p = FakeProvider::looping(0, 1);
-        let none = status_lines(&mut p, AgentMode::Agent, 0, 0, 0, None, None, "", "", 0);
+        let none = status_lines(
+            &mut p,
+            AgentMode::Agent,
+            0,
+            0,
+            0,
+            None,
+            None,
+            "",
+            "",
+            (0, 0),
+        );
         assert!(!names(&none).contains(&"Grants"));
-        let some = status_lines(&mut p, AgentMode::Agent, 0, 0, 0, None, None, "", "", 2);
+        let project = status_lines(
+            &mut p,
+            AgentMode::Agent,
+            0,
+            0,
+            0,
+            None,
+            None,
+            "",
+            "",
+            (0, 3),
+        );
+        assert_eq!(
+            value(&project, "Grants"),
+            "3 for this project (/allow lists them)"
+        );
+        let both = status_lines(
+            &mut p,
+            AgentMode::Agent,
+            0,
+            0,
+            0,
+            None,
+            None,
+            "",
+            "",
+            (2, 3),
+        );
+        assert_eq!(
+            value(&both, "Grants"),
+            "2 for this session, 3 for this project (/allow lists them)"
+        );
+        let some = status_lines(
+            &mut p,
+            AgentMode::Agent,
+            0,
+            0,
+            0,
+            None,
+            None,
+            "",
+            "",
+            (2, 0),
+        );
         let at = names(&some)
             .iter()
             .position(|n| *n == "Grants")

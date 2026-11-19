@@ -198,6 +198,7 @@ impl Fx {
                 gate,
                 grants: Arc::default(),
                 writer: Arc::default(),
+                project: no_project(),
                 harness: String::new(),
                 overlay: String::new(),
                 images_dir,
@@ -250,6 +251,20 @@ impl Fx {
     fn granting(mut self, grants: &Arc<crate::tool::grants::Grants>) -> Self {
         self.cx.grants = Arc::clone(grants);
         self
+    }
+
+    /// The same turn, keeping project grants in `project`.
+    fn with_project(mut self, project: crate::repl::commands::allow::ProjectFile) -> Self {
+        self.cx.project = project;
+        self
+    }
+}
+
+/// A project file no write can reach (its store is under `/dev/null`): a project grant is refused.
+fn no_project() -> crate::repl::commands::allow::ProjectFile {
+    crate::repl::commands::allow::ProjectFile {
+        store: crate::session::SessionStore::new("/dev/null/sessions"),
+        root: PathBuf::from("/"),
     }
 }
 
@@ -1827,6 +1842,7 @@ fn order_fixture(script: Vec<Reply>) -> OrderFx {
         )),
         grants: Arc::default(),
         writer: Arc::default(),
+        project: no_project(),
         harness: String::new(),
         overlay: String::new(),
         images_dir: Arc::new(|| None),
@@ -2305,7 +2321,17 @@ impl CodeChat {
 
     /// A turn over this chat's dispatcher and store, the user answering `script`.
     fn fx(&self, script: Vec<Reply>) -> Fx {
-        Fx::new(Arc::clone(&self.dispatch), script).granting(&self.grants)
+        Fx::new(Arc::clone(&self.dispatch), script)
+            .granting(&self.grants)
+            .with_project(self.project())
+    }
+
+    /// The project's grants file, in a sessions root inside the temp dir.
+    fn project(&self) -> crate::repl::commands::allow::ProjectFile {
+        crate::repl::commands::allow::ProjectFile {
+            store: crate::session::SessionStore::new(self.t.path().join("sessions")),
+            root: self.root.clone(),
+        }
     }
 }
 
@@ -2507,7 +2533,7 @@ async fn a_protected_write_is_asked_every_time_and_never_granted_for_the_session
 async fn a_directory_granted_in_the_dialog_is_a_root_for_both_writers() {
     let c = CodeChat::new(crate::tool::OutsideWrites::Ask, true);
     let real_out = &c.real_out;
-    let mut script = vec![choose(1), choose(2)];
+    let mut script = vec![choose(1), choose(3)];
     script.extend(quiet(1));
     let fx = c.fx(script);
     let p = stream(vec![
@@ -2621,6 +2647,78 @@ async fn a_directory_granted_in_the_dialog_is_a_root_for_both_writers() {
     assert!(real_t.join("q.txt").exists());
 }
 
+// The dialog's project item writes the directory into the project's grants file FIRST, then makes it a root: the
+// call runs, the next write there is inside, and the session level stays empty. A file that cannot be written
+// grants nothing — the call it answered runs once, and the next write is asked again.
+#[tokio::test]
+async fn a_directory_granted_for_the_project_is_kept_in_its_file() {
+    let c = CodeChat::new(crate::tool::OutsideWrites::Ask, true);
+    let real_out = &c.real_out;
+    let mut script = vec![choose(2)];
+    script.extend(quiet(1));
+    let fx = c.fx(script);
+    let p = stream(vec![
+        Round::calls(vec![
+            call(
+                "c1",
+                "write_file",
+                serde_json::json!({"path": "../out/a/x.txt", "content": "x"}),
+            ),
+            call(
+                "c2",
+                "write_file",
+                serde_json::json!({"path": "../out/a/y.txt", "content": "y"}),
+            ),
+        ]),
+        Round::text("done"),
+    ]);
+    let mut history = vec![Message::user("write")];
+    fx.turn(&p, &mut history).await.outcome.expect("turn");
+    let dir = real_out.join("a");
+    assert_eq!(c.grants.live_dirs(), [dir.clone()]);
+    assert!(
+        c.grants
+            .snapshot(crate::tool::grants::Level::Session)
+            .is_empty()
+    );
+    let project = c.project();
+    assert_eq!(
+        project.store.project_grants(&c.root).expect("file").dirs,
+        [dir.clone()]
+    );
+    for f in ["x.txt", "y.txt"] {
+        assert!(dir.join(f).exists(), "{f}");
+    }
+
+    // Nowhere to keep it: allowed once, granted nothing.
+    let c = CodeChat::new(crate::tool::OutsideWrites::Ask, true);
+    let mut script = vec![choose(2), choose(0)];
+    script.extend(quiet(1));
+    let fx = Fx::new(Arc::clone(&c.dispatch), script).granting(&c.grants);
+    let p = stream(vec![
+        Round::calls(vec![
+            call(
+                "c1",
+                "write_file",
+                serde_json::json!({"path": "../out/a/x.txt", "content": "x"}),
+            ),
+            call(
+                "c2",
+                "write_file",
+                serde_json::json!({"path": "../out/a/y.txt", "content": "y"}),
+            ),
+        ]),
+        Round::text("done"),
+    ]);
+    let mut history = vec![Message::user("write")];
+    fx.turn(&p, &mut history).await.outcome.expect("turn");
+    assert!(c.grants.live_dirs().is_empty());
+    assert_eq!(prompts(&fx.events()).len(), 2, "asked again");
+    for f in ["x.txt", "y.txt"] {
+        assert!(c.real_out.join("a").join(f).exists(), "{f}");
+    }
+}
+
 // The dialog never offers to make the home directory, an ancestor of it or `/` writable — one keypress on a
 // write to `~/x.txt` would open `~/.ssh` and every rc file. Those writes offer "Allow once" and "Deny"
 // only; a directory under the home is offered as usual.
@@ -2678,6 +2776,10 @@ async fn the_dialog_never_offers_the_home_directory() {
                 "Allow once".to_owned(),
                 format!(
                     "Allow, and make {} writable for this session",
+                    real_t.join("home/sub").display()
+                ),
+                format!(
+                    "Allow, and make {} writable for this project",
                     real_t.join("home/sub").display()
                 ),
                 "Deny".to_owned(),

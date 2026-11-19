@@ -528,6 +528,17 @@ fn assemble_tools(
     }
     .with_write_roots(&cfg.write_roots, &inv.args.add_dir);
     tool_env.outside_writes = cfg.outside_writes;
+    // The project's grants (docs/design/grants.md §4.2), in every mode and before any tool or the harness reads
+    // the store: what the user granted for this project holds from the first call — in `-m` too, which has no
+    // door of its own, and so in a child `iota run … -m` started from a chat in the same project.
+    if let (Ok(store), Ok(root)) = (
+        crate::session::SessionStore::from_dirs(dirs),
+        tool_env.root(),
+    ) && let Some(w) =
+        crate::repl::commands::allow::load_project(&store, &root, &tool_env.grants)
+    {
+        io.caution(&w);
+    }
     let interactor = settings
         .message
         .is_none()
@@ -663,6 +674,10 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     // server.
     // The run's own provider is open unless it resumes: then the session names the one it runs on.
     let resumed = if let Some(opened) = opened {
+        // A fresh run's grants are the project's, loaded at assembly.
+        if let Some(line) = crate::repl::commands::allow::loaded(&tool_env.grants) {
+            io.warning(&line);
+        }
         Err(opened)
     } else {
         let fragment = settings
@@ -745,10 +760,10 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
             "Resumed session {id} ({} messages)",
             resumed.messages.len()
         ));
-        // The session's grants are in force for its one turn — loaded before the tools and the harness read
-        // them, never changed: `-m` has no door to grant through.
+        // The session's grants are in force for its one turn, beside the project's loaded at assembly — before
+        // the tools and the harness read them, never changed: `-m` has no door to grant through.
         tool_env.grants.replace_session(resumed.meta.grants.clone());
-        if let Some(line) = crate::repl::commands::allow::loaded(&resumed.meta.grants) {
+        if let Some(line) = crate::repl::commands::allow::loaded(&tool_env.grants) {
             io.warning(&line);
         }
         if let Some(notice) = resumed.repair_notice() {

@@ -233,11 +233,14 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     repl.conv.ctxm.seed_totals(usage); // the switched-to session brings its own totals
     repl.conv.pending.clear();
     // The session grants were the left conversation's: the switched-to one has its own, REPLACING them — a
-    // merge would carry one conversation's approvals into another.
-    let grants_notice = crate::repl::commands::allow::loaded_in_chat(&resumed.meta.grants);
+    // merge would carry one conversation's approvals into another. The project's are reloaded: they follow the
+    // project, and another chat may have changed them.
     repl.handles
         .grants
         .replace_session(resumed.meta.grants.clone());
+    let project_warning =
+        crate::repl::commands::allow::ProjectFile::of(repl).load(&repl.handles.grants);
+    let grants_notice = crate::repl::commands::allow::loaded_in_chat(&repl.handles.grants);
     // The auto-compaction snooze was the session being left's answer, about ITS occupancy.
     repl.conv.compact_declined = 0;
     // A live switch takes the bundle's model and tuning whole: no flag is in play any more.
@@ -277,6 +280,9 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
         "Resumed session {id} ({} messages)",
         repl.conv.history.len()
     ));
+    if let Some(w) = project_warning {
+        repl.handles.tr.error(&format!("⚠ {w}"));
+    }
     if let Some(notice) = grants_notice {
         repl.handles.tr.notice(&notice);
     }

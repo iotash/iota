@@ -1320,6 +1320,7 @@ impl Repl {
             gate: Arc::clone(&self.handles.gate),
             grants: Arc::clone(&self.handles.grants),
             writer: Arc::clone(&self.session.writer),
+            project: crate::repl::commands::allow::ProjectFile::of(self),
             harness: self.conv.harness.clone(),
             overlay,
             images_dir: Arc::clone(&self.session.images_dir),

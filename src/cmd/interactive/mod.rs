@@ -459,15 +459,16 @@ struct Wire<'a> {
 }
 
 /// A resumed bundle's session grants REPLACE the store's (docs/design/grants.md §7) before anything reads
-/// them — the dispatcher's tools and the harness's `write roots:` line are assembled after this. Says so on
-/// stdout when there were any, then the blank line Go prints after the resume line.
+/// them — the dispatcher's tools and the harness's `write roots:` line are assembled after this; the project's
+/// were loaded at assembly. Says so on stdout when either level holds any, then the blank line Go prints after
+/// the resume line.
 fn restore_grants(
     grants: &crate::tool::grants::Grants,
     meta: &crate::session::SessionMeta,
     io: &mut crate::cmd::io::Streams,
 ) {
     grants.replace_session(meta.grants.clone());
-    if let Some(line) = crate::repl::commands::allow::loaded_in_chat(&meta.grants) {
+    if let Some(line) = crate::repl::commands::allow::loaded_in_chat(grants) {
         let _ = writeln!(io.stdout, "{line}");
     }
     let _ = writeln!(io.stdout);
@@ -526,6 +527,8 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     let mut notices = Vec::new();
     // What a resumed bot's model is told at startup (bot-mode.md §2.5).
     let mut recorded_notices = Vec::new();
+    // Whether a resume already said what grants it loaded (`restore_grants`).
+    let mut grants_said = false;
     // The memory a bot's own session writes into (bot-mode.md §3.3): its `remember` tool is built over it.
     let mut memory: Option<crate::agents::memory::BotMemory> = None;
     // `iota run <bot>` (bot-mode.md §2.2): the bot's one session, resumed or created under its pointer. A
@@ -567,6 +570,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
                 opened.history.len()
             );
             restore_grants(&tool_env.grants, opened.writer.meta(), io);
+            grants_said = true;
             if let Some(notice) = &opened.repair_notice {
                 io.warning(notice);
             }
@@ -626,6 +630,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             history.len()
         );
         restore_grants(&tool_env.grants, &resumed.meta, io);
+        grants_said = true;
         if let Some(notice) = repair_notice {
             io.warning(&notice);
         }
@@ -637,6 +642,12 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         writer = Some(w);
     }
 
+    // A fresh start's grants are the project's, loaded at assembly: said once, among the opening lines.
+    if !grants_said
+        && let Some(line) = crate::repl::commands::allow::loaded_in_chat(&tool_env.grants)
+    {
+        notices.push(line);
+    }
     let session_cwd = session_cwd(ctx, scope);
     if writer.is_none() && !ephemeral {
         writer = Some(

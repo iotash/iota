@@ -6,8 +6,10 @@
 
 use std::path::{Path, PathBuf};
 
+use std::collections::BTreeMap;
+
 use crate::app::HostDirs;
-use crate::app::paths;
+use crate::app::{fs, paths};
 use crate::provider::ProviderKind;
 use crate::provider::model::Message;
 
@@ -21,9 +23,26 @@ use crate::session::meta::{
 };
 use crate::session::record::LOG_FILE;
 use crate::session::writer::{SessionWriter, open_append_0644};
+use crate::tool::grants::GrantSet;
 
 /// The `sessionsDir` subdirectory holding project-scoped buckets (chat/session.go:167).
 pub const PROJECTS_DIR_NAME: &str = "projects";
+
+/// The project grants' file in a bucket (docs/design/grants.md §4.2). A file, never a directory: every session
+/// listing reads subdirectories only, and the locator wants `<id>/meta.json`, so no view ever sees it.
+pub const GRANTS_FILE: &str = "grants.json";
+
+/// The one version of [`GRANTS_FILE`] this build reads and writes.
+const GRANTS_VERSION: u32 = 1;
+
+/// [`GRANTS_FILE`] on disk: one entry per REAL project root, because the bucket's slug is lossy — two roots
+/// that collide on it share the file and nothing else.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct GrantsFile {
+    v: u32,
+    #[serde(default)]
+    roots: BTreeMap<PathBuf, GrantSet>,
+}
 
 /// A lightweight session summary (chat/session.go:132-143) minus the picker-only `Project` hint.
 #[derive(Clone, Debug, PartialEq)]
@@ -511,6 +530,50 @@ impl SessionStore {
         Ok(BotOpen::Fresh(writer))
     }
 
+    /// Where the grants of the project rooted at `project_root` are kept: [`GRANTS_FILE`] in the bucket of its
+    /// REAL location, so every spelling of one project (a symlink to it, a trailing `/.`) finds the same file.
+    pub fn grants_path(&self, project_root: &Path) -> PathBuf {
+        self.bucket_of(&real_root(project_root)).join(GRANTS_FILE)
+    }
+
+    /// The project level of the grants (docs/design/grants.md §4.2): this root's entry of its bucket's
+    /// [`GRANTS_FILE`] — and only that entry, whatever else the file holds. No file is no grants; a file that
+    /// is not v1 grants is [`SessionError::GrantsUnreadable`], and the caller then applies none.
+    pub fn project_grants(&self, project_root: &Path) -> Result<GrantSet, SessionError> {
+        let mut file = read_grants(&self.grants_path(project_root))?;
+        Ok(file
+            .roots
+            .remove(&real_root(project_root))
+            .unwrap_or_default())
+    }
+
+    /// Changes the project level by `change`, read–modify–write: the file is read afresh, this root's entry
+    /// changed (and dropped once empty), and the whole file written back with `write_atomic`, 0600 — the
+    /// bucket created on the first write. Returns the entry as it now is. A file that cannot be read is left
+    /// as it is and refused ([`SessionError::GrantsUnreadable`]), never replaced.
+    ///
+    /// There is no lock across the read and the write: two processes granting in the same instant can lose
+    /// one grant, and its user is asked again. That window is accepted (§4.2).
+    pub fn update_project_grants(
+        &self,
+        project_root: &Path,
+        change: impl FnOnce(&mut GrantSet),
+    ) -> Result<GrantSet, SessionError> {
+        let path = self.grants_path(project_root);
+        let mut file = read_grants(&path)?;
+        file.v = GRANTS_VERSION;
+        let key = real_root(project_root);
+        let mut set = file.roots.remove(&key).unwrap_or_default();
+        change(&mut set);
+        if !set.is_empty() {
+            file.roots.insert(key, set.clone());
+        }
+        let mut bytes = serde_json::to_vec_pretty(&file).map_err(std::io::Error::other)?;
+        bytes.push(b'\n');
+        fs::write_atomic(&path, &bytes, Some(0o600))?;
+        Ok(set)
+    }
+
     /// `<root>/projects/<slug(project_root)>`.
     fn bucket_of(&self, project_root: &Path) -> PathBuf {
         self.root
@@ -543,6 +606,39 @@ fn terminate_last_line(path: &Path, append: &mut std::fs::File) -> Result<(), Se
         append.write_all(b"\n")?;
     }
     Ok(())
+}
+
+/// A project root as [`GRANTS_FILE`] keys it: its real location, or — when even that cannot be worked out —
+/// the path cleaned.
+fn real_root(project_root: &Path) -> PathBuf {
+    fs::physical(project_root).unwrap_or_else(|| paths::clean(project_root))
+}
+
+/// [`GRANTS_FILE`] at `path`: empty when there is none, [`SessionError::GrantsUnreadable`] when it cannot be
+/// read or is not version 1.
+fn read_grants(path: &Path) -> Result<GrantsFile, SessionError> {
+    let unreadable = |reason: String| SessionError::GrantsUnreadable {
+        path: path.to_path_buf(),
+        reason,
+    };
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(GrantsFile {
+                v: GRANTS_VERSION,
+                roots: BTreeMap::new(),
+            });
+        }
+        Err(e) => return Err(unreadable(e.to_string())),
+    };
+    let file: GrantsFile = serde_json::from_slice(&bytes).map_err(|e| unreadable(e.to_string()))?;
+    if file.v != GRANTS_VERSION {
+        return Err(unreadable(format!(
+            "version {}, this iota reads {GRANTS_VERSION}",
+            file.v
+        )));
+    }
+    Ok(file)
 }
 
 /// `loadMeta` wrapped in Go's `cannot read session %s: %w` (chat/session.go:388-391, :909-912). A bundle
@@ -610,4 +706,201 @@ fn sort_by_updated_desc(infos: &mut [SessionInfo]) {
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => std::cmp::Ordering::Equal,
     });
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::path::{Path, PathBuf};
+
+    use super::{GRANTS_FILE, PROJECTS_DIR_NAME, SessionStore};
+    use crate::session::SessionError;
+    use crate::tool::grants::GrantSet;
+
+    /// A temp dir holding the sessions root and `proj/`, the project; the project's real location.
+    fn fixture() -> (tempfile::TempDir, SessionStore, PathBuf) {
+        let t = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(t.path().join("proj")).expect("proj");
+        let root = std::fs::canonicalize(t.path().join("proj")).expect("real proj");
+        let store = SessionStore::new(t.path().join("sessions"));
+        (t, store, root)
+    }
+
+    fn dirs(d: &[&Path]) -> GrantSet {
+        GrantSet {
+            dirs: d.iter().map(|p| p.to_path_buf()).collect(),
+            ..GrantSet::default()
+        }
+    }
+
+    fn file(store: &SessionStore, root: &Path) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(store.grants_path(root)).expect("the file"))
+            .expect("json")
+    }
+
+    /// The file sits in the project's bucket, beside its bundles and invisible to every listing, and holds the
+    /// grant under the project's REAL root: a symlink to the project reads and writes the same entry.
+    #[test]
+    fn project_grants_are_keyed_by_the_real_root() {
+        let (t, store, root) = fixture();
+        let link = t.path().join("link");
+        std::os::unix::fs::symlink(&root, &link).expect("link");
+        assert_eq!(store.project_grants(&root).unwrap(), GrantSet::default());
+
+        let lib = Path::new("/data/lib");
+        let set = store
+            .update_project_grants(&link, |s| s.dirs.push(lib.to_path_buf()))
+            .unwrap();
+        assert_eq!(set, dirs(&[lib]));
+        let path = store.grants_path(&root);
+        assert_eq!(path, store.grants_path(&link));
+        assert_eq!(
+            path,
+            store
+                .root()
+                .join(PROJECTS_DIR_NAME)
+                .join(SessionStore::project_slug(&root))
+                .join(GRANTS_FILE)
+        );
+        assert_eq!(
+            file(&store, &root),
+            serde_json::json!({"v": 1, "roots": {root.to_str().unwrap(): {"dirs": ["/data/lib"]}}})
+        );
+        assert_eq!(store.project_grants(&root).unwrap(), dirs(&[lib]));
+        assert_eq!(store.project_grants(&link).unwrap(), dirs(&[lib]));
+
+        // No session view mistakes the file for a bundle.
+        assert!(store.list(Some(&root)).unwrap().is_empty());
+        assert!(store.list_all().unwrap().is_empty());
+        assert_eq!(store.find_dir(GRANTS_FILE), None);
+
+        // Emptied, the entry goes; the file stays a valid, empty one.
+        let set = store
+            .update_project_grants(&root, |s| s.dirs.clear())
+            .unwrap();
+        assert!(set.is_empty());
+        assert_eq!(
+            file(&store, &root),
+            serde_json::json!({"v": 1, "roots": {}})
+        );
+    }
+
+    /// `/a-b/c` and `/a/b/c` share a bucket, so they share the file — and nothing in it: each reads and writes
+    /// its own entry, and a write by one keeps the other's.
+    #[test]
+    fn two_roots_with_one_slug_share_a_file_and_nothing_else() {
+        let t = tempfile::tempdir().expect("tempdir");
+        let real = std::fs::canonicalize(t.path()).expect("real t");
+        let one = real.join("a-b/c");
+        let two = real.join("a/b/c");
+        for d in [&one, &two] {
+            std::fs::create_dir_all(d).expect("root");
+        }
+        assert_eq!(
+            SessionStore::project_slug(&one),
+            SessionStore::project_slug(&two)
+        );
+        let store = SessionStore::new(real.join("sessions"));
+        assert_eq!(store.grants_path(&one), store.grants_path(&two));
+
+        store
+            .update_project_grants(&one, |s| s.dirs.push("/x/one".into()))
+            .unwrap();
+        store
+            .update_project_grants(&two, |s| s.dirs.push("/x/two".into()))
+            .unwrap();
+        assert_eq!(
+            store.project_grants(&one).unwrap(),
+            dirs(&[Path::new("/x/one")])
+        );
+        assert_eq!(
+            store.project_grants(&two).unwrap(),
+            dirs(&[Path::new("/x/two")])
+        );
+        let roots = file(&store, &one)["roots"].clone();
+        assert_eq!(roots.as_object().unwrap().len(), 2);
+
+        store
+            .update_project_grants(&one, |s| s.dirs.clear())
+            .unwrap();
+        assert!(store.project_grants(&one).unwrap().is_empty());
+        assert_eq!(
+            store.project_grants(&two).unwrap(),
+            dirs(&[Path::new("/x/two")])
+        );
+    }
+
+    /// A file that is not v1 grants — garbage, or another version — grants nothing, says where and why, and
+    /// is never replaced by a write: the write refuses and the bytes stay as they were.
+    #[test]
+    fn a_broken_grants_file_grants_nothing() {
+        let (_t, store, root) = fixture();
+        let path = store.grants_path(&root);
+        std::fs::create_dir_all(path.parent().unwrap()).expect("bucket");
+        for bytes in [
+            &b"{not json"[..],
+            br#"{"v": 2, "roots": {}}"#,
+            br#"{"roots": {}}"#,
+        ] {
+            std::fs::write(&path, bytes).expect("write");
+            let err = store.project_grants(&root).unwrap_err();
+            assert!(
+                matches!(&err, SessionError::GrantsUnreadable { path: p, .. } if *p == path),
+                "{err:?}"
+            );
+            assert!(
+                err.to_string()
+                    .starts_with(&format!("cannot read {} (", path.display())),
+                "{err}"
+            );
+            assert!(matches!(
+                store.update_project_grants(&root, |s| s.dirs.push("/x".into())),
+                Err(SessionError::GrantsUnreadable { .. })
+            ));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes, "left as it was");
+        }
+        std::fs::write(&path, br#"{"v": 2, "roots": {}}"#).expect("write");
+        let err = store.project_grants(&root).unwrap_err().to_string();
+        assert!(err.ends_with("(version 2, this iota reads 1)"), "{err}");
+    }
+
+    /// The file is the user's alone (0600) — also when it was there wider — and is written whole: no temp
+    /// file is left beside it, and every write reads the file afresh, so a grant made by another process in
+    /// between is kept.
+    #[test]
+    fn the_grants_file_is_private_and_written_whole() {
+        let (_t, store, root) = fixture();
+        store
+            .update_project_grants(&root, |s| s.dirs.push("/x/a".into()))
+            .unwrap();
+        let path = store.grants_path(&root);
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        // Another process's grant, written between this one's load and its next write.
+        let key = root.to_str().unwrap();
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!(
+                {"v": 1, "roots": {key: {"dirs": ["/x/a", "/x/other"]}}}
+            ))
+            .unwrap(),
+        )
+        .expect("write");
+        let set = store
+            .update_project_grants(&root, |s| s.dirs.push("/x/b".into()))
+            .unwrap();
+        assert_eq!(
+            set,
+            dirs(&[Path::new("/x/a"), Path::new("/x/other"), Path::new("/x/b")])
+        );
+        assert_eq!(mode(&path), 0o600, "a rewrite is private again");
+        let names: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, [GRANTS_FILE], "no temp file is left behind");
+    }
 }
