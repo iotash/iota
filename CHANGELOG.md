@@ -35,7 +35,8 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   `(tmux)`. A selection too long for OSC 52 (about 73 KB) goes to the local
   tool alone and the row says so: `(pbcopy; too large for OSC 52)`. A
   clipboard tool that hangs is stopped after 2 seconds without holding back
-  the others (inside tmux, its buffer still gets the text). In iTerm2, whose
+  the others (inside tmux, its buffer still gets the text), and one still
+  running when you copy again or quit is stopped too. In iTerm2, whose
   clipboard access is off by default, the first copy may ask for permission.
 - **The first key typed is no longer lost on a terminal that answers no
   queries.** The startup check of the terminal's background used to leave a

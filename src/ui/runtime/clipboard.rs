@@ -118,6 +118,17 @@ struct Pending {
     runs: Vec<Run>,
 }
 
+/// A copy dropped with programs still running — settled past [`COPY_DEADLINE`], replaced by the
+/// next copy, or left when the session ends — kills and reaps them, so none outlives it.
+impl Drop for Pending {
+    fn drop(&mut self) {
+        for mut child in self.runs.iter_mut().filter_map(|r| r.child.take()) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 /// Where the selections of this session go: the programs a copy is piped into, whether OSC 52 goes
 /// with them, and the modifier the terminal takes for its own selection while iota has the mouse.
 #[derive(Debug)]
@@ -258,26 +269,21 @@ impl Clipboard {
                 }
             }
         }
-        if p.runs.iter().any(|r| r.child.is_some()) {
-            if p.started.elapsed() < COPY_DEADLINE {
-                self.pending = Some(p);
-                return (None, None);
-            }
-            for mut child in p.runs.iter_mut().filter_map(|r| r.child.take()) {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+        if p.runs.iter().any(|r| r.child.is_some()) && p.started.elapsed() < COPY_DEADLINE {
+            self.pending = Some(p);
+            return (None, None);
         }
         let took: Vec<String> = p
             .runs
-            .into_iter()
+            .iter()
             .filter(|r| r.ok)
-            .map(|r| r.name)
+            .map(|r| r.name.clone())
             .collect();
         let (seq, osc) = match &p.fallback {
             Some(text) if took.is_empty() => offer(text, self.mux),
             _ => (None, p.osc),
         };
+        // `p` is dropped here: a program still running past the deadline is killed and reaped.
         (seq, Some(outcome(p.chars, took, osc)))
     }
 
@@ -648,21 +654,19 @@ mod tests {
         let hang = || argv(&["sh", "-c", "exec sleep 30"]);
         let mut c = Clipboard::with_commands(vec![hang()], None, "Shift");
         assert_eq!(c.start("abc".to_owned()), (Some(osc52("abc")), None));
-        let pid = c.pending.as_ref().unwrap().runs[0]
-            .child
-            .as_ref()
-            .unwrap()
-            .id();
+        let pid = pending_pid(&c);
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(c.poll(), (None, None), "within the deadline it waits");
         past(&mut c);
+        let t0 = Instant::now();
         assert_eq!(c.poll(), (None, Some(done(3, &["OSC 52"]))));
+        assert!(
+            t0.elapsed() < Duration::from_secs(1),
+            "the hung child was killed, not waited out: {:?}",
+            t0.elapsed()
+        );
         assert!(!c.pending());
-        let alive = Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stderr(Stdio::null())
-            .status();
-        assert!(!alive.unwrap().success(), "the hung child was killed");
+        assert!(!alive(pid), "the hung child is gone");
         let mut c = Clipboard::with_commands(vec![hang()], TMUX, "Shift");
         assert_eq!(c.start("abc".to_owned()), (None, None));
         past(&mut c);
@@ -698,6 +702,47 @@ mod tests {
         past(&mut c);
         assert_eq!(c.poll(), (None, Some(done(3, &["sh"]))));
         assert!(!c.pending());
+    }
+
+    /// A copy started while another is pending kills and reaps the first one's programs, and so
+    /// does dropping the clipboard (the session's end) with a copy pending.
+    #[cfg(unix)]
+    #[test]
+    fn a_new_copy_and_the_end_leave_no_program_behind() {
+        let hang = || argv(&["sh", "-c", "exec sleep 30"]);
+        let mut c = Clipboard::with_commands(vec![hang()], None, "Shift");
+        c.start("abc".to_owned());
+        let first = pending_pid(&c);
+        c.start("def".to_owned());
+        assert!(!alive(first), "the first copy's program is gone");
+        let second = pending_pid(&c);
+        assert!(alive(second), "the second copy's program runs");
+        drop(c);
+        assert!(
+            !alive(second),
+            "the pending copy's program is gone at the end"
+        );
+    }
+
+    /// The pid of a pending copy's first program.
+    #[cfg(unix)]
+    fn pending_pid(c: &Clipboard) -> u32 {
+        c.pending.as_ref().unwrap().runs[0]
+            .child
+            .as_ref()
+            .unwrap()
+            .id()
+    }
+
+    /// Whether `pid` is a live process (`kill -0`).
+    #[cfg(unix)]
+    fn alive(pid: u32) -> bool {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
     }
 
     /// Moves a pending copy's start back past [`COPY_DEADLINE`].
