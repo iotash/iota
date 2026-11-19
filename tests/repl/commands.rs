@@ -1894,68 +1894,162 @@ async fn session_resume_swaps_and_echoes() {
     assert_ne!(other_id, current_id);
 }
 
-/// The approval gate's session grants belong to the conversation: a grant given before a `/session`
-/// resume is gone after it — the next gated call is asked again.
-#[tokio::test]
-async fn session_resume_forgets_the_session_grants() {
-    use iota::provider::model::ToolCall;
-    use iota::testing::Round;
-    let pick = |row: usize| {
-        Reply::Tabbed(TabbedResult {
-            cancelled: false,
-            focused: 0,
-            panels: vec![PanelResult {
-                cursor: row,
-                ..PanelResult::default()
-            }],
-        })
-    };
-    let f = Fixture::new(vec![
-        input("first"),
-        pick(1), // "Allow for this session"
-        Reply::Queued(Vec::new()),
-        input("/session"),
-        Reply::Tabbed(TabbedResult {
-            cancelled: false,
-            focused: 0,
-            panels: vec![PanelResult::default(), PanelResult::default()],
-        }),
-        input("second"),
-        pick(0), // asked again: "Allow once"
-        Reply::Queued(Vec::new()),
-        Reply::Interrupted,
-    ]);
-    let mut other = f.writer();
-    other
-        .append_messages(&[Message::user("older"), Message::assistant("answer")])
-        .expect("seed the bundle");
-    let other_dir = other.dir().to_path_buf();
-    drop(other);
-    touch_updated(&other_dir, "2030-01-01T00:00:00+00:00");
-    let write = || {
-        Round::calls(vec![ToolCall {
-            id: "c".to_owned(),
-            name: "write_file".to_owned(),
-            ..ToolCall::default()
-        }])
-    };
-    let p = provider("gpt-4o", Ok(vec![])).with_tools().rounds([
-        write(),
-        Round::reply("one"),
-        write(),
-        Round::reply("two"),
-    ]);
-    let session = f.session(Some(f.writer()));
-    let mut params = f.params(p, session);
-    params.dispatch =
-        Arc::new(StaticDispatcher::new(&["write_file"]).with_approval(&["write_file"]));
-    iota::repl::run(params).await.expect("exit");
-    let asked: Vec<String> = surfaces(&f.ui)
+/// A `/session` pick of the default row: the first panel's first row.
+fn pick_first_session() -> Reply {
+    Reply::Tabbed(TabbedResult {
+        cancelled: false,
+        focused: 0,
+        panels: vec![PanelResult::default(), PanelResult::default()],
+    })
+}
+
+/// The approval dialog's pick of row `row` (`0` "Allow once", `1` "Allow for this session").
+fn pick_row(row: usize) -> Reply {
+    Reply::Tabbed(TabbedResult {
+        cancelled: false,
+        focused: 0,
+        panels: vec![PanelResult {
+            cursor: row,
+            ..PanelResult::default()
+        }],
+    })
+}
+
+/// One model round that calls `write_file`.
+fn write_round() -> iota::testing::Round {
+    iota::testing::Round::calls(vec![iota::provider::model::ToolCall {
+        id: "c".to_owned(),
+        name: "write_file".to_owned(),
+        ..iota::provider::model::ToolCall::default()
+    }])
+}
+
+/// The titles of the approval dialogs the run put up.
+fn asked(ui: &ScriptedUi) -> Vec<String> {
+    surfaces(ui)
         .into_iter()
         .map(|s| s.panels[0].title.clone())
         .filter(|t| t.ends_with("allow?"))
-        .collect();
-    assert_eq!(asked, ["write_file — allow?", "write_file — allow?"]);
+        .collect()
+}
+
+/// A bundle on disk, newer than any the run writes, whose meta carries `grants`; its directory.
+fn bundle_with_grants(f: &Fixture, grants: iota::tool::grants::GrantSet) -> PathBuf {
+    let mut w = f.writer();
+    w.append_messages(&[Message::user("older"), Message::assistant("answer")])
+        .expect("seed the bundle");
+    w.update_meta(|m| m.grants = grants).expect("its grants");
+    let dir = w.dir().to_path_buf();
+    drop(w);
+    touch_updated(&dir, "2030-01-01T00:00:00+00:00");
+    dir
+}
+
+/// A `/session` resume brings the bundle's session grants back (X-110, reversing X-92's "a resume starts
+/// with none"): the directory is a root again and the tool is not asked again, and the switch says how many
+/// it loaded.
+#[tokio::test]
+async fn session_resume_restores_the_bundles_grants() {
+    use iota::tool::grants::{GrantSet, Level, ToolKey};
+    let (_t, root, out) = allow_fixture();
+    let f = Fixture::new(vec![
+        input("/session"),
+        pick_first_session(),
+        input("write it"),
+        Reply::Queued(Vec::new()),
+        Reply::Interrupted,
+    ]);
+    let theirs = GrantSet {
+        dirs: vec![out.clone()],
+        tools: vec![ToolKey::Builtin("write_file".to_owned())],
+    };
+    bundle_with_grants(&f, theirs.clone());
+    let grants = Arc::new(iota::tool::grants::Grants::default());
+    let p = provider("gpt-4o", Ok(vec![]))
+        .with_tools()
+        .rounds([write_round(), iota::testing::Round::reply("done")]);
+    let mut params = f.params(p, f.session(Some(f.writer())));
+    params.harness.env.project_root = root;
+    params.grants = Arc::clone(&grants);
+    params.dispatch =
+        Arc::new(StaticDispatcher::new(&["write_file"]).with_approval(&["write_file"]));
+    iota::repl::run(params).await.expect("exit");
+
+    assert_eq!(grants.snapshot(Level::Session), theirs);
+    assert_eq!(grants.live_dirs(), std::slice::from_ref(&out));
+    assert!(
+        asked(&f.ui).is_empty(),
+        "the restored grant answers the call"
+    );
+    let printed = printed(&f.ui);
+    let notice = "grants: 2 for this session (/allow lists them)".to_owned();
+    assert!(
+        printed.contains(&notice),
+        "{notice:?} missing:\n{printed:#?}"
+    );
+}
+
+/// A `/session` switch REPLACES the session grants: the left conversation's — granted in the dialog and by
+/// `/allow`, each written into its own meta as it was made — are neither carried into the switched-to
+/// session nor written into its bundle; the switched-to one's are all that is in force.
+#[tokio::test]
+async fn session_switch_replaces_and_never_merges() {
+    use iota::tool::grants::{GrantSet, Level, ToolKey};
+    let (t, root, out) = allow_fixture();
+    let elsewhere = t.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).expect("elsewhere");
+    let elsewhere = std::fs::canonicalize(elsewhere).expect("real");
+    let f = Fixture::new(vec![
+        input("first"),
+        pick_row(1), // "Allow for this session"
+        Reply::Queued(Vec::new()),
+        input("/allow ../out"),
+        input("/session"),
+        pick_first_session(),
+        input("second"),
+        pick_row(0), // asked again: "Allow once"
+        Reply::Queued(Vec::new()),
+        Reply::Interrupted,
+    ]);
+    let theirs = GrantSet {
+        dirs: vec![elsewhere],
+        tools: Vec::new(),
+    };
+    let their_dir = bundle_with_grants(&f, theirs.clone());
+    let mine = f.writer();
+    let my_dir = mine.dir().to_path_buf();
+    let grants = Arc::new(iota::tool::grants::Grants::default());
+    let p = provider("gpt-4o", Ok(vec![])).with_tools().rounds([
+        write_round(),
+        iota::testing::Round::reply("one"),
+        write_round(),
+        iota::testing::Round::reply("two"),
+    ]);
+    let mut params = f.params(p, f.session(Some(mine)));
+    params.harness.env.project_root = root;
+    params.grants = Arc::clone(&grants);
+    params.dispatch =
+        Arc::new(StaticDispatcher::new(&["write_file"]).with_approval(&["write_file"]));
+    iota::repl::run(params).await.expect("exit");
+
+    assert_eq!(asked(&f.ui), ["write_file — allow?", "write_file — allow?"]);
+    assert_eq!(grants.snapshot(Level::Session), theirs, "nothing merged in");
+    let read = |dir: &Path| iota::session::SessionMeta::read(dir).expect("meta").grants;
+    assert_eq!(
+        read(&my_dir),
+        GrantSet {
+            dirs: vec![out],
+            tools: vec![ToolKey::Builtin("write_file".to_owned())],
+        },
+        "both doors wrote the left session's meta"
+    );
+    assert_eq!(read(&their_dir), theirs, "nothing written into the other");
+    let printed = printed(&f.ui);
+    let notice = "grants: 1 for this session (/allow lists them)".to_owned();
+    assert!(
+        printed.contains(&notice),
+        "{notice:?} missing:\n{printed:#?}"
+    );
 }
 
 /// Resuming the session already being written to says so and swaps nothing.
@@ -2289,6 +2383,47 @@ async fn save_mints_late_and_flushes_the_backlog() {
     // The whole turn landed even though the watermark never advanced while ephemeral.
     let log = std::fs::read_to_string(dir.join("messages.jsonl")).expect("log");
     assert_eq!(log.lines().count(), 2, "the whole backlog in one append");
+}
+
+/// A chat that started ephemeral keeps its session grants in memory — there is no bundle to write — and
+/// `/save` stamps them into the meta it mints, so the saved session resumes with them.
+#[tokio::test]
+async fn save_keeps_the_grants_made_while_ephemeral() {
+    use iota::tool::grants::{GrantSet, Grants};
+    let (_t, root, out) = allow_fixture();
+    let f = Fixture::new(vec![
+        input("a question"),
+        input("/allow ../out"),
+        input("/save"),
+        Reply::Interrupted,
+    ]);
+    let store = f.store.clone();
+    let session = SessionCtx {
+        new_session: Some(Box::new(move || {
+            store.create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))
+        })),
+        ..f.session(None)
+    };
+    let grants = Arc::new(Grants::default());
+    let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
+    params.harness.env.project_root = root;
+    params.grants = Arc::clone(&grants);
+    iota::repl::run(params).await.expect("exit");
+
+    let lines = printed(&f.ui);
+    let saved = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("Session saved: "))
+        .expect("the save notice");
+    let id = saved.trim_end_matches(" — auto-saving from now on.");
+    let dir = f.store.find_dir(id).expect("the minted bundle");
+    assert_eq!(
+        iota::session::SessionMeta::read(&dir).expect("meta").grants,
+        GrantSet {
+            dirs: vec![out],
+            tools: Vec::new(),
+        }
+    );
 }
 
 // ---------------------------------------------------------------------------

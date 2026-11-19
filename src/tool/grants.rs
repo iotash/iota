@@ -9,8 +9,9 @@
 //!
 //! One `Arc<Grants>` per process, created with the [`ToolEnv`](crate::tool::ToolEnv) and shared by the tools,
 //! both walks and the chat state; `/new` and a `/session` switch swap its contents, never the handle. The
-//! store persists nothing and holds its lock only to copy or change its lists — never across an await, never
-//! while it looks at the filesystem.
+//! store does no I/O and holds its lock only to copy or change its lists — never across an await, never
+//! while it looks at the filesystem. The session level is kept in the bundle's `meta.json`
+//! ([`SessionMeta::grants`](crate::session::SessionMeta::grants)), written by the chat's doors.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -21,24 +22,40 @@ use crate::sync::lock;
 /// How long a grant lasts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
-    /// This conversation: emptied by `/new` and a `/session` switch.
+    /// This conversation: kept in its bundle, emptied by `/new`, replaced by a resume and a `/session` switch.
     Session,
 }
 
-/// What a tool grant names.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What a tool grant names. On disk, `{"builtin": "<name>"}`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolKey {
     /// A tool by its wire name.
     Builtin(String),
 }
 
-/// One level's grants.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// One level's grants. On disk, each list is omitted when empty (docs/design/grants.md §4.1).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct GrantSet {
     /// Granted directories: absolute real paths, each covering its subtree.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dirs: Vec<PathBuf>,
     /// Granted tools.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolKey>,
+}
+
+impl GrantSet {
+    /// Whether the set grants nothing.
+    pub fn is_empty(&self) -> bool {
+        self.dirs.is_empty() && self.tools.is_empty()
+    }
+
+    /// How many grants the set holds, directories and tools together.
+    pub fn len(&self) -> usize {
+        self.dirs.len() + self.tools.len()
+    }
 }
 
 /// The store. `Default` is empty.
@@ -128,8 +145,8 @@ impl Grants {
         inner.level(level).clone()
     }
 
-    /// Replaces the session level's grants: `/new` and a `/session` switch start the next conversation with
-    /// `set` and nothing of the last one.
+    /// Replaces the session level's grants: `/new` starts the next conversation with none, a resume and a
+    /// `/session` switch with the bundle's — and nothing of the last one, ever merged.
     pub fn replace_session(&self, set: GrantSet) {
         lock(&self.inner).session = set;
     }

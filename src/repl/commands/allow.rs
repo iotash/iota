@@ -4,7 +4,9 @@
 //! is made writable here, typed by the user. `/allow <dir>` grants the directory's REAL location and its
 //! subtree for this session — the code jail and the shell sandbox read it at their next call, the harness's
 //! `write roots:` line at the next turn (`refresh_harness`). `/revoke <dir>` takes it back; a bare `/allow`
-//! lists what is in effect, by level.
+//! lists what is in effect, by level. Every change of the session level is written into the bundle's meta
+//! ([`save_session`]) — the dialog's grants too — so a resume restores it; an ephemeral chat keeps it in
+//! memory until `/save` stamps it.
 //!
 //! A message from the socket never reaches here: the loop's notice path runs no slash command
 //! (`repl::inbound`), and the model has no way to type one.
@@ -15,6 +17,9 @@ use std::path::{Path, PathBuf};
 use crate::app::{fs, paths, protected};
 use crate::repl::render::styles::dim;
 use crate::repl::run::Repl;
+use crate::repl::title::WriterSlot;
+use crate::session::SessionError;
+use crate::sync::lock;
 use crate::tool::grants::{self, GrantSet, Grants, Level, ToolKey};
 
 /// What the user is told when the argument is not something `/allow` takes.
@@ -66,7 +71,10 @@ pub(crate) fn cmd_allow(repl: &Repl, arg: &str) {
         return;
     }
     match allow(&repl.handles.grants, &b, arg) {
-        Ok(line) => tr.notice(&line),
+        Ok(line) => {
+            tr.notice(&line);
+            saved(repl);
+        }
         Err(why) => tr.error(&format!("/allow: {why}")),
     }
 }
@@ -75,9 +83,41 @@ pub(crate) fn cmd_allow(repl: &Repl, arg: &str) {
 pub(crate) fn cmd_revoke(repl: &Repl, arg: &str) {
     let tr = &repl.handles.tr;
     match revoke(&repl.handles.grants, &Boundary::of(repl), arg) {
-        Ok(line) => tr.notice(&line),
+        Ok(line) => {
+            tr.notice(&line);
+            saved(repl);
+        }
         Err(why) => tr.error(&format!("/revoke: {why}")),
     }
+}
+
+/// [`save_session`] for a command, a failure said as every other failed meta write is.
+fn saved(repl: &Repl) {
+    if let Err(e) = save_session(&repl.session.writer, &repl.handles.grants) {
+        repl.handles
+            .tr
+            .error(&format!("Warning: failed to save session: {e}"));
+    }
+}
+
+/// Writes the session level of `grants` into the meta of the bundle in `writer`, under its single-writer lock
+/// (`SessionWriter::update_meta`; a pending bundle keeps it for its first write). An ephemeral chat has no
+/// bundle: the grants stay in memory, and `/save` stamps them into the meta it mints.
+pub(crate) fn save_session(writer: &WriterSlot, grants: &Grants) -> Result<(), SessionError> {
+    let set = grants.snapshot(Level::Session);
+    lock(writer)
+        .as_mut()
+        .map_or(Ok(()), |w| w.update_meta(|m| m.grants = set))
+}
+
+/// The line a start or a resume prints when the bundle it opened brought grants: `None` when it brought none.
+pub(crate) fn loaded(set: &GrantSet) -> Option<String> {
+    (!set.is_empty()).then(|| format!("grants: {} for this session", set.len()))
+}
+
+/// [`loaded`] as a chat says it: with where to look.
+pub(crate) fn loaded_in_chat(set: &GrantSet) -> Option<String> {
+    loaded(set).map(|l| format!("{l} (/allow lists them)"))
 }
 
 /// Grants the directory `arg` for this session: the notice line, or why not.

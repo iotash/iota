@@ -740,6 +740,12 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
             "Resumed session {id} ({} messages)",
             resumed.messages.len()
         ));
+        // The session's grants are in force for its one turn — loaded before the tools and the harness read
+        // them, never changed: `-m` has no door to grant through.
+        tool_env.grants.replace_session(resumed.meta.grants.clone());
+        if let Some(line) = crate::repl::commands::allow::loaded(&resumed.meta.grants) {
+            io.warning(&line);
+        }
         if let Some(notice) = resumed.repair_notice() {
             io.warning(&notice);
         }

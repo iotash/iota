@@ -458,6 +458,21 @@ struct Wire<'a> {
     mcp_defers: Vec<DeferredGroup>,
 }
 
+/// A resumed bundle's session grants REPLACE the store's (docs/design/grants.md §7) before anything reads
+/// them — the dispatcher's tools and the harness's `write roots:` line are assembled after this. Says so on
+/// stdout when there were any, then the blank line Go prints after the resume line.
+fn restore_grants(
+    grants: &crate::tool::grants::Grants,
+    meta: &crate::session::SessionMeta,
+    io: &mut crate::cmd::io::Streams,
+) {
+    grants.replace_session(meta.grants.clone());
+    if let Some(line) = crate::repl::commands::allow::loaded_in_chat(&meta.grants) {
+        let _ = writeln!(io.stdout, "{line}");
+    }
+    let _ = writeln!(io.stdout);
+}
+
 /// root.go:292-412 — every fallible pre-loop step, run while the terminal is still the shell's.
 ///
 /// Resume replays the bundle's model and tuning (explicit flags win, exactly as headlessly), a fresh run
@@ -547,10 +562,11 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         if opened.resumed {
             let _ = writeln!(
                 io.stdout,
-                "Resumed session {} ({} messages)\n",
+                "Resumed session {} ({} messages)",
                 opened.writer.id(),
                 opened.history.len()
             );
+            restore_grants(&tool_env.grants, opened.writer.meta(), io);
             if let Some(notice) = &opened.repair_notice {
                 io.warning(notice);
             }
@@ -606,9 +622,10 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         // banner the facade puts in the scrollback.
         let _ = writeln!(
             io.stdout,
-            "Resumed session {id} ({} messages)\n",
+            "Resumed session {id} ({} messages)",
             history.len()
         );
+        restore_grants(&tool_env.grants, &resumed.meta, io);
         if let Some(notice) = repair_notice {
             io.warning(&notice);
         }

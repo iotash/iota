@@ -99,6 +99,15 @@ A session is a **directory** on disk:
 > `base_url`, keeps every other key and never touches `messages.jsonl`; a v2 bundle is skipped, so a second run
 > changes nothing. The version is the only thing that tells the two apart: the same `provider: anthropic` means a
 > type in v1 and a name in v2. The listing still shows a v1 bundle; only opening it is refused.
+>
+> **`grants`** (2026-11-19, docs/design/grants.md §4.1): the session-level grants — what the user allowed for this
+> conversation, as `{"dirs": ["/real/path", …], "tools": [{"builtin": "edit_file"}, …]}`, each list and the key
+> itself omitted when empty. A directory is the REAL path the grant store holds, never the one typed. It is
+> written through `SessionWriter::update_meta` whenever the approval dialog grants for the session, `/allow` adds
+> or `/revoke` removes (a pending bundle carries it to its first write; an ephemeral chat keeps it in memory and
+> `/save` stamps it); `iota resume` (with or without `-m`) and a `/session` switch REPLACE the run's session
+> grants with it, and `/new` starts without. The version stays 2: an optional key absent in every older bundle
+> changes no meaning, and absent already reads as "no grants".
 
 ### 4.2 `messages.jsonl` (one line each)
 

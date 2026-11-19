@@ -36,7 +36,7 @@ use crate::ui::render::label::paint_label;
 use crate::repl::turn::retry::retry_round;
 use crate::repl::turn::steer::Steerer;
 use crate::repl::turn::{
-    PHASE_TOOLS, Turn, TurnFailure, TurnOutput, TurnReport, collect_images, stream_round,
+    PHASE_TOOLS, Turn, TurnCtx, TurnFailure, TurnOutput, TurnReport, collect_images, stream_round,
 };
 
 /// What a refused call tells the model (chat/run.go:1570-1572).
@@ -278,6 +278,7 @@ async fn walk(
                 }
                 (Answer::Granted(level), None) => {
                     t.cx.grants.grant_tool(level, key);
+                    save_grants(t.cx);
                 }
                 // The directory becomes a root: the call, re-resolved when it runs, is an inside write.
                 (
@@ -287,6 +288,7 @@ async fn walk(
                     }),
                 ) => {
                     t.cx.grants.grant_dir(level, dir);
+                    save_grants(t.cx);
                 }
                 (_, s) => approved = s.map(|s| Approved::Once(s.target)),
             }
@@ -431,6 +433,14 @@ async fn run_parallel_batch(t: &Turn<'_>, calls: &[ToolCall]) -> Vec<Message> {
 
 /// The user cancelled: no partials (a tool walk streams nothing), so the turn's finalize
 /// keeps whatever rounds completed.
+/// Writes the store's session level into the bundle after the dialog granted something (`/allow`'s write).
+fn save_grants(cx: &TurnCtx) {
+    if let Err(e) = crate::repl::commands::allow::save_session(&cx.writer, &cx.grants) {
+        cx.tr
+            .error(&format!("Warning: failed to save session: {e}"));
+    }
+}
+
 fn interrupted() -> TurnFailure {
     TurnFailure::Chat(ChatError::Interrupted)
 }

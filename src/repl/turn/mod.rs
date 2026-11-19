@@ -91,6 +91,8 @@ pub(crate) struct TurnCtx {
     pub(crate) gate: Arc<ApprovalGate>,
     /// The run's grant store: the walk reads it through `tool::approval::gate` and writes what the user grants.
     pub(crate) grants: Arc<crate::tool::grants::Grants>,
+    /// The session's bundle (`None` inside while ephemeral): a session-level grant is written into its meta.
+    pub(crate) writer: crate::repl::title::WriterSlot,
     /// The built-in harness prompt ahead of every send (`""` for an agent without tools).
     pub(crate) harness: String,
     /// The agent-mode overlay woven into every send.

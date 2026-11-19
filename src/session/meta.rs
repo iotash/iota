@@ -10,6 +10,7 @@ use crate::provider::error::InvalidEffort;
 use crate::provider::{Effort, ImageGenParams, Provider};
 use crate::session::error::SessionError;
 use crate::session::params::{LayeredParams, ParamSources};
+use crate::tool::grants::GrantSet;
 
 /// The image settings a provider runs under, as a meta records them.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -156,6 +157,11 @@ pub struct SessionMeta {
     /// recorded. [`SessionMeta::sources`] is the reading; [`ParamSources::LEGACY`] is what absence means.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub param_sources: Option<ParamSources>,
+    /// The session-level grants (docs/design/grants.md §4.1): the directories and tools the user allowed for
+    /// this conversation, restored by a resume. Empty omits the key — and an absent key, in every bundle
+    /// written before it existed, reads as no grants, so the schema version is unchanged.
+    #[serde(skip_serializing_if = "GrantSet::is_empty")]
+    pub grants: GrantSet,
     /// Records written to the log, system messages included, compaction markers excluded. ALWAYS emitted.
     pub message_count: i64,
     /// Keys a future Go build wrote that this build does not model — preserved verbatim across a Rust
@@ -322,7 +328,63 @@ impl SessionMeta {
 
 #[cfg(test)]
 mod tests {
-    use super::{now_rfc3339, parse_rfc3339};
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use std::path::PathBuf;
+
+    use super::{SessionMeta, now_rfc3339, parse_rfc3339};
+    use crate::tool::grants::{GrantSet, ToolKey};
+
+    /// No grants, no key — a bundle without grants is byte-for-byte what it was before the key existed, and
+    /// such a bundle reads back as granting nothing. Grants are written in the §4.1 shape, each list omitted
+    /// when empty, and read back as they were.
+    #[test]
+    fn grants_are_omitted_when_empty_and_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut meta = SessionMeta {
+            version: super::SESSION_SCHEMA_VERSION,
+            id: "s".to_owned(),
+            ..SessionMeta::default()
+        };
+        meta.write(dir.path()).expect("write");
+        let raw = std::fs::read_to_string(dir.path().join(super::META_FILE)).expect("read");
+        assert!(!raw.contains("grants"), "{raw}");
+        assert_eq!(
+            SessionMeta::read(dir.path()).expect("meta").grants,
+            GrantSet::default()
+        );
+
+        meta.grants = GrantSet {
+            dirs: vec![PathBuf::from("/Users/x/scratch")],
+            tools: Vec::new(),
+        };
+        meta.write(dir.path()).expect("write");
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join(super::META_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(
+            json["grants"],
+            serde_json::json!({"dirs": ["/Users/x/scratch"]})
+        );
+
+        meta.grants
+            .tools
+            .push(ToolKey::Builtin("edit_file".to_owned()));
+        meta.write(dir.path()).expect("write");
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join(super::META_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(
+            json["grants"],
+            serde_json::json!({"dirs": ["/Users/x/scratch"], "tools": [{"builtin": "edit_file"}]})
+        );
+        let back = SessionMeta::read(dir.path()).expect("meta");
+        assert_eq!(back.grants, meta.grants);
+        assert!(
+            back.extra.is_empty(),
+            "grants is a modelled key: {:?}",
+            back.extra
+        );
+    }
 
     /// `now_rfc3339` is second-precision RFC3339 with a numeric offset, and parses back.
     #[test]

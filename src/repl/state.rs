@@ -181,7 +181,8 @@ pub(crate) struct UiHandles {
     pub(crate) table: Arc<Mutex<CommandTable>>,
     /// The conversation's ONE approval dialog (chat/run.go:172-186).
     pub(crate) gate: Arc<ApprovalGate>,
-    /// The run's ONE grant store, shared with the tools: `/new` and a `/session` switch empty its session level.
+    /// The run's ONE grant store, shared with the tools: `/new` empties its session level, a `/session` switch
+    /// replaces it with the bundle's.
     pub(crate) grants: Arc<crate::tool::grants::Grants>,
     /// MCP display hooks.
     pub(crate) mcp: McpHooks,

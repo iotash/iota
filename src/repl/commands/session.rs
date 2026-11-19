@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use crate::session::SessionInfo;
 use crate::sync::lock;
-use crate::tool::grants::GrantSet;
 use crate::ui::facade::{Panel, TabbedSpec};
 
 use crate::repl::render::replay::{echo_rounds, resume_echo};
@@ -233,8 +232,12 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     repl.conv.budget.reseed(&repl.conv.history);
     repl.conv.ctxm.seed_totals(usage); // the switched-to session brings its own totals
     repl.conv.pending.clear();
-    // The session grants were the left conversation's: the switched-to one starts with none.
-    repl.handles.grants.replace_session(GrantSet::default());
+    // The session grants were the left conversation's: the switched-to one has its own, REPLACING them — a
+    // merge would carry one conversation's approvals into another.
+    let grants_notice = crate::repl::commands::allow::loaded_in_chat(&resumed.meta.grants);
+    repl.handles
+        .grants
+        .replace_session(resumed.meta.grants.clone());
     // The auto-compaction snooze was the session being left's answer, about ITS occupancy.
     repl.conv.compact_declined = 0;
     // A live switch takes the bundle's model and tuning whole: no flag is in play any more.
@@ -274,6 +277,9 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
         "Resumed session {id} ({} messages)",
         repl.conv.history.len()
     ));
+    if let Some(notice) = grants_notice {
+        repl.handles.tr.notice(&notice);
+    }
     if let Some(notice) = repair_notice {
         repl.handles.tr.notice(&notice);
     }

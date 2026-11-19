@@ -42,6 +42,13 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   (`.git/hooks`, `.git/config`, `.iota.yaml`, …) stay read-only, and `/status`
   shows how many grants the session holds. A message sent to the chat from
   another process cannot run it.
+- **A resumed session keeps what you allowed in it.** The directories and
+  tools you allow for a session — in the approval prompt or with `/allow` —
+  are saved with it, so `iota resume` and a `/session` switch bring them back
+  instead of asking again, and `iota resume <id> -m` runs with them. A switch
+  replaces the grants of the session you leave with those of the one you
+  open; `/new` still starts with none, and a `--no-save` chat keeps them in
+  memory until `/save`. Resuming says how many it restored.
 
 ### Fixed
 

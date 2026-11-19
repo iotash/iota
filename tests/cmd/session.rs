@@ -1348,6 +1348,45 @@ async fn resume_a_log_ending_in_tool_results() {
     assert_eq!(contents[2]["parts"][1]["text"], "carry on");
 }
 
+/// `iota resume <id> -m` runs under the session grants its bundle carries (docs/design/grants.md §7): it
+/// says how many it loaded, on stderr after the resume line, and leaves them in the meta as they were — a
+/// headless run has no door to change them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_m_loads_the_session_grants_and_keeps_them() {
+    let server = MockServer::start().await;
+    google_stub(&server, false).await;
+    let cwd = TempDir::new().expect("temp cwd");
+    let home = TempDir::new().expect("temp home");
+    let granted = TempDir::new().expect("granted dir");
+    let granted = fs::canonicalize(granted.path()).expect("real");
+    let id = "grantsresum1";
+    let dir = sessions_root(home.path()).join(id);
+    plant_bundle(
+        &dir,
+        id,
+        "p",
+        "gemini-2.5-pro",
+        &[rec("user", "hi"), rec("assistant", "hello")],
+    );
+    let mut meta = SessionMeta::read(&dir).expect("meta");
+    meta.grants.dirs.push(granted.clone());
+    meta.write(&dir).expect("write meta");
+
+    write_config(cwd.path(), &server.uri(), "", "");
+    let mut cmd = iota(cwd.path(), home.path());
+    cmd.args(["resume", id, "-m", "carry on"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert_eq!(
+        err(&o),
+        format!("Resumed session {id} (2 messages)\ngrants: 1 for this session\n")
+    );
+    assert_eq!(
+        SessionMeta::read(&dir).expect("meta").grants.dirs,
+        [granted]
+    );
+}
+
 /// A run that FAILS persists nothing (DIVERGENCES D-43): the log and the meta are byte-identical afterwards.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_resumed_turn_persists_nothing() {

@@ -14,6 +14,7 @@
 use crate::repl::run::Repl;
 use crate::repl::title::{TITLE_CAP, title_from};
 use crate::sync::lock;
+use crate::tool::grants::Level;
 
 /// `/save [title]`.
 pub(crate) fn cmd_save(repl: &mut Repl, arg: &str) {
@@ -46,6 +47,9 @@ pub(crate) fn cmd_save(repl: &mut Repl, arg: &str) {
         *slot = Some(writer);
         if let Some(w) = slot.as_mut() {
             let _ = w.move_to(&moved);
+            // What was granted while nothing was saving is this conversation's, and goes with it.
+            let grants = repl.handles.grants.snapshot(Level::Session);
+            let _ = w.update_meta(|m| m.grants = grants);
         }
     }
     // The watermark stayed at 0 while the chat was ephemeral, so this lands the WHOLE
