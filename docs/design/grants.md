@@ -1,9 +1,9 @@
 # Grants — one store for "the user allowed this", kept with the session and the project
 
-Status: **plan, awaiting the owner's approval** (2026-11-18). Nothing here is built. The
-decisions it revises are DIVERGENCES X-44, X-91, X-92 and X-95; the rows are drafted in
-§10 and applied by the PM once the owner approves. §9 answers the twelve open questions
-one by one; §11 is the task list.
+Status: **implemented** (2026-11-19). Where this document and the code differ,
+DIVERGENCES X-110..X-113 win: they record what shipped. The decisions it revised are
+X-44, X-91, X-92 and X-95; §10 holds the rows as drafted. §9 answers the twelve open
+questions one by one; §11 is the task list.
 
 ## 1. The problem
 
@@ -440,14 +440,14 @@ configuration. If the owner wants it, it is task 10: the flag only tightens
 
 **Q10. Where the grants sit.** `src/tool/grants.rs` — the lowest layer every reader can
 name (`tool` is below `mcp`, `session`, `headless`, `repl`, `cmd`; `shell` and `agents`
-are below it and receive plain `Vec<PathBuf>`s).
+are below it and receive plain `Vec<PathBuf>`s). The store does no I/O:
 
 ```rust
 pub struct Grants { inner: Mutex<Inner> }          // shared as Arc<Grants>
 struct Inner { session: GrantSet, project: GrantSet }
 
 impl Grants {
-    pub fn live_dirs(&self) -> Vec<PathBuf>;                 // both levels, stale ones dropped
+    pub fn live_dirs(&self) -> Vec<PathBuf>;                 // both levels, each once, stale ones dropped
     pub fn roots(&self, statics: &[PathBuf]) -> Vec<PathBuf>; // statics, then live_dirs, each once
     pub fn allows(&self, key: &ToolKey) -> bool;             // GrantSet::allows at either level
     pub fn update<R>(&self, level: Level, f: impl FnOnce(&mut GrantSet) -> R) -> R; // the one mutator
@@ -455,20 +455,48 @@ impl Grants {
     pub fn replace_session(&self, set: GrantSet);
     pub fn replace_project(&self, set: GrantSet);
 }
+
+impl GrantSet {                                            // serde: { dirs, tools }, each omitted when empty
+    pub fn allows(&self, key: &ToolKey) -> bool;             // by name, or an MCP key by its server's `*`
+    pub fn add_dir(&mut self, dir: PathBuf) -> bool;
+    pub fn add_tool(&mut self, key: ToolKey) -> bool;
+}
 ```
 
-The store does no I/O. `GrantSet` derives serde; `session::meta` embeds it and
-`session::store` reads and writes `grants.json`. `ToolEnv` gains `grants: Arc<Grants>`
-(`Default` is an empty store, so the `..ToolEnv::default()` literals stand);
-`write_roots` stays the STATIC list. `CodeSet` and `ShellTool` clone the `Arc` at
-assembly and read it per call; the MCP manager does not hold it (it only names its
-key). One service in `repl::grants` is what every chat door calls: `Door::apply(level, f)`
-mutates and persists (the session level through `update_meta`, the project level file
-first) — the dialog, `/allow`, `/revoke` and `/save`; `ProjectFile::enter` is what a start
-resume, `-m` resume, `/new` and `/session` do (replace the session level, reload the
-project's, count). The harness is recomposed by the next turn (`refresh_harness`), not by
-the door. `/new`, a resume and `/session` swap contents, never the handle (§7). (As built,
-task `grants-refactor`.)
+`Grants::roots` is the one union the code jail, the shell sandbox and the harness's
+`write roots:` line read; `GrantSet::allows` is the one `*` rule. `session::meta` embeds a
+`GrantSet`; `session::store` reads and writes `grants.json`
+(`SessionStore::{project_grants, update_project_grants}`). `ToolEnv` holds `grants:
+Arc<Grants>` (`Default` is an empty store, so the `..ToolEnv::default()` literals stand)
+and the STATIC roots in two lists, `write_roots` (the config's) and `added_dirs`
+(`--add-dir`), joined by `static_roots()`. `CodeSet` and `ShellTool` clone the `Arc` at
+assembly and read it per call; the MCP manager does not hold it (it only names its key,
+`Dispatcher::grant_key`).
+
+The chat's side is `src/repl/grants.rs`:
+
+```rust
+pub struct ProjectFile { pub store: SessionStore, pub root: PathBuf }
+impl ProjectFile {
+    fn load(&self, grants: &Grants) -> Option<String>;              // project level := the file; a warning if unreadable
+    fn enter(&self, grants: &Grants, session: GrantSet) -> Entered; // session level replaced, then load
+}
+pub struct Footing { pub project: ProjectFile, pub write_roots: Vec<PathBuf>, pub added_dirs: Vec<PathBuf> }
+struct Door { grants: Arc<Grants>, writer: WriterSlot, project: ProjectFile }
+impl Door {
+    fn apply(&self, level: Level, f: impl FnOnce(&mut GrantSet)) -> Result<(), Unsaved>;
+}
+```
+
+`Door::apply` is what every door that changes a grant calls — the dialog, `/allow`,
+`/revoke` and `/save`: the session level changes in memory and is then written through
+`update_meta` (an ephemeral chat has no writer); the project level is written to the file
+first and memory takes what the file then holds. `ProjectFile` is built once, in `cmd`, for
+the root the tools read paths against; `load` runs at assembly in every mode, `enter` at a
+start resume, `iota resume -m`, `/new` and `/session`. `Footing` is what `/allow` stands on:
+the project's file and the static roots kept apart by where they were declared. The
+harness is recomposed by the next turn (`refresh_harness`), not by the door. `/new`, a
+resume and `/session` swap contents, never the handle (§7).
 
 **Q11. Trust.** Nothing new is trusted. The trust gate (X-94) exists because a
 repository can ship a config; `grants.json` and every `meta.json` live under `~/.iota`,
@@ -569,7 +597,7 @@ stays in the sandbox. Ships alone: it is a bug today. X-44 amendment (without
 removed; both walks call `gate()`; the dialog's directory item becomes `Allow, and make
 <dir> writable for this session` and writes a directory grant the code jail reads per
 call; `Approved::Dir` is removed; no home-or-above offer; `/new` and `/session` empty
-the session level. Memory only. X-108 (first half), X-92 amendment. Done when the gate
+the session level. Memory only. X-110 (first half), X-92 amendment. Done when the gate
 passes and these exist:
 `tool::grants::tests::{a_directory_grant_covers_its_subtree, a_directory_replaced_by_a_link_is_stale, levels_only_add}`,
 `tool::approval::tests::a_tool_grant_never_answers_a_call_bound_to_a_location`,
@@ -586,7 +614,7 @@ same and the harness is recomposed when the set changes; the `/allow` sentence j
 
 **4. `grants-allow`** — `/allow [<dir>]`, `/revoke <dir>`, the `/status` row, the two
 table rows; session level, directories only (`project` and `server:tool` arrive with 7
-and 8). X-109. Done when the gate passes and these exist:
+and 8). X-111. Done when the gate passes and these exist:
 `tests/repl/commands.rs::{allow_makes_a_directory_writable_and_says_where_it_really_is, allow_refuses_what_is_not_a_directory, revoke_removes_a_grant, allow_and_revoke_are_in_the_table}`,
 `repl::commands::status::tests::the_grants_row_only_when_granted`,
 `tests/repl/messaging.rs::a_message_that_says_allow_grants_nothing`.
@@ -601,7 +629,7 @@ persists. X-95 amendment. Done when the gate passes and these exist:
 
 **6. `grants-session`** — `SessionMeta::grants`; every session-level change goes
 through `update_meta`; a start resume, a `/session` resume and `iota resume -m` load
-it; `/save` stamps it; the one-line `grants: …` notice. X-108 (second half),
+it; `/save` stamps it; the one-line `grants: …` notice. X-110 (second half),
 `session-format.md` §4.1. Done when the gate passes and these exist:
 `session::meta::tests::grants_are_omitted_when_empty_and_round_trip`,
 `tests/repl/commands.rs::{session_resume_restores_the_bundles_grants, session_switch_replaces_and_never_merges}`,
@@ -620,7 +648,7 @@ exist:
 
 **8. `grants-mcp`** — `Dispatcher::grant_key`, `ServerConfig::flag`, the MCP dialog
 items, `/allow [project] <server>:<tool|*>`, `/revoke` for them, the unattended
-refusal's new clause. X-110. Done when the gate passes and these exist:
+refusal's new clause. X-112. Done when the gate passes and these exist:
 `mcp::manager::tests::{the_grant_key_is_the_configured_name_and_the_raw_tool, a_flag_server_is_keyed_by_its_spec}`,
 `tool::grants::tests::any_covers_a_tool_named_later`,
 `repl::turn::tools::tests::an_mcp_tool_granted_for_the_session_is_not_asked_again`,
@@ -629,7 +657,7 @@ refusal's new clause. X-110. Done when the gate passes and these exist:
 
 **9. `add-dir`** — the flag on `RunArgs` (and in `first_given`), resolved into
 `ToolEnv::write_roots` after the config's; `--add-dir` joins task 1's word list; the
-unattended refusal names it. X-111. Independent of 2–8. Done when the gate passes and
+unattended refusal names it. X-113. Independent of 2–8. Done when the gate passes and
 these exist:
 `tests/cmd/cli.rs::{add_dir_opens_a_directory_after_the_configs_roots, add_dir_is_relative_to_the_working_directory}`,
 `tests/headless/approval.rs::add_dir_admits_an_unattended_write`,
