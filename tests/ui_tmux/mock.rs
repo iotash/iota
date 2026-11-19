@@ -27,6 +27,7 @@
 //! | `runfg:<cmd>` | the same call in the foreground (no `background` key)          |
 //! | `runtail:<cmd>` | the foreground call, then [`TRAILING`] as content AFTER it — a model that keeps talking past its call |
 //! | `runanon:<cmd>` | the same, but the arguments arrive BEFORE the call's name (an anonymous composing delta) |
+//! | `call:<name>` | ONE call of the tool `<name>` (an MCP tool's wire name) with `{}`, `finish_reason: tool_calls` |
 //! | `hang:<word>` | the `200` head, then not one byte until the client walks away   |
 //! | `openend:<word>` | the full `echo:` answer through `[DONE]`, then the body held open (no last chunk) |
 //! | anything else | `echo: <the message>`                                        |
@@ -441,6 +442,9 @@ fn stream_reply(sock: &mut TcpStream, prompt: &str, after_tool: bool) -> std::io
         tool_call(sock, cmd.trim(), false)?;
         content(sock, TRAILING)?;
         finish = "tool_calls";
+    } else if let Some(name) = prompt.strip_prefix("call:") {
+        named_call(sock, name.trim(), "{}")?;
+        finish = "tool_calls";
     } else if let Some(cmd) = prompt.strip_prefix("runanon:") {
         anonymous_tool_call(sock, cmd.trim())?;
         content(sock, TRAILING)?;
@@ -552,27 +556,33 @@ fn stream_reply(sock: &mut TcpStream, prompt: &str, after_tool: bool) -> std::io
     sock.flush()
 }
 
-/// One `shell` tool call as the `OpenAI` wire spells it: the first delta names the call (id, name,
-/// empty arguments), the second carries the whole argument object — two deltas rather than one
-/// because that is the shape a real server streams, and the accumulator has to join them.
+/// One `shell` tool call as the `OpenAI` wire spells it ([`named_call`]).
 fn tool_call(sock: &mut TcpStream, cmd: &str, background: bool) -> std::io::Result<()> {
-    let id = format!("call_l4_{}", CALLS.fetch_add(1, Ordering::Relaxed) + 1);
-    chunk(
-        sock,
-        &format!(
-            "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"{id}\",\"type\":\"function\",\"function\":{{\"name\":\"shell\",\"arguments\":\"\"}}}}]}},\"finish_reason\":null}}]}}\n\n"
-        ),
-    )?;
     let args = if background {
         format!("{{\"command\":{},\"background\":true}}", json_string(cmd))
     } else {
         format!("{{\"command\":{}}}", json_string(cmd))
     };
+    named_call(sock, "shell", &args)
+}
+
+/// One call of the tool `name` with the argument object `args`: the first delta names the call (id,
+/// name, empty arguments), the second carries the whole argument object — two deltas rather than one
+/// because that is the shape a real server streams, and the accumulator has to join them.
+fn named_call(sock: &mut TcpStream, name: &str, args: &str) -> std::io::Result<()> {
+    let id = format!("call_l4_{}", CALLS.fetch_add(1, Ordering::Relaxed) + 1);
+    chunk(
+        sock,
+        &format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"{id}\",\"type\":\"function\",\"function\":{{\"name\":{},\"arguments\":\"\"}}}}]}},\"finish_reason\":null}}]}}\n\n",
+            json_string(name)
+        ),
+    )?;
     chunk(
         sock,
         &format!(
             "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":{}}}}}]}},\"finish_reason\":null}}]}}\n\n",
-            json_string(&args)
+            json_string(args)
         ),
     )
 }

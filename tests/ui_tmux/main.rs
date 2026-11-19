@@ -82,6 +82,7 @@
 //! | `49-fullscreen-grow.sh` | tui-plan S7b | — (a code block and a table streamed with holds mid-block: the arrived lines on screen and no metered counter, the code re-laid-out under its gutter at 50 columns mid-stream, the table's rows boxed as they arrive, each line once in the history) |
 //! | `50-list-overlay.sh` | sel-float, sel-top | — (a fresh session: the banner on the first rows, unchanged byte for byte while `/` opens the list under it, `d` narrows it and it closes; over a full screen, `/` opens the list and `d` narrows it: the rows above the area unchanged byte for byte through both, the top edge coming down with the narrowed list onto it and the rows it gave back showing the conversation, the list one blank row over the composer, the gap row blank in raw bytes; closing gives the screen back) |
 //! | `51-xml-tab.sh` | xml-tab | — (a pasted `<hc>` snippet on a plain terminal — no host claims an element — is the user block byte for byte, with no tab, on screen and in the exit's write-out) |
+//! | `53-mcp-grant.sh` | grants-refactor, X-112 | — (a stdio MCP server's tool called by the model: the dialog's four items, Esc denying it, `/allow srv:echo` saying and listing the grant, the same call then running without a dialog) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -747,6 +748,13 @@ fn tmux_xml_tab() {
 #[test]
 fn tmux_theme_live() {
     run_scenario("52-theme-live.sh");
+}
+
+/// grants (X-112): an MCP tool's approval dialog offers its four items, and a `/allow <server>:<tool>` grant
+/// takes effect at the next call — the one grant interaction with no other real-terminal coverage.
+#[test]
+fn tmux_mcp_grant() {
+    run_scenario("53-mcp-grant.sh");
 }
 
 /// M2 (tui-plan §7) — a measurement, not a check: the bytes the tmux iota runs in sends to its own
