@@ -27,7 +27,8 @@ a model, a prompt, a set of tools — in one YAML file, and run them:
 - **Any endpoint that speaks OpenAI, Anthropic or Gemini** — including one you
   run yourself. Dedicated image models generate straight into the conversation.
 - **Tools that ask.** A `shell` under an OS sandbox, `code` tools that read
-  anywhere and write in the project and the `write_roots:` you list, MCP
+  anywhere and write in the project and the `write_roots:` (or `--add-dir`)
+  you list, MCP
   servers with OAuth login — every file edit, every unsandboxed command and
   every MCP tool call asks for confirmation unless the config waives it. A
   write outside those directories, or to git's hooks and config or iota's own

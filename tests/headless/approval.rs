@@ -269,7 +269,7 @@ mod header_split {
 /// The headless matrix over the real `code` set (`-m`, the SDK path: no interactor): inside the root
 /// `auto_write` decides (off → the quiet refusal naming `auto_write`, on → written); outside it nothing is
 /// ever written, `auto_write` or not, and even an injected approver that allows everything is never asked
-/// — under `ask` the refusal names `write_roots:`, under `refuse` it is the jail's text as before.
+/// — under `ask` the refusal names `--add-dir` and `write_roots:`, under `refuse` it is the jail's text as before.
 #[tokio::test]
 async fn the_quiet_loop_never_writes_outside_the_roots() {
     use iota::tool::sets::ToolsConfig;
@@ -351,7 +351,7 @@ async fn the_quiet_loop_never_writes_outside_the_roots() {
                         );
                         let want = match policy {
                             OutsideWrites::Ask => format!(
-                                "{refusal} — writing there needs the user's approval, which this non-interactive run cannot ask for; list its directory in the top-level `write_roots:` to allow it"
+                                "{refusal} — writing there needs the user's approval, which this non-interactive run cannot ask for; pass --add-dir <dir>, or list its directory in the top-level `write_roots:`, to allow it"
                             ),
                             OutsideWrites::Refuse => refusal,
                         };
@@ -360,5 +360,65 @@ async fn the_quiet_loop_never_writes_outside_the_roots() {
                 }
             }
         }
+    }
+}
+
+/// `--add-dir` (X-113) is a static root like a `write_roots:` entry, so an unattended run (`-m`, the SDK
+/// path: nobody to ask) writes into it unasked — resolved against the working directory, not the project
+/// root — while a sibling outside it is still refused.
+#[tokio::test]
+async fn add_dir_admits_an_unattended_write() {
+    use iota::app::HostDirs;
+    use iota::tool::sets::ToolsConfig;
+    use iota::tool::{Registry, ToolEnv};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("proj");
+    let cwd = root.join("sub");
+    std::fs::create_dir_all(&cwd).expect("cwd");
+    let added = dir.path().join("added");
+    std::fs::create_dir(&added).expect("added");
+    let env = ToolEnv {
+        project_root: Some(root.clone()),
+        dirs: HostDirs {
+            cwd: Some(cwd),
+            ..HostDirs::default()
+        },
+        ..ToolEnv::default()
+    }
+    .with_write_roots(&[], &["../../added".to_owned()]);
+    let raw: ToolsConfig = serde_norway::from_str("code: {auto_write: true}\n").expect("tools");
+    let d = Arc::new(Registry::build(&env, &raw, &mut |w| panic!("{w}")));
+    for (target, lands) in [
+        (added.join("in.txt"), true),
+        (dir.path().join("out.txt"), false),
+    ] {
+        let mut args = JsonObject::new();
+        args.insert("path".to_owned(), target.display().to_string().into());
+        args.insert("content".to_owned(), "x".into());
+        let mut history = vec![Message::user("go")];
+        execute_with_tools(
+            TurnParams {
+                cx: &RunCtx::default(),
+                tp: &writing(args),
+                dispatch: d.clone(),
+                tools: d.tools(),
+                harness: "",
+                overlay: "",
+                max_turns: None,
+            },
+            &mut history,
+            &mut QuietHost::new(),
+        )
+        .await
+        .expect("loop");
+        assert_eq!(
+            target.exists(),
+            lands,
+            "{}: {}",
+            target.display(),
+            history[2].content
+        );
+        assert_eq!(history[2].is_error(), !lands, "{}", history[2].content);
     }
 }

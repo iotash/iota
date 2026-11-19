@@ -1309,6 +1309,139 @@ async fn cli_write_roots_open_a_directory_outside_the_project() {
     );
 }
 
+/// `--add-dir` (X-113) through the binary's own assembly: its directories join `write_roots:` after the
+/// config's, in flag order and each once — the write into a flag's directory lands, an unlisted sibling is
+/// refused naming every root in that order, and `<environment>` lists the same roots.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn add_dir_opens_a_directory_after_the_configs_roots() {
+    let (dir, home) = project();
+    let outside = tempfile::tempdir().expect("outside");
+    let [cfg_root, first, second, sibling] =
+        ["cfg", "first", "second", "sibling"].map(|n| outside.path().join(n));
+    for d in [&cfg_root, &first, &second, &sibling] {
+        fs::create_dir_all(d).expect("dir");
+    }
+    let server = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(ToolCallsInTurn {
+            calls: vec![
+                (
+                    "write_file",
+                    serde_json::json!({"path": second.join("landed.txt"), "content": "via --add-dir\n"}),
+                ),
+                (
+                    "write_file",
+                    serde_json::json!({"path": sibling.join("refused.txt"), "content": "x"}),
+                ),
+            ],
+        })
+        .mount(&server)
+        .await;
+    write_config(
+        &home,
+        &format!(
+            "write_roots: ['{}']\nproviders:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: {{auto_write: true}}}}}}\n",
+            cfg_root.display(),
+            server.uri()
+        ),
+    );
+    let mut cmd = iota(dir.path(), &home);
+    cmd.args(["run", "--add-dir"])
+        .arg(&first)
+        .arg("--add-dir")
+        .arg(&second)
+        .arg(format!("--add-dir={}", cfg_root.display()))
+        .args(["-m", "go"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert_eq!(
+        fs::read_to_string(second.join("landed.txt"))
+            .ok()
+            .as_deref(),
+        Some("via --add-dir\n"),
+        "the write into the added root did not land; the model was told: {}",
+        out(&o)
+    );
+    assert!(!sibling.join("refused.txt").exists());
+    let roots = format!(
+        "{}, {}, {}",
+        cfg_root.display(),
+        first.display(),
+        second.display()
+    );
+    let reply = out(&o);
+    assert!(
+        reply.contains(&format!(
+            "and the extra write roots ({roots}): {}",
+            sibling.join("refused.txt").display()
+        )),
+        "{reply}"
+    );
+    let requests = server.received_requests().await.expect("recorded requests");
+    let first_req: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("a JSON body");
+    let system = first_req["messages"][0]["content"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        system.contains(&format!("\nwrite roots: {roots}\n")),
+        "{system}"
+    );
+}
+
+/// A relative `--add-dir` is typed in a shell, so it hangs off the working directory — here a
+/// subdirectory of the project — not the project root, as a `write_roots:` entry would.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn add_dir_is_relative_to_the_working_directory() {
+    let (dir, home) = project();
+    let proj = dir.path().join("proj");
+    let sub = proj.join("sub");
+    fs::create_dir_all(proj.join(".git")).expect(".git");
+    fs::create_dir_all(&sub).expect("sub");
+    // `../../out` from `proj/sub` is `<dir>/out`; from the project root it would be beside `<dir>`.
+    let out_dir = dir.path().join("out");
+    fs::create_dir_all(&out_dir).expect("out");
+    let server = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(ToolCallsInTurn {
+            calls: vec![(
+                "write_file",
+                serde_json::json!({"path": out_dir.join("landed.txt"), "content": "relative\n"}),
+            )],
+        })
+        .mount(&server)
+        .await;
+    write_config(
+        &home,
+        &format!(
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: {{auto_write: true}}}}}}\n",
+            server.uri()
+        ),
+    );
+    let mut cmd = iota(&sub, &home);
+    cmd.args(["--add-dir", "../../out", "-m", "go"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert_eq!(
+        fs::read_to_string(out_dir.join("landed.txt"))
+            .ok()
+            .as_deref(),
+        Some("relative\n"),
+        "the model was told: {}",
+        out(&o)
+    );
+    let requests = server.received_requests().await.expect("recorded requests");
+    let first: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("a JSON body");
+    let system = first["messages"][0]["content"].as_str().unwrap_or_default();
+    let real = fs::canonicalize(&out_dir).expect("canonical out");
+    assert!(
+        system.contains(&format!("\nwrite roots: {}\n", real.display())),
+        "{system}"
+    );
+}
+
 /// One `shell` call, then a plain reply once its result is in: the first request (no tool message yet) is
 /// answered with the call, every later one with text. Streaming only — a run with tools streams.
 #[cfg(unix)]

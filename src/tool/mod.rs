@@ -374,7 +374,7 @@ pub struct ToolEnv {
     /// Some only for a bot's own session (docs/design/bot-mode.md §3.3): the `memory` set's `remember`
     /// writes into it, and the chat loop records the writes it announces.
     pub memory: Option<crate::agents::memory::BotMemory>,
-    /// The top-level `write_roots:`, absolute ([`ToolEnv::with_write_roots`]): the STATIC roots beyond the
+    /// The top-level `write_roots:` then `--add-dir`, absolute ([`ToolEnv::with_write_roots`]): the STATIC roots beyond the
     /// project root that the `code` jail accepts and the `shell` sandbox lets writes into — one list for both.
     /// Empty is the project root alone. The jail also reads the live directory grants of
     /// [`grants`](Self::grants) at every call.
@@ -426,18 +426,26 @@ impl ToolEnv {
         std::path::absolute(root).map(|p| crate::app::paths::clean(&p))
     }
 
-    /// `self` with [`write_roots`](Self::write_roots) resolved from the config's entries, once: each one
-    /// trimmed, a leading `~` expanded (`expand_home`), a relative one joined to [`root`](Self::root) (`.`
-    /// when that cannot be read, as `new_code_set` falls back), then cleaned — and a root that cleans to one
-    /// already listed (`~/a` beside `/home/u/a`) kept once, first spelling first. The config load has
-    /// already refused a blank entry and a `~` with no home to expand it to.
+    /// `self` with [`write_roots`](Self::write_roots) resolved, once: the config's `entries`, then the
+    /// `--add-dir` values in flag order (`added`, DIVERGENCES X-113). Each one is trimmed, a leading `~`
+    /// expanded (`expand_home`), a relative one joined to its base — a config entry to [`root`](Self::root),
+    /// a flag value to the working directory (`dirs.cwd`, else the process's), since it is typed in a shell;
+    /// `.` when the base cannot be read, as `new_code_set` falls back — then cleaned, and a root that cleans
+    /// to one already listed (`~/a` beside `/home/u/a`) kept once, first spelling first. The config load and
+    /// the run's assembly have already refused a blank entry and a `~` with no home to expand it to.
     #[must_use]
-    pub fn with_write_roots(mut self, entries: &[String]) -> Self {
-        let root = self.root().unwrap_or_else(|_| PathBuf::from("."));
+    pub fn with_write_roots(mut self, entries: &[String], added: &[String]) -> Self {
+        let dot = || PathBuf::from(".");
+        let root = self.root().unwrap_or_else(|_| dot());
+        let cwd = match &self.dirs.cwd {
+            Some(c) => std::path::absolute(c).unwrap_or_else(|_| dot()),
+            None => std::env::current_dir().unwrap_or_else(|_| dot()),
+        };
         self.write_roots.clear();
-        for e in entries {
+        let all = entries.iter().map(|e| (&root, e));
+        for (base, e) in all.chain(added.iter().map(|e| (&cwd, e))) {
             let p = expand_home(e.trim(), self.dirs.home.as_deref());
-            let p = crate::app::paths::clean(&root.join(p));
+            let p = crate::app::paths::clean(&base.join(p));
             if !self.write_roots.contains(&p) {
                 self.write_roots.push(p);
             }
@@ -498,16 +506,19 @@ mod tests {
             },
             ..ToolEnv::default()
         }
-        .with_write_roots(&[
-            "~/scratch".to_owned(),
-            "../sibling/./x".to_owned(),
-            " vendor ".to_owned(),
-            abs("/opt/data/").display().to_string(),
-            // Repeats are compared once cleaned: the same three directories, spelled otherwise.
-            abs("/home/u/scratch/").display().to_string(),
-            "vendor/../vendor".to_owned(),
-            abs("/opt/./data").display().to_string(),
-        ]);
+        .with_write_roots(
+            &[
+                "~/scratch".to_owned(),
+                "../sibling/./x".to_owned(),
+                " vendor ".to_owned(),
+                abs("/opt/data/").display().to_string(),
+                // Repeats are compared once cleaned: the same three directories, spelled otherwise.
+                abs("/home/u/scratch/").display().to_string(),
+                "vendor/../vendor".to_owned(),
+                abs("/opt/./data").display().to_string(),
+            ],
+            &[],
+        );
         assert_eq!(
             env.write_roots,
             [
@@ -519,7 +530,7 @@ mod tests {
         );
         assert!(
             ToolEnv::default()
-                .with_write_roots(&[])
+                .with_write_roots(&[], &[])
                 .write_roots
                 .is_empty()
         );

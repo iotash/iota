@@ -89,7 +89,7 @@ impl Root {
 pub(crate) enum Outside {
     /// `ask` with a user (an interactor is bound): the write is put to the user, every time.
     Ask,
-    /// `ask` with nobody to ask (`-m`, the SDK path): refused, saying how to allow it (`write_roots:`).
+    /// `ask` with nobody to ask (`-m`, the SDK path): refused, saying how to allow it (`--add-dir`, `write_roots:`).
     Unattended,
     /// `refuse`: refused with the jail's own text, no prompt — the behaviour before writes could be approved.
     Refuse,
@@ -305,8 +305,8 @@ impl CodeSet {
                     ),
                     Outside::Unattended => {
                         " — writing there needs the user's approval, which this \
-                        non-interactive run cannot ask for; list its directory in the top-level \
-                        `write_roots:` to allow it"
+                        non-interactive run cannot ask for; pass --add-dir <dir>, or list its \
+                        directory in the top-level `write_roots:`, to allow it"
                             .to_owned()
                     }
                     Outside::Refuse => String::new(),

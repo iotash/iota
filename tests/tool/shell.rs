@@ -1868,7 +1868,7 @@ async fn write_roots_open_one_directory_to_the_code_tools_and_the_shell() {
     let yaml = format!("write_roots: [{}]\n", extra.display());
     let cfg =
         Config::parse(yaml.as_bytes(), &Env::default(), &mut |w| panic!("{w}")).expect("config");
-    let env = env.with_write_roots(&cfg.write_roots);
+    let env = env.with_write_roots(&cfg.write_roots, &[]);
     assert_eq!(env.write_roots, std::slice::from_ref(&extra));
 
     // The code tools: create a file there, then read it back.

@@ -451,6 +451,11 @@ fn assemble_tools(
     io: &mut io::Streams,
 ) -> Result<ToolAssembly, CliError> {
     let dirs = &ctx.env.dirs;
+    // `--add-dir` (X-113): a value that names no directory is the config's write-root refusal, before
+    // anything starts.
+    for dir in &inv.args.add_dir {
+        crate::config::check_write_root("--add-dir".to_owned(), dir, &ctx.env)?;
+    }
     // root.go:187-194
     let (mcp_configs, mcp_defers) =
         assemble::build_mcp_configs(cfg, &settings.resolved.agent, &inv.args.mcp, &mut |w| {
@@ -521,7 +526,7 @@ fn assemble_tools(
         ),
         ..ToolEnv::default()
     }
-    .with_write_roots(&cfg.write_roots);
+    .with_write_roots(&cfg.write_roots, &inv.args.add_dir);
     tool_env.outside_writes = cfg.outside_writes;
     let interactor = settings
         .message

@@ -404,7 +404,7 @@ impl Config {
             self.mcp_servers.insert(name, server_cfg);
         }
         for (i, root) in file.write_roots.iter().enumerate() {
-            check_write_root(i, root, env)?;
+            check_write_root(format!("write_roots[{i}]"), root, env)?;
         }
         self.write_roots.extend(file.write_roots);
         if let Some(o) = file.outside_writes {
@@ -766,8 +766,8 @@ fn ordered_models<'de, D: serde::Deserializer<'de>>(
     d.deserialize_any(OrderedModels)
 }
 
-/// `write_roots[i]`: refuses a blank entry or a `~` with no home (typos that would quietly mean the project root or a directory called `~`) — here, because only the load knows both the entry's position and the home.
-fn check_write_root(i: usize, entry: &str, env: &Env) -> Result<(), ConfigError> {
+/// A write root named `at` (`write_roots[i]`, `--add-dir`): refuses a blank entry or a `~` with no home (typos that would quietly mean the project root or a directory called `~`) — at the load for the config's entries, because only the load knows both the entry's position and the home, and at the run's assembly for the flag's.
+pub(crate) fn check_write_root(at: String, entry: &str, env: &Env) -> Result<(), ConfigError> {
     let entry = entry.trim();
     let message = if entry.is_empty() {
         "an empty entry names no directory".to_owned()
@@ -778,10 +778,7 @@ fn check_write_root(i: usize, entry: &str, env: &Env) -> Result<(), ConfigError>
     } else {
         return Ok(());
     };
-    Err(ConfigError::Key {
-        at: format!("write_roots[{i}]"),
-        message,
-    })
+    Err(ConfigError::Key { at, message })
 }
 
 /// ONE document, decoded: YAML syntax first ([`ConfigError::Parse`]), then the key audit, which is what makes

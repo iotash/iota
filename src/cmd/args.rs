@@ -345,6 +345,15 @@ pub struct RunArgs {
         help = "MCP server (command string or URL, repeatable)"
     )]
     pub mcp: Vec<String>,
+    /// `--add-dir`: extra writable directories (DIVERGENCES X-113), after the config's `write_roots:` in flag
+    /// order; a relative one is against the working directory. Not recorded in the session.
+    #[arg(
+        long = "add-dir",
+        value_name = "DIR",
+        action = clap::ArgAction::Append,
+        help = "Make a directory writable for this run, like a write_roots: entry (repeatable; relative to the working directory, not the project root)"
+    )]
+    pub add_dir: Vec<String>,
     /// `--no-save`: interactive-only; rejected by [`RunArgs::reject_unsupported`].
     #[arg(
         long = "no-save",
@@ -376,6 +385,7 @@ impl RunArgs {
             (self.model.is_some(), "-M/--model"),
             (self.system.is_some(), "-s/--system"),
             (!self.mcp.is_empty(), "--mcp"),
+            (!self.add_dir.is_empty(), "--add-dir"),
             (self.no_save, "--no-save"),
             (self.max_turns != 0, "--max-turns"),
             (self.output_format.is_some(), "--output-format"),

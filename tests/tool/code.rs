@@ -142,7 +142,7 @@ async fn outside_writes_are_refused_headlessly(policy: OutsideWrites, cfg: &str)
     fs::write(&outside, "secret").expect("write outside");
     let hint = match policy {
         OutsideWrites::Ask => {
-            " — writing there needs the user's approval, which this non-interactive run cannot ask for; list its directory in the top-level `write_roots:` to allow it"
+            " — writing there needs the user's approval, which this non-interactive run cannot ask for; pass --add-dir <dir>, or list its directory in the top-level `write_roots:`, to allow it"
         }
         OutsideWrites::Refuse => "",
     };
