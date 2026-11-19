@@ -1746,7 +1746,7 @@ mod tests {
                                 assert!(!tool.requires_approval(Some(a)), "{at} {path}");
                                 assert_eq!(tool.approval_subject(a), None, "{at} {path}");
                             }
-                            for approved in [None, Some(Approved::Once(file.to_path_buf()))] {
+                            for approved in [None, Some(Approved::Once((*file).clone()))] {
                                 let cx = RunCtx {
                                     approved: approved.clone(),
                                     ..RunCtx::default()

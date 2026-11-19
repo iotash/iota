@@ -105,7 +105,8 @@ pub(crate) enum Write {
     Outside { path: PathBuf, real: PathBuf },
     /// On the protected table ([`protected::table`]), inside a root or not: never written without the
     /// user's approval of this one file, whatever `auto_write`, `write_roots:` or a grant says, and the
-    /// trust record and the sessions tree never at all ([`Why::approvable`]). `path` and `real` as for [`Write::Outside`].
+    /// trust record and the sessions tree never at all ([`Why::approvable`]). `path` and `real` as for
+    /// [`Write::Outside`].
     Protected {
         path: PathBuf,
         real: PathBuf,
@@ -288,8 +289,8 @@ impl CodeSet {
     /// when `write_roots:` lists any or a directory is granted, by `) and the extra write roots ({e1}, {e2}`.
     ///
     /// A protected path ([`Write::Protected`]) is admitted only when "allow once" named exactly its real
-    /// location — never by a grant — and the trust record and the sessions tree never ([`Why::approvable`]): `{arg} is protected: {reason} — …`,
-    /// the rest saying what the user can do instead ([`protected_refusal`]).
+    /// location — never by a grant — and the trust record and the sessions tree never ([`Why::approvable`]):
+    /// `{arg} is protected: {reason} — …`, the rest saying what the user can do instead ([`protected_refusal`]).
     pub(crate) fn write_target(
         &self,
         cx: &RunCtx,
@@ -543,8 +544,8 @@ pub(crate) fn grant_dir(real: &Path) -> &Path {
 }
 
 /// A protected write's refusal: `{arg} is protected: {reason} — ` and then what is left to do. The trust
-/// record and the sessions tree have no approval path at all; another protected path needs the user's approval of this one file,
-/// which `refuse` and a run with nobody to ask cannot give — the user edits it themselves.
+/// record and the sessions tree have no approval path at all; another protected path needs the user's approval
+/// of this one file, which `refuse` and a run with nobody to ask cannot give — the user edits it themselves.
 fn protected_refusal(arg: &str, real: &Path, why: Why, outside: Outside) -> String {
     let rest = match (why, outside) {
         (Why::Trust, _) => "no tool may write it; the user trusts a project config by running \

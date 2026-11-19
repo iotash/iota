@@ -140,7 +140,7 @@ mod tests {
              (subpath (param \"P0\"))\n  (subpath (param \"P1\"))\n  (literal (param \"P2\"))\n  \
              (subpath (param \"P3\"))\n  (subpath (param \"P4\"))\n  (subpath (param \"P5\"))\n  \
              (subpath (param \"P6\"))\n  (subpath (param \"P7\"))\n  (literal (param \"P8\"))\n  \
-             (subpath (param \"P9\"))\n)\n"
+             (subpath (param \"P9\"))\n  (subpath (param \"P10\"))\n)\n"
         );
         assert_eq!(
             &argv[3..],
@@ -173,6 +173,8 @@ mod tests {
                 "P8=/no-such-home/.iota",
                 "-D",
                 "P9=/no-such-home/.iota/trusted.json",
+                "-D",
+                "P10=/no-such-home/.iota/sessions",
                 "/bin/bash",
                 "-c",
                 "echo hi",

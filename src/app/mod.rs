@@ -67,7 +67,7 @@ impl HostDirs {
         self.home.as_ref().map(|h| h.join(DOT_DIR))
     }
 
-    /// `<home>/.iota/sessions` — the session store's root ([`SESSIONS_DIR`]).
+    /// `<home>/.iota/sessions` — the session store's root, which the protected table names too.
     pub fn sessions_dir(&self) -> Option<PathBuf> {
         self.app_home().map(|h| h.join(SESSIONS_DIR))
     }

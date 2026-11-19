@@ -6,11 +6,12 @@
 //! command could plant `<root>/.git/hooks/pre-commit` (run by the user's own next `git commit`), point git at
 //! another program from `<root>/.git/config`, rewrite the project's `.iota.yaml` for the next run, or trust a
 //! file on the user's behalf through `~/.iota/trusted.json`, or grant the model every tool from the next start
-//! through a grant kept under `~/.iota/sessions`. The list is the three items Claude Code, Codex and
-//! Cursor all protect — git's hooks and config and the agent's own config (the project's and the user's own
-//! `~/.iota.yaml`, which is trusted by definition and decides which code the next run starts) — plus iota's
-//! trust record and the store that holds the grants; nothing wider (reports/iota/over-engineering.md (b)). In a linked worktree, where `<root>/.git`
-//! is a `gitdir:` file, git's hooks and config are those of the repository's common dir, so those are on it too.
+//! through a grant kept under `~/.iota/sessions`. The list is the three items Claude Code, Codex and Cursor all
+//! protect — git's hooks and config and the agent's own config (the project's and the user's own `~/.iota.yaml`,
+//! which is trusted by definition and decides which code the next run starts) — plus iota's trust record and the
+//! sessions tree that holds the grants; nothing wider (reports/iota/over-engineering.md (b)). In a linked
+//! worktree, where `<root>/.git` is a `gitdir:` file, git's hooks and config are those of the repository's common
+//! dir, so those are on it too.
 
 use std::path::{Path, PathBuf};
 
@@ -89,8 +90,8 @@ pub struct Protected {
 }
 
 /// The table for a run rooted at `root`, with the extra write roots (`write_roots:`) and the user's `home` when
-/// there is one (without one there is no home config, trust record or sessions tree to protect). An entry under another entry comes after it (`.git` before `.git/hooks`), the order a
-/// bind-mount backend must apply them in.
+/// there is one (without one there is no home config, trust record or sessions tree to protect). An entry under
+/// another entry comes after it (`.git` before `.git/hooks`), the order a bind-mount backend must apply them in.
 ///
 /// An extra root that is itself a repository gets the git rows the project root gets — writable is not the
 /// same as "run later in the user's terminal". A root with no `.git` adds nothing (one `lstat`); the project
