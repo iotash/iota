@@ -89,6 +89,22 @@ pub struct Protected {
     pub why: Why,
 }
 
+/// Why the real location `real` is protected by `table`, if it is: it lies under a [`Reach::Tree`] entry, or IS
+/// an entry. Each entry is compared at its own real location, so a protected path reached through a link is
+/// still found.
+pub fn why_protected(table: &[Protected], real: &Path) -> Option<Why> {
+    table
+        .iter()
+        .find(|e| {
+            let at = super::fs::physical(&e.path).unwrap_or_else(|| e.path.clone());
+            match e.reach {
+                Reach::Tree => super::paths::within(&at, real),
+                Reach::Entry => at == real,
+            }
+        })
+        .map(|e| e.why)
+}
+
 /// The table for a run rooted at `root`, with the extra write roots (`write_roots:`) and the user's `home` when
 /// there is one (without one there is no home config, trust record or sessions tree to protect). An entry under
 /// another entry comes after it (`.git` before `.git/hooks`), the order a bind-mount backend must apply them in.

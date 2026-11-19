@@ -43,8 +43,8 @@ use crate::repl::bot::{Action as BotAction, Event as BotEvent};
 use crate::repl::commands::edit::EditOutcome;
 use crate::repl::commands::skills::SkillsOutcome;
 use crate::repl::commands::{
-    CmdFlags, CommandTable, SkillEntry, debug, edit, export, file, jobs, match_cmd, model, new,
-    save, session, skills, status, tools,
+    CmdFlags, CommandTable, SkillEntry, allow, debug, edit, export, file, jobs, match_cmd, model,
+    new, save, session, skills, status, tools,
 };
 use crate::repl::context::meter::{ContextBudget, CtxMeter};
 use crate::repl::noticegate::{self, NoticeGate, Outcome as GateOutcome};
@@ -928,6 +928,15 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             }
             if match_cmd(&line, "/tools").is_some() {
                 tools::cmd_tools(&repl).await;
+                continue;
+            }
+            // /allow and /revoke: typed only — a socket message is a notice and never gets here (X-111).
+            if let Some(arg) = match_cmd(&line, "/allow") {
+                allow::cmd_allow(&repl, arg);
+                continue;
+            }
+            if let Some(arg) = match_cmd(&line, "/revoke") {
+                allow::cmd_revoke(&repl, arg);
                 continue;
             }
             if let Some(arg) = match_cmd(&line, "/debug") {

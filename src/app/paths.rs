@@ -45,6 +45,14 @@ pub(crate) fn clean(p: &Path) -> PathBuf {
     out
 }
 
+/// Whether `p` is `root` or lies under it (both compared as given, lexically).
+pub(crate) fn within(root: &Path, p: &Path) -> bool {
+    rel(root, p).is_some_and(|rel| {
+        let rel = to_slash(&rel);
+        rel != ".." && !rel.starts_with("../")
+    })
+}
+
 /// `filepath.Rel(base, target)` (lexical, both cleaned); None when they share no common root, sit on different
 /// Windows prefixes (Go's volume check: `C:` and `\\?\C:` are different prefixes), or need `..` through
 /// the root (an `Option`, not `Result<_, ()>`, which trips `clippy::result_unit_err`). Walks the cleaned paths'

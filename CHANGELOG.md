@@ -34,6 +34,14 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   environment's `write roots:` line from the next turn. A repository's
   `.git/hooks` and `.git/config` stay read-only there, and a granted directory
   later replaced by a symlink opens nothing.
+- **`/allow <dir>` makes a directory writable for this session.** Sandboxed
+  `shell` commands, `edit_file` and `write_file` can write under it from their
+  next call, without a config edit or a restart; `/revoke <dir>` takes it back
+  and a bare `/allow` lists what is granted. A symlink is followed and the
+  directory it leads to is the one granted, and iota says so. Protected paths
+  (`.git/hooks`, `.git/config`, `.iota.yaml`, …) stay read-only, and `/status`
+  shows how many grants the session holds. A message sent to the chat from
+  another process cannot run it.
 
 ### Fixed
 

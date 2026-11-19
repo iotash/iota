@@ -265,8 +265,8 @@ async fn banner_order_and_completion_row() {
     assert_eq!(
         completion_row(&f.ui),
         [
-            "/file", "/new", "/session", "/model", "/export", "/status", "/tools", "/debug",
-            "/exit"
+            "/file", "/new", "/session", "/model", "/export", "/status", "/tools", "/allow",
+            "/revoke", "/debug", "/exit"
         ]
     );
 }
@@ -296,8 +296,8 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
     assert_eq!(
         completion_row(&f.ui),
         [
-            "/file", "/new", "/session", "/model", "/export", "/status", "/tools", "/debug",
-            "/exit", "/save"
+            "/file", "/new", "/session", "/model", "/export", "/status", "/tools", "/allow",
+            "/revoke", "/debug", "/exit", "/save"
         ]
     );
 }
@@ -3234,4 +3234,170 @@ async fn a_bots_memory_over_the_cap_is_announced_and_cut_short() {
     );
     assert!(!system.contains("- line 099"), "{system}");
     assert_eq!(std::fs::read_to_string(memory.path()).expect("file"), text);
+}
+
+// ---------------------------------------------------------------------------
+// /allow and /revoke (docs/design/grants.md §5.2, X-111)
+// ---------------------------------------------------------------------------
+
+/// A temp dir holding `proj/` (the project root, real), `out/` beside it and `link → out`; the real `out`.
+fn allow_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let t = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(t.path().join("proj")).expect("proj");
+    std::fs::create_dir_all(t.path().join("out")).expect("out");
+    std::fs::write(t.path().join("proj/file.txt"), "x").expect("a file");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(t.path().join("out"), t.path().join("link")).expect("link");
+    let root = std::fs::canonicalize(t.path().join("proj")).expect("real proj");
+    let out = std::fs::canonicalize(t.path().join("out")).expect("real out");
+    (t, root, out)
+}
+
+/// The chat runs at `root` and shares `grants` with the test.
+fn allow_params(f: &Fixture, root: &Path, grants: &Arc<iota::tool::grants::Grants>) -> RunParams {
+    let mut params = f.params(provider("gpt-4o", Ok(vec![])), f.session(Some(f.writer())));
+    params.harness.env.project_root = root.to_path_buf();
+    params.grants = Arc::clone(grants);
+    params
+}
+
+/// `/allow <dir>` puts the directory's REAL location into the store the code jail and the shell sandbox read
+/// at their next call, and the notice says where that is when the typed path leads elsewhere. The bare
+/// `/allow` lists it.
+#[cfg(unix)]
+#[tokio::test]
+async fn allow_makes_a_directory_writable_and_says_where_it_really_is() {
+    let (_t, root, out) = allow_fixture();
+    let f = Fixture::new(vec![
+        input("/allow ../link"),
+        input("/allow"),
+        Reply::Interrupted,
+    ]);
+    let grants = Arc::new(iota::tool::grants::Grants::default());
+    iota::repl::run(allow_params(&f, &root, &grants))
+        .await
+        .expect("clean exit");
+
+    assert_eq!(grants.live_dirs(), [out.clone()]);
+    let printed = printed(&f.ui);
+    let want = format!(
+        "✓ {} is writable for this session (../link leads there)",
+        out.display()
+    );
+    assert!(printed.contains(&want), "{want:?} missing:\n{printed:#?}");
+    let listed = format!("  this session   {}", out.display());
+    assert!(
+        printed.contains(&listed),
+        "{listed:?} missing:\n{printed:#?}"
+    );
+    assert!(
+        !f.ui
+            .events()
+            .iter()
+            .any(|e| matches!(e, UiEvent::UserBlock(_))),
+        "a command, never a message to the model"
+    );
+}
+
+/// What is not a directory is refused with the reason, and so is a form this build does not take yet: the
+/// refusal names only what `/allow` accepts. The project root is already writable and says so. Nothing is
+/// granted.
+#[tokio::test]
+async fn allow_refuses_what_is_not_a_directory() {
+    let (_t, root, _out) = allow_fixture();
+    let f = Fixture::new(vec![
+        input("/allow ./file.txt"),
+        input("/allow ./missing"),
+        input("/allow github:search_issues"),
+        input("/allow project ../out"),
+        input("/allow ."),
+        Reply::Interrupted,
+    ]);
+    let grants = Arc::new(iota::tool::grants::Grants::default());
+    iota::repl::run(allow_params(&f, &root, &grants))
+        .await
+        .expect("clean exit");
+
+    assert!(grants.live_dirs().is_empty());
+    let refusals: Vec<String> = printed(&f.ui)
+        .into_iter()
+        .filter(|l| l.starts_with("/allow: "))
+        .collect();
+    assert_eq!(
+        refusals,
+        [
+            "/allow: ./file.txt is not a directory".to_owned(),
+            "/allow: ./missing is not a directory".to_owned(),
+            "/allow: expected a directory (starting with /, ~ or .)".to_owned(),
+            "/allow: expected a directory (starting with /, ~ or .)".to_owned(),
+            format!(
+                "/allow: {} is already writable (the project root)",
+                root.display()
+            ),
+        ]
+    );
+}
+
+/// `/revoke <dir>` takes the grant back from the store — the next call of either writer or the sandbox no
+/// longer has the root — and a second `/revoke` finds nothing to take.
+#[tokio::test]
+async fn revoke_removes_a_grant() {
+    let (_t, root, out) = allow_fixture();
+    let f = Fixture::new(vec![
+        input("/allow ../out"),
+        input("/revoke ../out"),
+        input("/revoke ../out"),
+        input("/allow"),
+        Reply::Interrupted,
+    ]);
+    let grants = Arc::new(iota::tool::grants::Grants::default());
+    iota::repl::run(allow_params(&f, &root, &grants))
+        .await
+        .expect("clean exit");
+
+    assert!(grants.live_dirs().is_empty());
+    let printed = printed(&f.ui);
+    for want in [
+        format!("✓ {} is writable for this session", out.display()),
+        format!("✓ revoked {} (this session)", out.display()),
+        "/revoke: nothing granted matches ../out".to_owned(),
+        "No grants. /allow <dir> makes a directory writable for this session.".to_owned(),
+    ] {
+        assert!(printed.contains(&want), "{want:?} missing:\n{printed:#?}");
+    }
+}
+
+/// Both commands are rows of the table, after `/tools`, with their descriptions — in every mode, a bot's too.
+#[tokio::test]
+async fn allow_and_revoke_are_in_the_table() {
+    let f = Fixture::new(vec![Reply::Interrupted]);
+    iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), f.session(Some(f.writer()))))
+        .await
+        .expect("clean exit");
+    let rows =
+        f.ui.events()
+            .into_iter()
+            .find_map(|e| match e {
+                UiEvent::Commands(c) => Some(c),
+                _ => None,
+            })
+            .expect("the command table");
+    let at = rows
+        .iter()
+        .position(|s| s.value == "/tools")
+        .expect("/tools");
+    let after: Vec<(&str, &str)> = rows[at + 1..at + 3]
+        .iter()
+        .map(|s| (s.value.as_str(), s.desc.as_str()))
+        .collect();
+    assert_eq!(
+        after,
+        [
+            (
+                "/allow",
+                "Make a directory writable for this session, or list the grants"
+            ),
+            ("/revoke", "Take a directory grant back"),
+        ]
+    );
 }

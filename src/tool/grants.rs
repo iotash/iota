@@ -113,6 +113,21 @@ impl Grants {
         true
     }
 
+    /// Takes the directory `dir` back from `level`. False when that level did not hold it.
+    pub fn revoke_dir(&self, level: Level, dir: &Path) -> bool {
+        let mut inner = lock(&self.inner);
+        let set = inner.level(level);
+        let before = set.dirs.len();
+        set.dirs.retain(|d| d != dir);
+        set.dirs.len() != before
+    }
+
+    /// A copy of what `level` holds, in the order it was granted — stale directories included.
+    pub fn snapshot(&self, level: Level) -> GrantSet {
+        let mut inner = lock(&self.inner);
+        inner.level(level).clone()
+    }
+
     /// Replaces the session level's grants: `/new` and a `/session` switch start the next conversation with
     /// `set` and nothing of the last one.
     pub fn replace_session(&self, set: GrantSet) {
@@ -121,7 +136,7 @@ impl Grants {
 }
 
 /// Whether the granted `dir` is still where it was granted ([`Grants::live_dirs`]).
-fn is_live(dir: &Path) -> bool {
+pub fn is_live(dir: &Path) -> bool {
     fs::physical(dir).is_some_and(|real| real == dir)
 }
 

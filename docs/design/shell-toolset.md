@@ -48,7 +48,13 @@ code writers' dialog is writable by the next command, and the protected table's
 extra roots are the same list (a granted repository keeps its git rows). A stale
 grant — the directory since replaced by a symlink, `physical(D) != D` — is no
 root. The description's sandbox line names the static roots only; the harness's
-`write roots:` line lists both, re-composed at the next turn when the grants change.
+`write roots:` line lists both, re-composed at the next turn when the grants change. A command
+cannot be asked about mid-run, so the shell's way to a directory grant is the
+chat's `/allow <dir>` (grants.md §5.2, X-111), typed by the user; the sandboxed
+description ends by saying so — `The user can make another directory writable
+with /allow <dir>: when a command must write outside these, ask for that
+instead of working around it.` — and nothing is added to a failed command's
+result.
 
 What a write outside those roots does depends on whether the sandbox is on:
 

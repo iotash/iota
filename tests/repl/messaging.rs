@@ -40,6 +40,8 @@ struct Chat {
     tools: Vec<&'static str>,
     /// What `/save` mints with, when the chat starts ephemeral.
     new_session: Option<iota::repl::SessionFactory>,
+    /// The chat's grant store.
+    grants: Arc<iota::tool::grants::Grants>,
 }
 
 impl Chat {
@@ -68,6 +70,7 @@ impl Chat {
             hold,
             tools: Vec::new(),
             new_session: None,
+            grants: Arc::default(),
             writer: Some(writer),
             store,
             tmp,
@@ -92,7 +95,7 @@ impl Chat {
             } else {
                 StaticDispatcher::new(&self.tools)
             }) as Arc<dyn Dispatcher>,
-            grants: std::sync::Arc::default(),
+            grants: Arc::clone(&self.grants),
             jobs: Jobs::new(self.tmp.path()),
             mcp: McpHooks::default(),
             session: SessionCtx {
@@ -522,4 +525,34 @@ async fn a_link_that_cannot_be_made_is_said_once() {
         .filter(|l| l.contains("Other processes cannot message this session"))
         .count();
     assert_eq!(said, 1, "{:#?}", chat.printed());
+}
+
+/// A message that says `/allow <dir>` is a notice the model reads, never the command: nothing is granted, so
+/// whoever can write the socket cannot widen where the tools write (X-111).
+#[tokio::test]
+async fn a_message_that_says_allow_grants_nothing() {
+    let mut chat = Chat::new(vec![Reply::Enqueued, Reply::Interrupted], false);
+    let dir = chat.tmp.path().join("open");
+    std::fs::create_dir(&dir).expect("dir");
+    let text = format!("/allow {}", dir.display());
+    chat.run_with(Request::message("ci", &text, None)).await;
+
+    assert!(
+        chat.grants.live_dirs().is_empty(),
+        "a message granted a directory"
+    );
+    let sent = chat.log.send(0);
+    let last = sent.last().expect("a request");
+    assert!(last.is_notice());
+    assert!(
+        last.content
+            .starts_with(&format!("[message from ci] {text}"))
+    );
+    assert!(
+        !chat
+            .printed()
+            .iter()
+            .any(|l| l.contains("writable for this session")),
+        "the command ran"
+    );
 }

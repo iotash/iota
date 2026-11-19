@@ -12,7 +12,7 @@ use std::{
     time::SystemTime,
 };
 
-use crate::app::protected::{self, Reach, Why};
+use crate::app::protected::{self, Why};
 use crate::app::{fs, paths};
 use crate::tool::context::{Approved, RunCtx};
 use crate::tool::grants::Grants;
@@ -182,7 +182,7 @@ impl CodeSet {
         std::iter::once(&self.root)
             .chain(&self.extra)
             .map(|r| r.path.as_path())
-            .find(|root| within(root, base))
+            .find(|root| paths::within(root, base))
             .unwrap_or(base)
     }
 
@@ -199,7 +199,7 @@ impl CodeSet {
         std::iter::once(&self.root)
             .chain(&self.extra)
             .find_map(|r| {
-                within(&r.real, &real)
+                paths::within(&r.real, &real)
                     .then(|| paths::rel(&r.real, &real))
                     .flatten()
                     .map(|rel| paths::clean(&r.path.join(rel)))
@@ -257,7 +257,7 @@ impl CodeSet {
 
     /// Why `real` is protected, if it is: compared with each table entry's real location, worked out now (a
     /// `.git/hooks` linked elsewhere since the set was built is matched where it points now). A
-    /// [`Reach::Tree`] entry holds everything under it, a [`Reach::Entry`] only itself. The table's extra
+    /// [`protected::Reach::Tree`] entry holds everything under it, a [`protected::Reach::Entry`] only itself. The table's extra
     /// roots are the static ones and the live directory grants `granted`, so a granted repository keeps its
     /// git rows.
     fn protected_at(&self, real: &Path, granted: &[PathBuf]) -> Option<Why> {
@@ -267,16 +267,10 @@ impl CodeSet {
             .map(|r| r.path.clone())
             .chain(granted.iter().cloned())
             .collect();
-        protected::table(&self.root.path, &extra, self.home.as_deref())
-            .into_iter()
-            .find(|e| {
-                let at = fs::physical(&e.path).unwrap_or_else(|| e.path.clone());
-                match e.reach {
-                    Reach::Tree => within(&at, real),
-                    Reach::Entry => at == real,
-                }
-            })
-            .map(|e| e.why)
+        protected::why_protected(
+            &protected::table(&self.root.path, &extra, self.home.as_deref()),
+            real,
+        )
     }
 
     /// Where a writer's call may write, decided at call time — after any prompt, so a link swapped since is
@@ -379,7 +373,7 @@ impl CodeSet {
         ![Some(home.clone()), real_home]
             .into_iter()
             .flatten()
-            .any(|h| within(dir, &h))
+            .any(|h| paths::within(dir, &h))
     }
 
     /// Whether the writers' calls are put to the user: inside the roots unless `auto_write`, outside
@@ -451,13 +445,13 @@ impl CodeSet {
             .chain(&self.extra)
             .map(|r| r.real.as_path())
             .chain(granted.iter().map(PathBuf::as_path))
-            .any(|r| within(r, real))
+            .any(|r| paths::within(r, real))
     }
 
     /// Root-relative slash path; `"."` for the root; absolute outside the project root (a read
     /// anywhere, a write under an extra root) or when `rel` fails.
     pub(crate) fn display(&self, abs: &Path) -> String {
-        if !within(&self.root.path, abs) {
+        if !paths::within(&self.root.path, abs) {
             return abs.display().to_string();
         }
         paths::rel(&self.root.path, abs)
@@ -581,14 +575,6 @@ pub(crate) fn outside_summary(real: &Path) -> String {
 pub(crate) fn looks_binary(data: &[u8]) -> bool {
     let n = data.len().min(CODE_BINARY_SNIFF_LEN);
     data[..n].contains(&0)
-}
-
-/// Whether `p` is `root` or lies under it (both compared as given, lexically).
-fn within(root: &Path, p: &Path) -> bool {
-    paths::rel(root, p).is_some_and(|rel| {
-        let rel = paths::to_slash(&rel);
-        rel != ".." && !rel.starts_with("../")
-    })
 }
 
 /// `"%.1f MB"` (≥ 1<<20) / `"%.1f KB"` (≥ 1<<10) / `"%d B"`.

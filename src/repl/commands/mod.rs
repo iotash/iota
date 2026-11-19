@@ -15,9 +15,9 @@
 //! into the message path) — is the spec, which is why there is no generic dispatcher here:
 //! only [`match_cmd`], the matcher every arm calls.
 //!
-//! **What is registered** (completion.go:10-37, all twelve, plus `/new`): the base nine — `/file`,
+//! **What is registered** (completion.go:10-37, all twelve, plus `/new`): the base rows — `/file`,
 //! `/new`, `/session`, `/model`, `/compact` (only while token accounting is live), `/export`, `/status`,
-//! `/tools`, `/debug` — then the image pair `/edit`/`/redo` (dedicated image providers), `/save`
+//! `/tools`, `/allow`, `/revoke` (X-111), `/debug` — then the image pair `/edit`/`/redo` (dedicated image providers), `/save`
 //! (chats that started ephemeral) and `/skills` plus one `/skills <name>` row per discovered skill
 //! (agent mode). Inactive conditional commands are fully invisible: no completion, no dispatch.
 //!
@@ -32,7 +32,9 @@
 //! an unregistered `/clear` would go to the model as a message. And in a bot `/new` (with `/clear`) is
 //! dispatched but not listed: it is refused with the reason rather than sent to the model.
 //!
-//! No management command joins the table: `/mcp` (with `/mcp login|logout`) was here from 2026-09-18 to
+//! No management command joins the table — `/allow` and `/revoke` (X-111) are not one: a grant answers a
+//! question only the chat asks, the one door a sandboxed shell has since it cannot be prompted mid-run, and
+//! no config file holds it. Otherwise: `/mcp` (with `/mcp login|logout`) was here from 2026-09-18 to
 //! 2026-09-20 and left again — `/tools` lists every server's state and reconnects one from its page
 //! (X-79), a login is `iota mcp login <name>` from a shell, and configuration is for the config toolset,
 //! not a slash command (DIVERGENCES X-42).
@@ -42,6 +44,7 @@
 //! time it flips, the `/save` way). Typed with nothing running it is a message like any other
 //! unregistered `/xyz`.
 
+pub(crate) mod allow;
 pub(crate) mod compact;
 pub(crate) mod debug;
 pub(crate) mod edit;
@@ -102,6 +105,14 @@ const BASE: &[CmdSpec] = &[
     CmdSpec {
         value: "/tools",
         desc: "Available tools and MCP server state",
+    },
+    CmdSpec {
+        value: "/allow",
+        desc: "Make a directory writable for this session, or list the grants",
+    },
+    CmdSpec {
+        value: "/revoke",
+        desc: "Take a directory grant back",
     },
     CmdSpec {
         value: "/debug",
@@ -384,7 +395,7 @@ mod tests {
             names(&t),
             [
                 "/file", "/new", "/session", "/model", "/compact", "/export", "/status", "/tools",
-                "/debug", "/exit", "/edit", "/redo", "/save", "/skills"
+                "/allow", "/revoke", "/debug", "/exit", "/edit", "/redo", "/save", "/skills"
             ]
         );
         assert!(t.save_enabled() && t.image_enabled() && t.agent_enabled());
@@ -413,7 +424,8 @@ mod tests {
             names(&t),
             [
                 "/file", "/new", "/session", "/model", "/compact", "/export", "/status", "/tools",
-                "/debug", "/exit", "/jobs", "/edit", "/redo", "/save", "/skills"
+                "/allow", "/revoke", "/debug", "/exit", "/jobs", "/edit", "/redo", "/save",
+                "/skills"
             ]
         );
         let row = t
