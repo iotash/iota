@@ -646,7 +646,7 @@ mod tests {
             false,
             Outside::Refuse,
             None,
-            Default::default(),
+            std::sync::Arc::default(),
         )
         .expect("set");
         // Reads are open: join, clean, nothing else — no root is consulted.
@@ -735,7 +735,7 @@ mod tests {
             false,
             Outside::Ask,
             None,
-            Default::default(),
+            std::sync::Arc::default(),
         )
         .expect("set");
         assert_eq!(
@@ -782,7 +782,7 @@ mod tests {
             false,
             Outside::Refuse,
             None,
-            Default::default(),
+            std::sync::Arc::default(),
         )
         .expect("set");
         let abs = |p: &Path| p.to_str().expect("utf-8").to_owned();
@@ -845,7 +845,7 @@ mod tests {
                 false,
                 Outside::Refuse,
                 None,
-                Default::default()
+                std::sync::Arc::default()
             )
             .err(),
             Some(crate::tool::sets::SetError::WriteRoot(looped))
@@ -872,7 +872,7 @@ mod tests {
             false,
             Outside::Refuse,
             None,
-            Default::default(),
+            std::sync::Arc::default(),
         )
         .expect("set");
         for arg in [
@@ -903,7 +903,7 @@ mod tests {
             false,
             Outside::Refuse,
             None,
-            Default::default(),
+            std::sync::Arc::default(),
         )
         .expect("set");
         // The returned path is the lexical one, links and all.
@@ -932,7 +932,7 @@ mod tests {
             false,
             Outside::Refuse,
             None,
-            Default::default(),
+            std::sync::Arc::default(),
         )
         .expect("set");
         assert_eq!(jail(&cs, "new.txt"), Ok(via.join("new.txt")));
@@ -950,7 +950,7 @@ mod tests {
             false,
             Outside::Refuse,
             None,
-            Default::default(),
+            std::sync::Arc::default(),
         )
         .expect("set");
         let real = std::fs::canonicalize(tmp.path()).expect("canonical tmp");
@@ -978,7 +978,7 @@ mod tests {
             false,
             Outside::Refuse,
             None,
-            Default::default(),
+            std::sync::Arc::default(),
         )
         .expect("set");
         let real_out = std::fs::canonicalize(&out).expect("real out");
@@ -1046,7 +1046,7 @@ mod tests {
             false,
             Outside::Refuse,
             None,
-            Default::default(),
+            std::sync::Arc::default(),
         )
         .expect("set");
         for arg in ["L/S/secret.txt", "L/S/planted.txt", "L2"] {
@@ -1115,7 +1115,7 @@ mod tests {
                 false,
                 Outside::Refuse,
                 None,
-                Default::default()
+                std::sync::Arc::default()
             )
             .err(),
             Some(crate::tool::sets::SetError::CodeRoot(looped))

@@ -100,7 +100,7 @@ impl Fixture {
             harness: iota::agents::harness::HarnessInputs::default(),
             imported_history: Vec::new(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
-            grants: Default::default(),
+            grants: std::sync::Arc::default(),
             jobs: iota::shell::jobs::Jobs::new(Path::new("")),
             mcp: McpHooks::default(),
             session,
@@ -657,7 +657,8 @@ async fn new_forgets_the_session_grants() {
         Reply::Queued(Vec::new()),
         Reply::Interrupted,
     ]);
-    let dir = std::fs::canonicalize(f._tmp.path()).expect("real tmp");
+    let granted = tempfile::tempdir().expect("tempdir");
+    let dir = std::fs::canonicalize(granted.path()).expect("real dir");
     let grants = Arc::new(Grants::default());
     grants.grant_dir(Level::Session, dir.clone());
     assert_eq!(grants.live_dirs(), [dir]);

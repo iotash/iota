@@ -140,7 +140,7 @@ impl Fixture {
             harness: iota::agents::harness::HarnessInputs::default(),
             imported_history: Vec::new(),
             dispatch,
-            grants: Default::default(),
+            grants: std::sync::Arc::default(),
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: no_mcp(),
             session: SessionCtx {

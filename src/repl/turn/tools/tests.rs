@@ -2778,7 +2778,7 @@ async fn a_link_swapped_after_a_grant_writes_nothing() {
     let mut history = vec![Message::user("write")];
     fx.turn(&p, &mut history).await.outcome.expect("turn");
     assert_eq!(prompts(&fx.events()).len(), 1, "only out2 was asked");
-    assert_eq!(c.grants.live_dirs(), [real_out2.clone()]);
+    assert_eq!(c.grants.live_dirs(), std::slice::from_ref(&real_out2));
     assert!(real_out2.join("a.txt").exists());
     assert!(
         !c.real_out.join("x.txt").exists(),

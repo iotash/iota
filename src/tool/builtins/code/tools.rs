@@ -1160,7 +1160,7 @@ mod tests {
             true,
             super::super::Outside::Refuse,
             None,
-            Default::default(),
+            std::sync::Arc::default(),
         )
         .expect("set");
         let cx = RunCtx::default();
@@ -1268,7 +1268,7 @@ mod tests {
             false,
             super::super::Outside::Refuse,
             None,
-            Default::default(),
+            std::sync::Arc::default(),
         )
         .expect("set");
 
@@ -1315,7 +1315,7 @@ mod tests {
             auto_write,
             super::super::Outside::Ask,
             None,
-            Default::default(),
+            std::sync::Arc::default(),
         )
         .expect("set");
         (t, root, out, cs)
@@ -1595,7 +1595,7 @@ mod tests {
                         auto_write,
                         policy,
                         Some(user_home.clone()),
-                        Default::default(),
+                        std::sync::Arc::default(),
                     )
                     .expect("set");
                     let tool = super::WriteFile(std::sync::Arc::clone(&cs));
@@ -1676,7 +1676,7 @@ mod tests {
             true,
             Outside::Ask,
             Some(user_home),
-            Default::default(),
+            std::sync::Arc::default(),
         )
         .expect("set");
         let hook = root.join(".git/hooks/pre-commit");
@@ -1718,7 +1718,7 @@ mod tests {
                     auto_write,
                     policy,
                     None,
-                    Default::default(),
+                    std::sync::Arc::default(),
                 )
                 .expect("set");
                 let at = format!("auto_write={auto_write} {policy:?}");
@@ -1772,7 +1772,7 @@ mod tests {
                 false,
                 policy,
                 None,
-                Default::default(),
+                std::sync::Arc::default(),
             )
             .expect("set");
             for d in [

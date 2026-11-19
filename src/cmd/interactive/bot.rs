@@ -824,7 +824,7 @@ mod tests {
             harness: crate::agents::harness::HarnessInputs::default(),
             imported_history: opened.history,
             dispatch: Arc::new(StaticDispatcher::new(&[])),
-            grants: Default::default(),
+            grants: std::sync::Arc::default(),
             jobs: crate::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: crate::repl::McpHooks::default(),
             session: crate::repl::SessionCtx {

@@ -178,7 +178,7 @@ mod tests {
             !grants.grant_dir(Level::Session, out.clone()),
             "granted once"
         );
-        assert_eq!(grants.live_dirs(), [out.clone()]);
+        assert_eq!(grants.live_dirs(), std::slice::from_ref(&out));
         for p in [
             out.clone(),
             out.join("x.txt"),
@@ -196,7 +196,7 @@ mod tests {
         assert!(grants.grant_tool(Level::Session, ToolKey::Builtin("write_file".to_owned())));
         assert!(grants.allows(&ToolKey::Builtin("write_file".to_owned())));
         assert!(!grants.allows(&ToolKey::Builtin("edit_file".to_owned())));
-        assert_eq!(grants.live_dirs(), [out.clone()]);
+        assert_eq!(grants.live_dirs(), std::slice::from_ref(&out));
 
         // Emptying the session level takes both back.
         grants.replace_session(GrantSet::default());
@@ -216,7 +216,7 @@ mod tests {
         let grants = Arc::new(Grants::default());
         let cs = jail(&root, &grants);
         grants.grant_dir(Level::Session, out.clone());
-        assert_eq!(grants.live_dirs(), [out.clone()]);
+        assert_eq!(grants.live_dirs(), std::slice::from_ref(&out));
 
         std::fs::rename(&out, t.path().join("moved")).expect("move away");
         std::os::unix::fs::symlink(&elsewhere, &out).expect("link in its place");
@@ -229,7 +229,7 @@ mod tests {
 
         std::fs::remove_file(&out).expect("unlink");
         std::fs::create_dir(&out).expect("the directory again");
-        assert_eq!(grants.live_dirs(), [out.clone()]);
+        assert_eq!(grants.live_dirs(), std::slice::from_ref(&out));
         assert!(inside(&cs, &out.join("x.txt")));
     }
 }

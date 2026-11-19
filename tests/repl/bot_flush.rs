@@ -163,7 +163,7 @@ impl Fixture {
             harness,
             imported_history: resumed.unwrap_or_else(|| self.imported.clone()),
             dispatch,
-            grants: Default::default(),
+            grants: std::sync::Arc::default(),
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: McpHooks::default(),
             session: SessionCtx {

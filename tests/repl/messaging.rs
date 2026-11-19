@@ -92,7 +92,7 @@ impl Chat {
             } else {
                 StaticDispatcher::new(&self.tools)
             }) as Arc<dyn Dispatcher>,
-            grants: Default::default(),
+            grants: std::sync::Arc::default(),
             jobs: Jobs::new(self.tmp.path()),
             mcp: McpHooks::default(),
             session: SessionCtx {
