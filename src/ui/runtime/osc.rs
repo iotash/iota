@@ -362,7 +362,9 @@ mod tests {
     /// A signal that cuts the wait short is not the deadline: the round-trip waits out the rest and
     /// hears a reply that comes after it. The signal is aimed at the waiting thread (a resize at
     /// startup is SIGWINCH to the process; a thread that has it caught returns `EINTR` from
-    /// `select` on macOS and Linux alike, `SA_RESTART` or not).
+    /// `select` on macOS and Linux alike, `SA_RESTART` or not). What is asserted is the reply, not
+    /// the time: the deadline is far past the 20 ms + 60 ms the terminal takes, so a slow machine
+    /// (CI's macOS runner overslept them past a 300 ms deadline) cannot turn it into a timeout.
     #[cfg(unix)]
     #[test]
     fn a_signal_in_the_wait_is_waited_out() {
@@ -394,7 +396,7 @@ mod tests {
                 .unwrap();
             terminal
         });
-        let reply = super::exchange(&mut tty, super::OSC11_QUERY, Duration::from_millis(300));
+        let reply = super::exchange(&mut tty, super::OSC11_QUERY, Duration::from_secs(5));
         let _terminal = answer.join().unwrap();
         assert_eq!(reply.unwrap(), b"\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[24;1R");
         // …and the signal did arrive, inside the wait.
