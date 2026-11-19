@@ -746,6 +746,7 @@ mod tests {
     }
 
     /// Moves a pending copy's start back past [`COPY_DEADLINE`].
+    #[cfg(unix)]
     fn past(c: &mut Clipboard) {
         let p = c.pending.as_mut().unwrap();
         p.started = Instant::now().checked_sub(COPY_DEADLINE).unwrap();
