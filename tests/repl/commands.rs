@@ -3475,6 +3475,70 @@ async fn allow_refuses_what_is_not_a_directory() {
     );
 }
 
+/// A `--mcp` server is named by its URL — `:` and all (F1 of the grants review): `/allow <url>:<tool>` and
+/// `/allow <url>:*` resolve the server by its WHOLE name among the connected ones before anything else, a tool it
+/// does not list is refused naming that whole name, and `/revoke <url>:*` takes the wildcard back by the stored
+/// key's name. The grant is keyed by the flag value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn allow_and_revoke_address_a_flag_server_by_its_url() {
+    let mock = crate::common::oauth_mock::start_with(crate::common::oauth_mock::Options {
+        open: true,
+        ..crate::common::oauth_mock::Options::default()
+    })
+    .await;
+    let url = mock.mcp_url();
+    let manager = iota::mcp::Manager::new(
+        vec![iota::mcp::config::parse_mcp_flag(&url).expect("a URL flag")],
+        // The bare client: a developer machine's system proxy would answer for the mock itself.
+        iota::mcp::ManagerOptions::new(
+            reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("client"),
+            iota::app::env::Env::default(),
+        ),
+    );
+    let statuses = manager.connect_all(&CancellationToken::new()).await;
+    assert!(statuses.iter().all(|s| s.error().is_none()), "{statuses:?}");
+
+    let (_t, root, _out) = allow_fixture();
+    let f = Fixture::new(vec![
+        input(&format!("/allow {url}:echo")),
+        input(&format!("/allow {url}:*")),
+        input(&format!("/revoke {url}:*")),
+        input(&format!("/allow {url}:nope")),
+        Reply::Interrupted,
+    ]);
+    let grants = Arc::new(iota::tool::grants::Grants::default());
+    let mut params = allow_params(&f, &root, &grants);
+    params.mcp = McpHooks {
+        servers: None,
+        events: None,
+        manager: Some(Arc::clone(&manager)),
+    };
+    iota::repl::run(params).await.expect("clean exit");
+
+    let lines = printed(&f.ui);
+    for want in [
+        format!("✓ {url}:echo runs without asking in this session"),
+        format!("✓ every tool of {url} runs without asking in this session"),
+        format!("✓ revoked {url}:* (this session)"),
+        format!("/allow: server \"{url}\" has no tool \"nope\""),
+    ] {
+        assert!(lines.contains(&want), "{want:?} missing:\n{lines:#?}");
+    }
+    use iota::tool::grants::{Level, McpTool, ServerId, ToolKey};
+    assert_eq!(
+        grants.snapshot(Level::Session).tools,
+        [ToolKey::Mcp {
+            server: ServerId::Flag(url.clone()),
+            tool: McpTool::Named("echo".to_owned()),
+        }],
+        "the wildcard is gone, the named tool stays"
+    );
+    manager.close().await;
+}
+
 /// `/revoke <dir>` takes the grant back from the store — the next call of either writer or the sandbox no
 /// longer has the root — and a second `/revoke` finds nothing to take.
 #[tokio::test]

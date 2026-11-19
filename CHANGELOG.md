@@ -69,7 +69,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   it adds later) does the same; `/revoke` takes it back. A project grant also
   lets `iota run -m` call the tool. Servers given with `--mcp`, which have no
   config entry to set `auto_run` in, can now be allowed this way too — the
-  grant is tied to the whole `--mcp` value, not just the command name.
+  grant is tied to the whole `--mcp` value, not just the command name. Such a
+  server is typed by the name `/tools` shows, its URL or command, as in
+  `/allow https://host/mcp:*` or `/allow ./server.py:push`.
 
 ### Fixed
 

@@ -223,11 +223,16 @@ The only door for the shell, since a sandboxed command cannot be prompted mid-ru
 /revoke <dir | server:tool | server:*>   remove it from every level that holds it
 ```
 
-- **Arguments.** A directory starts with `/`, `~` or `.` (relative = against the
-  project root, as the tools read a path); it must exist and be a directory. Anything
-  else must be `<server>:<tool>`: `<server>` is resolved against the CONNECTED servers'
-  names, `<tool>` against that server's current tool list (`*` excepted), so a typo is
-  refused instead of stored. `project` is a keyword, not a path.
+- **Arguments.** `<server>:<tool>` is tried FIRST: `<server>` is a CONNECTED server's
+  whole name (`/revoke`: a stored grant's), the longest that matches, then `:` and the
+  tool — a `--mcp` server is named by its URL or `argv[0]`, which may hold a `:` and
+  start with `/` or `.` (`/allow https://h/mcp:push`, `/allow ./srv.py:*`), and a
+  server's name wins over the directory spelling. Otherwise a directory starts with
+  `/`, `~` or `.` (relative = against the project root, as the tools read a path); it
+  must exist and be a directory. Anything else must be `<server>:<tool>`, split at its
+  last `:`, and is refused naming that server. `<tool>` is resolved against the
+  server's current tool list (`*` excepted), so a typo is refused instead of stored.
+  `project` is a keyword, not a path.
 - **Who may type it.** The user, at the prompt. A message from the socket never runs a
   slash command (`src/repl/inbound.rs:14`), and the model has no way to type one.
 - **Table.** Two rows after `/tools`: `/allow` — `Allow a directory or an MCP tool`,

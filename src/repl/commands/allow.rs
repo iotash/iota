@@ -6,8 +6,9 @@
 //! `write roots:` line at the next turn (`refresh_harness`). `/allow project <dir>` grants it for the project,
 //! in every session and every mode. `/allow [project] <server>:<tool>` stops the question for one MCP tool,
 //! `<server>:*` for every tool of the server, those it exposes later included: `<server>` is resolved against
-//! the CONNECTED servers and `<tool>` against its current tool list, so a typo is refused instead of stored, and
-//! the grant is keyed by the server's identity (its configured name, or a `--mcp` server's whole flag value),
+//! the CONNECTED servers' names before the argument is read as a directory (a `--mcp` server is named by its
+//! URL or `argv[0]`: [`named_server`]), and `<tool>` against its current tool list, so a typo is refused instead
+//! of stored, and the grant is keyed by the server's identity (its configured name, or a `--mcp` server's whole flag value),
 //! never the wire segment. `/revoke <dir | server:tool | server:*>` takes it back from every level that holds
 //! it; a bare `/allow` lists what is in effect, by level. Every change of the session level is written into the bundle's
 //! meta ([`save_session`]) — the dialog's grants too — so a resume restores it; an ephemeral chat keeps it in
@@ -227,6 +228,10 @@ fn allow(
         Some(rest) if rest.starts_with(char::is_whitespace) => (Level::Project, rest.trim_start()),
         _ => (Level::Session, arg),
     };
+    let names = servers.map(Manager::connected_names).unwrap_or_default();
+    if let Some((server, tool)) = named_server(arg, &names) {
+        return allow_tool(grants, project, servers, level, server, tool);
+    }
     let Some(typed) = b.path(arg) else {
         let (server, tool) = server_tool(arg).ok_or_else(|| EXPECTED.to_owned())?;
         return allow_tool(grants, project, servers, level, server, tool);
@@ -274,9 +279,25 @@ fn allow(
     Ok(line)
 }
 
-/// `<server>:<tool>` split at its first `:`, both halves non-empty; `None` for anything else.
+/// `arg` as `<server>:<tool>` for a server of `names`, the longest one `arg` starts with, then `:` and a
+/// non-empty tool. A `--mcp` server is named by its URL or its `argv[0]` (`parse_mcp_flag`), which may hold a
+/// `:` and start with `/` or `.` — so the name is matched whole, BEFORE `arg` is read as a directory: a known
+/// server's name wins over the directory spelling (`/allow ./srv.py:push` with `./srv.py` connected is its
+/// tool), and a directory is a leading `/`, `~` or `.` that names no server.
+fn named_server<'a>(arg: &'a str, names: &[String]) -> Option<(&'a str, &'a str)> {
+    names
+        .iter()
+        .filter_map(|n| {
+            let tool = arg.strip_prefix(n.as_str())?.strip_prefix(':')?;
+            (!tool.is_empty()).then_some((arg.split_at(n.len()).0, tool))
+        })
+        .max_by_key(|(s, _)| s.len())
+}
+
+/// `<server>:<tool>` for a server no name of [`named_server`] matched, split at its LAST `:` (a URL's own `:`
+/// stays in the server, so the refusal names what was typed), both halves non-empty; `None` for anything else.
 fn server_tool(arg: &str) -> Option<(&str, &str)> {
-    arg.split_once(':')
+    arg.rsplit_once(':')
         .filter(|(s, t)| !s.is_empty() && !t.is_empty())
 }
 
@@ -439,15 +460,28 @@ fn writable_by(
     (level == Level::Session && covers(Level::Session)).then_some("this session")
 }
 
-/// Takes the directory `arg` back from every level that holds it: the notice line, or why not. The grant is
-/// matched on the path as typed (made absolute) and on its real location now, so a grant gone stale can still
-/// be named. The project level goes through its file first; one that cannot be written keeps the grant.
+/// Takes the directory or the MCP tool `arg` back from every level that holds it: the notice line, or why not.
+/// A directory grant is matched on the path as typed (made absolute) and on its real location now, so a grant
+/// gone stale can still be named. The project level goes through its file first; one that cannot be written keeps the grant.
 fn revoke(
     grants: &Grants,
     project: &ProjectFile,
     b: &Boundary<'_>,
     arg: &str,
 ) -> Result<String, String> {
+    // The stored grants' server names, resolved first as `/allow` resolves the connected ones ([`named_server`]):
+    // a grant is taken back with no server connected.
+    let names: Vec<String> = [Level::Session, Level::Project]
+        .into_iter()
+        .flat_map(|l| grants.snapshot(l).tools)
+        .filter_map(|k| match k {
+            ToolKey::Mcp { server, .. } => Some(server_name(&server)),
+            ToolKey::Builtin(_) => None,
+        })
+        .collect();
+    if let Some((server, tool)) = named_server(arg, &names) {
+        return revoke_tool(grants, project, server, tool, arg);
+    }
     let Some(typed) = b.path(arg) else {
         let (server, tool) = server_tool(arg).ok_or_else(|| EXPECTED.to_owned())?;
         return revoke_tool(grants, project, server, tool, arg);
@@ -551,7 +585,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use std::path::PathBuf;
 
-    use super::{Boundary, Grants, Level, ProjectFile, ToolKey, listing, revoke};
+    use super::{
+        Boundary, Grants, Level, ProjectFile, ToolKey, listing, named_server, revoke, server_tool,
+    };
     use crate::tool::grants::{McpTool, ServerId};
 
     /// `/allow` in a run with no MCP server.
@@ -691,6 +727,35 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{broken");
         assert!(g.live_dirs().is_empty());
+    }
+
+    /// A server's name is matched whole and FIRST: a URL or a path-like `--mcp` name keeps its `:` and wins over
+    /// the directory spelling; the longest name wins; an unknown one splits at its last `:` (the refusal names
+    /// what was typed).
+    #[test]
+    fn a_server_name_is_matched_whole_before_the_directory_test() {
+        let names = [
+            "https://h:8443/mcp".to_owned(),
+            "./srv.py".to_owned(),
+            "gh".to_owned(),
+            "gh:x".to_owned(),
+        ];
+        let m = |arg| named_server(arg, &names);
+        assert_eq!(
+            m("https://h:8443/mcp:push"),
+            Some(("https://h:8443/mcp", "push"))
+        );
+        assert_eq!(m("./srv.py:*"), Some(("./srv.py", "*")));
+        assert_eq!(m("gh:x:y"), Some(("gh:x", "y")));
+        assert_eq!(m("gh:echo"), Some(("gh", "echo")));
+        assert_eq!(m("gh:"), None);
+        assert_eq!(m("./srv.py"), None);
+        assert_eq!(m("./out"), None);
+        assert_eq!(
+            server_tool("https://other/mcp:push"),
+            Some(("https://other/mcp", "push"))
+        );
+        assert_eq!(server_tool("github"), None);
     }
 
     /// The listing: each level once in the label column, a stale grant marked, the static roots last.
