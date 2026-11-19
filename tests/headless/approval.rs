@@ -422,3 +422,74 @@ async fn add_dir_admits_an_unattended_write() {
         assert_eq!(history[2].is_error(), !lands, "{}", history[2].content);
     }
 }
+
+/// A project grant is the one approval an unattended run inherits: the project's `grants.json`, loaded into the
+/// run's store as every start loads it, makes the granted directory a root — the `-m` loop writes there with
+/// nobody to ask — while a sibling directory is still refused, and a second project that shares the bucket
+/// inherits nothing.
+#[tokio::test]
+async fn a_project_grant_runs_unattended() {
+    use iota::session::SessionStore;
+    use iota::tool::grants::Grants;
+    use iota::tool::sets::ToolsConfig;
+    use iota::tool::{Registry, ToolEnv};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let real = std::fs::canonicalize(dir.path()).expect("real");
+    let root = real.join("a/b/proj");
+    let twin = real.join("a-b/proj"); // the same bucket slug
+    let lib = real.join("lib");
+    for d in [&root, &twin, &lib, &real.join("sibling")] {
+        std::fs::create_dir_all(d).expect("dir");
+    }
+    let store = SessionStore::new(real.join("sessions"));
+    store
+        .update_project_grants(&root, |s| s.dirs.push(lib.clone()))
+        .expect("a project grant");
+
+    let run = |project: &std::path::Path, path: std::path::PathBuf| {
+        let grants = Arc::new(Grants::default());
+        grants.replace_project(store.project_grants(project).expect("read"));
+        let env = ToolEnv {
+            project_root: Some(project.to_path_buf()),
+            grants,
+            ..ToolEnv::default()
+        };
+        let raw: ToolsConfig = serde_norway::from_str("code: {auto_write: true}\n").expect("tools");
+        let d = Arc::new(Registry::build(&env, &raw, &mut |w| panic!("{w}")));
+        let mut args = JsonObject::new();
+        args.insert("path".to_owned(), path.to_str().expect("utf-8").into());
+        args.insert("content".to_owned(), "x".into());
+        async move {
+            let mut history = vec![Message::user("go")];
+            execute_with_tools(
+                TurnParams {
+                    cx: &RunCtx::default(),
+                    tp: &writing(args),
+                    dispatch: d.clone(),
+                    tools: d.tools(),
+                    harness: "",
+                    overlay: "",
+                    max_turns: None,
+                },
+                &mut history,
+                &mut QuietHost::new(),
+            )
+            .await
+            .expect("loop");
+            history[2].clone()
+        }
+    };
+
+    let result = run(&root, lib.join("deep/x.txt")).await;
+    assert!(!result.is_error(), "{}", result.content);
+    assert!(lib.join("deep/x.txt").exists(), "the granted write landed");
+
+    let result = run(&root, real.join("sibling/x.txt")).await;
+    assert!(result.is_error());
+    assert!(!real.join("sibling/x.txt").exists());
+
+    let result = run(&twin, lib.join("twin.txt")).await;
+    assert!(result.is_error(), "another project's grant applied");
+    assert!(!lib.join("twin.txt").exists());
+}

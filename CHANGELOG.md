@@ -54,6 +54,14 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   replaces the grants of the session you leave with those of the one you
   open; `/new` still starts with none, and a `--no-save` chat keeps them in
   memory until `/save`. Resuming says how many it restored.
+- **A directory can be made writable for the whole project.** The approval
+  prompt for a write outside the project also offers `Allow, and make <dir>
+  writable for this project`, and `/allow project <dir>` does the same: the
+  directory stays writable in every later chat in this project, after `/new`,
+  in `--no-save` chats, and in `iota run -m` runs, which cannot ask. It is kept
+  in `~/.iota/sessions/projects/<project>/grants.json`; `/revoke <dir>` takes a
+  directory back from the session and the project at once, and `/status` and
+  a bare `/allow` show both.
 
 ### Fixed
 

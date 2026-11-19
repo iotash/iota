@@ -3444,7 +3444,7 @@ async fn allow_refuses_what_is_not_a_directory() {
         input("/allow ./file.txt"),
         input("/allow ./missing"),
         input("/allow github:search_issues"),
-        input("/allow project ../out"),
+        input("/allow project ./file.txt"),
         input("/allow ."),
         Reply::Interrupted,
     ]);
@@ -3464,7 +3464,7 @@ async fn allow_refuses_what_is_not_a_directory() {
             "/allow: ./file.txt is not a directory".to_owned(),
             "/allow: ./missing is not a directory".to_owned(),
             "/allow: expected a directory (starting with /, ~ or .)".to_owned(),
-            "/allow: expected a directory (starting with /, ~ or .)".to_owned(),
+            "/allow: ./file.txt is not a directory".to_owned(),
             format!(
                 "/allow: {} is already writable (the project root)",
                 root.display()
@@ -3496,10 +3496,91 @@ async fn revoke_removes_a_grant() {
         format!("✓ {} is writable for this session", out.display()),
         format!("✓ revoked {} (this session)", out.display()),
         "/revoke: nothing granted matches ../out".to_owned(),
-        "No grants. /allow <dir> makes a directory writable for this session.".to_owned(),
+        "No grants. /allow <dir> makes a directory writable for this session, /allow project <dir> for this project.".to_owned(),
     ] {
         assert!(printed.contains(&want), "{want:?} missing:\n{printed:#?}");
     }
+}
+
+/// `/allow project <dir>` writes the directory's real location into `grants.json` in the project's bucket,
+/// under the project's real root, before it takes effect; the session's meta does not get it; the listing and
+/// `/status` count it as the project's. `/revoke` then takes it out of the file.
+#[tokio::test]
+async fn allow_project_writes_the_bucket_file() {
+    let (_t, root, out) = allow_fixture();
+    let f = Fixture::new(vec![
+        input("/allow project ../out"),
+        input("/allow"),
+        input("/allow ../out/sub"),
+        Reply::Interrupted,
+    ]);
+    let grants = Arc::new(iota::tool::grants::Grants::default());
+    std::fs::create_dir(out.join("sub")).expect("sub");
+    let params = allow_params(&f, &root, &grants);
+    let id = params
+        .session
+        .writer
+        .as_ref()
+        .expect("writer")
+        .id()
+        .to_owned();
+    iota::repl::run(params).await.expect("clean exit");
+
+    assert_eq!(grants.live_dirs(), std::slice::from_ref(&out));
+    assert_eq!(
+        grants.snapshot(iota::tool::grants::Level::Project).dirs,
+        [out.clone()]
+    );
+    let path = f.store.grants_path(&root);
+    assert_eq!(
+        path,
+        f.store
+            .root()
+            .join(iota::session::PROJECTS_DIR_NAME)
+            .join(SessionStore::project_slug(&root))
+            .join(iota::session::GRANTS_FILE)
+    );
+    let file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("the bucket file")).expect("json");
+    assert_eq!(
+        file,
+        serde_json::json!({"v": 1, "roots": {root.to_str().expect("utf-8"): {"dirs": [out.to_str().expect("utf-8")]}}})
+    );
+    assert!(
+        f.store
+            .meta(&id)
+            .map(|m| m.grants.is_empty())
+            .unwrap_or(true),
+        "a project grant is not the session's"
+    );
+    let shown = printed(&f.ui);
+    for want in [
+        format!(
+            "✓ {} is writable for this project ({})",
+            out.display(),
+            root.display()
+        ),
+        format!("  this project   {}", out.display()),
+        format!(
+            "/allow: {} is already writable (this project)",
+            out.join("sub").display()
+        ),
+    ] {
+        assert!(shown.contains(&want), "{want:?} missing:\n{shown:#?}");
+    }
+
+    // A second chat in the project: the grant is there from the start, and `/revoke` takes it from the file.
+    let f2 = Fixture::new(vec![input("/revoke ../out"), Reply::Interrupted]);
+    let grants = Arc::new(iota::tool::grants::Grants::default());
+    grants.replace_project(f.store.project_grants(&root).expect("read"));
+    let mut params = allow_params(&f2, &root, &grants);
+    params.session.store = f.store.clone();
+    iota::repl::run(params).await.expect("clean exit");
+    assert!(grants.live_dirs().is_empty());
+    assert!(f.store.project_grants(&root).expect("read").is_empty());
+    let want = format!("✓ revoked {} (this project)", out.display());
+    let shown = printed(&f2.ui);
+    assert!(shown.contains(&want), "{want:?} missing:\n{shown:#?}");
 }
 
 /// Both commands are rows of the table, after `/tools`, with their descriptions — in every mode, a bot's too.
@@ -3530,7 +3611,7 @@ async fn allow_and_revoke_are_in_the_table() {
         [
             (
                 "/allow",
-                "Make a directory writable for this session, or list the grants"
+                "Make a directory writable for this session or project, or list the grants"
             ),
             ("/revoke", "Take a directory grant back"),
         ]

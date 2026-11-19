@@ -1662,3 +1662,178 @@ async fn cli_moderation_on_a_chat_provider_warns_and_is_not_sent() {
         assert!(!body.contains("moderation"), "body: {body}");
     }
 }
+
+/// The tmux this test drives the chat with — `TMUX_BIN`, else `tmux` on `PATH` — or `None` (the test skips)
+/// when there is none, unless `IOTA_TMUX_REQUIRED` is set: then a missing tmux fails the test, as the L4
+/// suite does (`tests/ui_tmux`).
+#[cfg(unix)]
+fn tmux_or_skip(test: &str) -> Option<String> {
+    let tmux = std::env::var("TMUX_BIN").unwrap_or_else(|_| "tmux".to_owned());
+    let found = Command::new(&tmux)
+        .arg("-V")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if found {
+        return Some(tmux);
+    }
+    assert!(
+        std::env::var_os("IOTA_TMUX_REQUIRED").is_none(),
+        "IOTA_TMUX_REQUIRED is set and `{tmux} -V` did not run"
+    );
+    eprintln!("SKIP: {test}: no tmux");
+    None
+}
+
+/// A private tmux server running one pane; killed when dropped.
+#[cfg(unix)]
+struct Pane {
+    tmux: String,
+    socket: String,
+}
+
+#[cfg(unix)]
+impl Pane {
+    fn tm(&self, args: &[&str]) -> Output {
+        Command::new(&self.tmux)
+            .args(["-L", &self.socket])
+            .args(args)
+            .output()
+            .expect("run tmux")
+    }
+
+    fn screen(&self) -> String {
+        String::from_utf8_lossy(&self.tm(&["capture-pane", "-pt", "s"]).stdout).into_owned()
+    }
+
+    /// Polls (up to 40 s) until `done` holds of the screen; the screen it gave up on is in the panic.
+    fn wait(&self, what: &str, done: impl Fn(&str) -> bool) {
+        for _ in 0..400 {
+            if done(&self.screen()) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("{what} never happened; the pane:\n{}", self.screen());
+    }
+
+    fn gone(&self) -> bool {
+        !self.tm(&["has-session", "-t", "s"]).status.success()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Pane {
+    fn drop(&mut self) {
+        let _ = self.tm(&["kill-server"]);
+    }
+}
+
+/// `--no-save` keeps the CONVERSATION off the disk, not what the user granted for the project (grants.md §9 Q4):
+/// a real ephemeral chat's `/allow project <dir>` writes the project's `grants.json` — and nothing else under
+/// the sessions root — and the next run in the project, an unattended `-m` with no door of its own, writes
+/// into that directory unasked and says that it loaded the grant.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ephemeral_chat_still_writes_a_project_grant() {
+    let Some(tmux) = tmux_or_skip("an_ephemeral_chat_still_writes_a_project_grant") else {
+        return;
+    };
+    let (dir, home) = project();
+    let outside = tempfile::tempdir().expect("outside");
+    let lib = fs::canonicalize(outside.path())
+        .expect("real outside")
+        .join("lib");
+    fs::create_dir_all(&lib).expect("lib");
+    let server = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(ToolCallsInTurn {
+            calls: vec![(
+                "write_file",
+                serde_json::json!({"path": lib.join("landed.txt"), "content": "granted\n"}),
+            )],
+        })
+        .mount(&server)
+        .await;
+    write_config(
+        &home,
+        &format!(
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: {{auto_write: true}}}}}}\n",
+            server.uri()
+        ),
+    );
+
+    let pane = Pane {
+        tmux,
+        socket: format!("iota-grants-{}", std::process::id()),
+    };
+    let chat = format!(
+        "env -i HOME='{}' PATH=/bin:/usr/bin TERM=xterm-256color '{}' --no-save",
+        home.display(),
+        env!("CARGO_BIN_EXE_iota")
+    );
+    let cwd = dir.path().to_str().expect("utf-8");
+    let started = pane.tm(&[
+        "new-session",
+        "-d",
+        "-s",
+        "s",
+        "-x",
+        "160",
+        "-y",
+        "40",
+        "-c",
+        cwd,
+        &chat,
+    ]);
+    assert!(started.status.success(), "{started:?}");
+    pane.wait("the chat's first frame", |s| s.contains("gpt-test"));
+    pane.tm(&[
+        "send-keys",
+        "-t",
+        "s",
+        "-l",
+        &format!("/allow project {}", lib.display()),
+    ]);
+    pane.tm(&["send-keys", "-t", "s", "Enter"]);
+    pane.wait("the grant's notice", |s| {
+        s.contains("is writable for this project")
+    });
+    pane.tm(&["send-keys", "-t", "s", "C-d"]);
+    pane.wait("the chat's exit", |_| pane.gone());
+
+    let store = iota::session::SessionStore::new(home.join(".iota/sessions"));
+    let path = store.grants_path(dir.path());
+    let real_root = fs::canonicalize(dir.path()).expect("real root");
+    let file: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).expect("grants.json")).expect("json");
+    assert_eq!(
+        file,
+        serde_json::json!({"v": 1, "roots": {real_root.to_str().expect("utf-8"): {"dirs": [lib.to_str().expect("utf-8")]}}})
+    );
+    assert!(
+        store.list_all().expect("list").is_empty(),
+        "a bundle was saved"
+    );
+    let bucket: Vec<String> = fs::read_dir(path.parent().expect("bucket"))
+        .expect("bucket")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(bucket, [iota::session::GRANTS_FILE]);
+
+    let mut cmd = iota(dir.path(), &home);
+    cmd.args(["-m", "go"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert_eq!(
+        fs::read_to_string(lib.join("landed.txt")).ok().as_deref(),
+        Some("granted\n"),
+        "the model was told: {}",
+        out(&o)
+    );
+    assert!(
+        err(&o).contains("grants: 1 for this project\n"),
+        "stderr: {}",
+        err(&o)
+    );
+}

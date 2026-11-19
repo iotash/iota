@@ -677,3 +677,47 @@ async fn new_forgets_the_session_grants() {
     assert!(!grants.allows(&ToolKey::Builtin("write_file".to_owned())));
     assert!(grants.live_dirs().is_empty());
 }
+
+/// The project level follows the project, not the conversation: `/new` empties the session level and reads the
+/// project's `grants.json` afresh — what it held stays in force, and what another chat added meanwhile arrives.
+#[tokio::test]
+async fn new_keeps_the_project_grants() {
+    use iota::tool::grants::{Grants, Level};
+    let t = tempfile::tempdir().expect("tempdir");
+    for d in ["proj", "lib", "other", "mine"] {
+        std::fs::create_dir(t.path().join(d)).expect("dir");
+    }
+    let real = |d: &str| std::fs::canonicalize(t.path().join(d)).expect("real");
+    let (root, lib, other, mine) = (real("proj"), real("lib"), real("other"), real("mine"));
+    let provider = FakeProvider::new()
+        .with_model("gpt-4o")
+        .rounds([Round::reply("hi")]);
+    let f = Fixture::new(vec![
+        input("hello"),
+        input("/new"),
+        Reply::Interrupted,
+    ]);
+    f.store
+        .update_project_grants(&root, |s| s.dirs.push(lib.clone()))
+        .expect("a project grant");
+    let grants = Arc::new(Grants::default());
+    grants.replace_project(f.store.project_grants(&root).expect("read"));
+    grants.grant_dir(Level::Session, mine.clone());
+    // Another chat in the project grants a directory while this one runs.
+    f.store
+        .update_project_grants(&root, |s| s.dirs.push(other.clone()))
+        .expect("another grant");
+    let session = f.session(Some(f.writer()));
+    let mut params = f.params(provider, session);
+    params.harness.env.project_root = root.clone();
+    params.grants = Arc::clone(&grants);
+    iota::repl::run(params).await.expect("exit");
+
+    assert_eq!(dividers(&f.ui).len(), 1, "the conversation was left");
+    assert!(grants.snapshot(Level::Session).is_empty());
+    assert_eq!(
+        grants.snapshot(Level::Project).dirs,
+        [lib.clone(), other.clone()]
+    );
+    assert_eq!(grants.live_dirs(), [lib, other]);
+}

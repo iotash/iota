@@ -108,7 +108,7 @@ const BASE: &[CmdSpec] = &[
     },
     CmdSpec {
         value: "/allow",
-        desc: "Make a directory writable for this session, or list the grants",
+        desc: "Make a directory writable for this session or project, or list the grants",
     },
     CmdSpec {
         value: "/revoke",

@@ -108,6 +108,15 @@ A session is a **directory** on disk:
 > `/save` stamps it); `iota resume` (with or without `-m`) and a `/session` switch REPLACE the run's session
 > grants with it, and `/new` starts without. The version stays 2: an optional key absent in every older bundle
 > changes no meaning, and absent already reads as "no grants".
+>
+> **The project's `grants.json`** (2026-11-19, docs/design/grants.md §4.2) is NOT part of a bundle and has no
+> `meta.json` of its own: it sits in the bucket — `projects/<slug(real project root)>/grants.json`, beside the
+> project's bundles — as `{"v": 1, "roots": {"<real project root>": {"dirs": […], "tools": […]}}}`, mode 0600,
+> written whole (`app::fs::write_atomic`) by `SessionStore::update_project_grants`, read–modify–write with no
+> lock. It is a map keyed by the real root because the slug is lossy: two projects whose slugs collide share
+> the file and nothing in it. Every listing reads subdirectories only and the locator wants `<id>/meta.json`,
+> so no session view ever sees it. A run of any mode reads its own entry at start (and `/new`, `/session`
+> again); `--no-save` still writes it. A file that is not v1 grants nothing and is never overwritten.
 
 ### 4.2 `messages.jsonl` (one line each)
 
