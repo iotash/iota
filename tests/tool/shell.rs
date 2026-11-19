@@ -1111,6 +1111,97 @@ async fn the_sandbox_never_writes_a_protected_path() {
     assert_eq!(String::from_utf8_lossy(&log.stdout), "second\nfirst\n");
 }
 
+/// `~/.iota/sessions` (X-95 amended, grants.md §9 Q11) under the real sandbox, in the case `~/.iota` being an
+/// entry does not cover: the command runs IN the home, with the home listed in `write_roots:` too. It can write
+/// the home and the rest of `~/.iota`, but not a session bundle, a project bucket's `grants.json`, a new bundle,
+/// a hardlink to a grants file, or the tree itself moved or removed — so no command grants the model anything
+/// for the next start.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_sandbox_never_writes_the_sessions_tree() {
+    let (dir, _root, _outside, sb) = sandbox_fixture();
+    let home = dir.path().join("home");
+    let app_home = home.join(".iota");
+    let sessions = app_home.join("sessions");
+    let bundle = sessions.join("20261119-abc");
+    let bucket = sessions.join("projects/-r");
+    fs::create_dir_all(&bundle).expect("bundle");
+    fs::create_dir_all(&bucket).expect("bucket");
+    fs::write(bundle.join("meta.json"), "{}").expect("meta");
+    fs::write(bucket.join("grants.json"), "{}").expect("grants");
+    let sb = Sandbox {
+        root: home.clone(),
+        write: vec![home.clone()],
+        home: Some(home.clone()),
+        ..sb
+    };
+    if skip_unless_sandboxed("the_sandbox_never_writes_the_sessions_tree", &sb, &home).await {
+        return;
+    }
+    let sh = |command: String| {
+        run(Options {
+            command,
+            dir: home.clone(),
+            timeout: None,
+            sandbox: Some(sb.clone()),
+        })
+    };
+    let s = shell_path(&sessions);
+    let denied = [
+        format!("echo x > {s}/20261119-abc/meta.json"),
+        format!("echo x > {s}/projects/-r/grants.json"),
+        format!("mkdir {s}/new"),
+        format!("echo x > {s}/projects/-r/other.json"),
+        format!(
+            "ln {s}/projects/-r/grants.json {}/grants-link",
+            shell_path(&home)
+        ),
+        format!("mv {s} {s}-moved"),
+        format!("rm -rf {s}"),
+    ];
+    for command in denied {
+        let res = sh(command.clone()).await;
+        assert!(
+            res.outcome != Outcome::Exited(0)
+                && [
+                    "Operation not permitted",
+                    "Read-only file system",
+                    "Device or resource busy",
+                    "Invalid cross-device link"
+                ]
+                .iter()
+                .any(|e| res.output.contains(e)),
+            "{command}: should fail with a permission error: {res:?}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(bundle.join("meta.json")).expect("meta"),
+        "{}"
+    );
+    assert_eq!(
+        fs::read_to_string(bucket.join("grants.json")).expect("grants"),
+        "{}"
+    );
+    assert!(
+        !sessions.join("new").exists()
+            && !bucket.join("other.json").exists()
+            && !home.join("grants-link").exists(),
+        "something was created in or linked from the sessions tree"
+    );
+
+    // What stays open: the home and the rest of `~/.iota`.
+    let res = sh(format!(
+        "echo ok > home.txt && echo ok > {}/other.txt",
+        shell_path(&app_home)
+    ))
+    .await;
+    assert!(
+        res.outcome == Outcome::Exited(0),
+        "home work failed: {res:?}"
+    );
+    assert!(home.join("home.txt").exists() && app_home.join("other.txt").exists());
+}
+
 /// A linked worktree (`git worktree add`): `<root>/.git` is a `gitdir:` file, and the hooks git runs and the
 /// config it reads are the main repository's (`<main>/.git/hooks`, `<main>/.git/config`) and the worktree's
 /// `config.worktree` — outside the root. With the main `.git` listed in `write_roots:` (which a sandboxed

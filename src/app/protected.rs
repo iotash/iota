@@ -5,10 +5,11 @@
 //! A sandboxed command runs without approval and the project root is writable, so without this a silent
 //! command could plant `<root>/.git/hooks/pre-commit` (run by the user's own next `git commit`), point git at
 //! another program from `<root>/.git/config`, rewrite the project's `.iota.yaml` for the next run, or trust a
-//! file on the user's behalf through `~/.iota/trusted.json`. The list is the three items Claude Code, Codex and
+//! file on the user's behalf through `~/.iota/trusted.json`, or grant the model every tool from the next start
+//! through a grant kept under `~/.iota/sessions`. The list is the three items Claude Code, Codex and
 //! Cursor all protect — git's hooks and config and the agent's own config (the project's and the user's own
 //! `~/.iota.yaml`, which is trusted by definition and decides which code the next run starts) — plus iota's
-//! trust record; nothing wider (reports/iota/over-engineering.md (b)). In a linked worktree, where `<root>/.git`
+//! trust record and the store that holds the grants; nothing wider (reports/iota/over-engineering.md (b)). In a linked worktree, where `<root>/.git`
 //! is a `gitdir:` file, git's hooks and config are those of the repository's common dir, so those are on it too.
 
 use std::path::{Path, PathBuf};
@@ -41,6 +42,9 @@ pub enum Why {
     GitConfig,
     /// `~/.iota` itself and `~/.iota/trusted.json`.
     Trust,
+    /// `~/.iota/sessions` and everything under it: the session bundles and the project buckets, which hold the
+    /// session and project grants (docs/design/grants.md §9 Q11).
+    Grants,
 }
 
 impl Why {
@@ -59,7 +63,17 @@ impl Why {
                 "it can point git at another program (core.fsmonitor, core.hooksPath)"
             }
             Self::Trust => "it records which project configs the user trusts",
+            Self::Grants => {
+                "it holds the sessions and the grants that let the model act without asking"
+            }
         }
+    }
+
+    /// Whether a write here can be approved at all ("allow once" for that file). The trust record and the
+    /// grants are written by iota itself and by nothing else: no tool is ever asked about them, and nothing —
+    /// not "allow once", a directory grant or `auto_write` — admits a write there.
+    pub fn approvable(self) -> bool {
+        !matches!(self, Self::Trust | Self::Grants)
     }
 }
 
@@ -75,7 +89,7 @@ pub struct Protected {
 }
 
 /// The table for a run rooted at `root`, with the extra write roots (`write_roots:`) and the user's `home` when
-/// there is one. An entry under another entry comes after it (`.git` before `.git/hooks`), the order a
+/// there is one (without one there is no home config, trust record or sessions tree to protect). An entry under another entry comes after it (`.git` before `.git/hooks`), the order a
 /// bind-mount backend must apply them in.
 ///
 /// An extra root that is itself a repository gets the git rows the project root gets — writable is not the
@@ -134,8 +148,10 @@ pub fn table(root: &Path, extra: &[PathBuf], home: Option<&Path>) -> Vec<Protect
         t.extend(configs(home, Why::HomeConfig));
         let app_home = home.join(super::DOT_DIR);
         let record = app_home.join(super::TRUST_FILE);
+        let sessions = app_home.join(super::SESSIONS_DIR);
         t.push(at(app_home, Reach::Entry, Why::Trust));
         t.push(at(record, Reach::Tree, Why::Trust));
+        t.push(at(sessions, Reach::Tree, Why::Grants));
     }
     t
 }
@@ -203,11 +219,41 @@ mod tests {
             ("/h/.iota.yml", Reach::Tree, Why::HomeConfig),
             ("/h/.iota", Reach::Entry, Why::Trust),
             ("/h/.iota/trusted.json", Reach::Tree, Why::Trust),
+            ("/h/.iota/sessions", Reach::Tree, Why::Grants),
         ]
         .map(|(p, r, w)| (PathBuf::from(p), r, w));
         assert_eq!(got, want);
-        // No home: no home config or trust record to protect.
+        // No home: no home config, trust record or sessions tree to protect.
         assert_eq!(table(Path::new("/r"), &[], None).len(), 6);
+    }
+
+    /// `~/.iota/sessions` (X-95, amended by grants.md §9 Q11) is a tree — every bundle and project bucket under
+    /// it — with no approval path, like the trust record; `~/.iota` itself stays an entry, so its other contents
+    /// stay writable. Every other row can be approved for one file.
+    #[test]
+    fn the_sessions_tree_is_protected() {
+        let t = table(Path::new("/r"), &[], Some(Path::new("/h")));
+        let row = |p: &str| {
+            t.iter()
+                .find(|e| e.path == Path::new(p))
+                .map(|e| (e.reach, e.why))
+        };
+        assert_eq!(row("/h/.iota/sessions"), Some((Reach::Tree, Why::Grants)));
+        assert_eq!(row("/h/.iota"), Some((Reach::Entry, Why::Trust)));
+        assert_eq!(
+            row("/h/.iota/trusted.json"),
+            Some((Reach::Tree, Why::Trust))
+        );
+        for e in &t {
+            let closed = matches!(e.why, Why::Trust | Why::Grants);
+            assert_eq!(e.why.approvable(), !closed, "{e:?}");
+        }
+        assert!(
+            table(Path::new("/r"), &[], None)
+                .iter()
+                .all(|e| e.why != Why::Grants),
+            "no home, no sessions row"
+        );
     }
 
     /// A linked worktree: `<root>/.git` is a `gitdir:` file (relative, as `git worktree add --relative-paths`

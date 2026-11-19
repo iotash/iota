@@ -134,10 +134,10 @@ impl SessionStore {
     /// `<app home>/sessions` (chat/session.go:156-162), aware of `<app home>/bots`;
     /// [`SessionError::HomeNotDefined`] when the host has no home directory.
     pub fn from_dirs(dirs: &HostDirs) -> Result<Self, SessionError> {
-        let (Some(home), Some(bots)) = (dirs.app_home(), dirs.bots_dir()) else {
+        let (Some(sessions), Some(bots)) = (dirs.sessions_dir(), dirs.bots_dir()) else {
             return Err(SessionError::HomeNotDefined);
         };
-        let store = Self::new(home.join("sessions")).with_bots(bots);
+        let store = Self::new(sessions).with_bots(bots);
         Ok(match dirs.images_dir() {
             Some(images) => store.with_images_dir(images),
             None => store,

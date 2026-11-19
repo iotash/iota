@@ -37,6 +37,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **No command or tool can write iota's saved sessions.** `~/.iota/sessions`
+  is now protected like the trust record: a sandboxed command cannot change,
+  create, move or delete anything in it, and `edit_file`/`write_file` refuse it
+  without asking, even when iota runs in your home directory or `~` is a
+  writable root. Before, only `~/.iota` itself was protected, so in those cases
+  a command could rewrite a saved session.
 - **An `iota` the model runs with `-c`, `--config` or `--mcp` stays in the
   sandbox.** Such a line chose its own config or started its own server, and
   was let out of the shell sandbox like any other `iota` call: a config the

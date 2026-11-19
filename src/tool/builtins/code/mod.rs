@@ -105,7 +105,7 @@ pub(crate) enum Write {
     Outside { path: PathBuf, real: PathBuf },
     /// On the protected table ([`protected::table`]), inside a root or not: never written without the
     /// user's approval of this one file, whatever `auto_write`, `write_roots:` or a grant says, and the
-    /// trust record never at all. `path` and `real` as for [`Write::Outside`].
+    /// trust record and the sessions tree never at all ([`Why::approvable`]). `path` and `real` as for [`Write::Outside`].
     Protected {
         path: PathBuf,
         real: PathBuf,
@@ -288,7 +288,7 @@ impl CodeSet {
     /// when `write_roots:` lists any or a directory is granted, by `) and the extra write roots ({e1}, {e2}`.
     ///
     /// A protected path ([`Write::Protected`]) is admitted only when "allow once" named exactly its real
-    /// location — never by a grant — and the trust record never: `{arg} is protected: {reason} — …`,
+    /// location — never by a grant — and the trust record and the sessions tree never ([`Why::approvable`]): `{arg} is protected: {reason} — …`,
     /// the rest saying what the user can do instead ([`protected_refusal`]).
     pub(crate) fn write_target(
         &self,
@@ -319,7 +319,7 @@ impl CodeSet {
                 Err(ToolOutput::err(format!("{refusal}{why}")))
             }
             Write::Protected { path, real, why } => {
-                if why != Why::Trust
+                if why.approvable()
                     && self.outside == Outside::Ask
                     && cx.approved.as_ref() == Some(&Approved::Once(real.clone()))
                 {
@@ -341,8 +341,8 @@ impl CodeSet {
     /// What a write the user would be asked about is bound to, from one resolution of its real location:
     /// `Some` only under `outside_writes: ask` with a user to ask, for a path outside every root whose location
     /// is known (named [`OUTSIDE_ROOT_MARK`]; its real directory offered as a directory grant unless that is
-    /// `/`, the home directory or an ancestor of it — [`Self::offers_root`]) or a protected path other than the
-    /// trust record (named [`PROTECTED_MARK`] and why, "allow once" only).
+    /// `/`, the home directory or an ancestor of it — [`Self::offers_root`]) or a protected path that is
+    /// [`Why::approvable`] (named [`PROTECTED_MARK`] and why, "allow once" only).
     pub(crate) fn approvable(&self, arg: &str) -> Option<ApprovalSubject> {
         if self.outside != Outside::Ask {
             return None;
@@ -355,7 +355,7 @@ impl CodeSet {
                     .map(Path::to_path_buf),
                 target: real,
             }),
-            Ok(Write::Protected { real, why, .. }) if why != Why::Trust => Some(ApprovalSubject {
+            Ok(Write::Protected { real, why, .. }) if why.approvable() => Some(ApprovalSubject {
                 detail: format!("{} {PROTECTED_MARK}: {}", real.display(), why.reason()),
                 scope: None,
                 target: real,
@@ -392,7 +392,7 @@ impl CodeSet {
         match self.write_path(arg) {
             Ok(Write::Inside(_)) => !self.auto_write,
             Ok(Write::Outside { .. }) => self.outside == Outside::Ask,
-            Ok(Write::Protected { why, .. }) => why != Why::Trust && self.outside == Outside::Ask,
+            Ok(Write::Protected { why, .. }) => why.approvable() && self.outside == Outside::Ask,
             Ok(Write::Unverifiable) | Err(_) => false,
         }
     }
@@ -543,12 +543,15 @@ pub(crate) fn grant_dir(real: &Path) -> &Path {
 }
 
 /// A protected write's refusal: `{arg} is protected: {reason} — ` and then what is left to do. The trust
-/// record has no approval path at all; another protected path needs the user's approval of this one file,
+/// record and the sessions tree have no approval path at all; another protected path needs the user's approval of this one file,
 /// which `refuse` and a run with nobody to ask cannot give — the user edits it themselves.
 fn protected_refusal(arg: &str, real: &Path, why: Why, outside: Outside) -> String {
     let rest = match (why, outside) {
         (Why::Trust, _) => "no tool may write it; the user trusts a project config by running \
                             `iota config trust` themselves"
+            .to_owned(),
+        (Why::Grants, _) => "no tool may write it; iota alone writes the sessions and the \
+                             grants they hold"
             .to_owned(),
         (_, Outside::Ask) => format!(
             "writing it needs the user's approval of this file, and this call has none for {}",

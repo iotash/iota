@@ -19,6 +19,9 @@ pub(crate) const DOT_DIR: &str = ".iota";
 /// The trust record's file name under `~/.iota` (`crate::config::trust`), here because the protected table
 /// (`protected`) names it too.
 pub(crate) const TRUST_FILE: &str = "trusted.json";
+/// The sessions root's name under `~/.iota` (`crate::session::SessionStore`): the session bundles and the
+/// project buckets, which hold the grants. Here because the protected table (`protected`) names it too.
+pub(crate) const SESSIONS_DIR: &str = "sessions";
 /// The config file stem: `~/.iota.yaml`, `./.iota.yml`, ….
 pub(crate) const CONFIG_BASE: &str = ".iota";
 /// Config file extensions in lookup order.
@@ -62,6 +65,11 @@ impl HostDirs {
     /// `<home>/.iota` (`app.Home()`).
     pub fn app_home(&self) -> Option<PathBuf> {
         self.home.as_ref().map(|h| h.join(DOT_DIR))
+    }
+
+    /// `<home>/.iota/sessions` — the session store's root ([`SESSIONS_DIR`]).
+    pub fn sessions_dir(&self) -> Option<PathBuf> {
+        self.app_home().map(|h| h.join(SESSIONS_DIR))
     }
 
     /// `<home>/.iota/images`.

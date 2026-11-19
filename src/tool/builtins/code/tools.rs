@@ -1693,6 +1693,95 @@ mod tests {
         assert_eq!(std::fs::read_to_string(hook).expect("hook"), "x");
     }
 
+    /// `~/.iota/sessions` (X-95 amended, grants.md §9 Q11) under the writers: a session bundle and a project
+    /// bucket's grants file are never asked about and never written — whatever `auto_write`, the policy, a
+    /// project root that IS the home, `write_roots:` naming the home or the sessions tree, a directory grant of
+    /// the tree, or "allow once" for exactly that file says. Refused saying iota alone writes it.
+    #[cfg(unix)]
+    #[test]
+    fn the_sessions_tree_has_no_approval_path() {
+        use super::super::{CodeSet, Outside};
+        use super::{edit_file_call, write_file_call};
+        use crate::tool::Tool;
+        use crate::tool::context::{Approved, RunCtx};
+
+        let t = tempfile::tempdir().expect("tempdir");
+        let home = std::fs::canonicalize(t.path()).expect("real").join("home");
+        let sessions = home.join(".iota/sessions");
+        let bundle = sessions.join("20261119-abc/meta.json");
+        let bucket = sessions.join("projects/-r/grants.json");
+        for f in [&bundle, &bucket] {
+            std::fs::create_dir_all(f.parent().expect("parent")).expect("dir");
+            std::fs::write(f, "{}").expect("file");
+        }
+        let elsewhere = t.path().join("project");
+        std::fs::create_dir_all(&elsewhere).expect("project");
+        let elsewhere = std::fs::canonicalize(elsewhere).expect("real");
+        for root in [elsewhere, home.clone()] {
+            for extra in [vec![], vec![home.clone()], vec![sessions.clone()]] {
+                for auto_write in [false, true] {
+                    for policy in [Outside::Ask, Outside::Unattended, Outside::Refuse] {
+                        let at = format!(
+                            "root={root:?} extra={extra:?} auto_write={auto_write} {policy:?}"
+                        );
+                        let cs = CodeSet::new(
+                            root.clone(),
+                            extra.clone(),
+                            auto_write,
+                            policy,
+                            Some(home.clone()),
+                            std::sync::Arc::default(),
+                        )
+                        .expect("set");
+                        cs.grants
+                            .grant_dir(crate::tool::grants::Level::Session, sessions.clone());
+                        let write = super::WriteFile(std::sync::Arc::clone(&cs));
+                        let edit = super::EditFile(std::sync::Arc::clone(&cs));
+                        for file in [&bundle, &bucket] {
+                            let path = file.display().to_string();
+                            let w = args(json!({"path": path, "content": "x"}));
+                            let e =
+                                args(json!({"path": path, "old_string": "{}", "new_string": "x"}));
+                            for (tool, a) in [(&write as &dyn Tool, &w), (&edit, &e)] {
+                                assert!(!tool.requires_approval(Some(a)), "{at} {path}");
+                                assert_eq!(tool.approval_subject(a), None, "{at} {path}");
+                            }
+                            for approved in [None, Some(Approved::Once(file.to_path_buf()))] {
+                                let cx = RunCtx {
+                                    approved: approved.clone(),
+                                    ..RunCtx::default()
+                                };
+                                for got in
+                                    [write_file_call(&cs, &cx, &w), edit_file_call(&cs, &cx, &e)]
+                                {
+                                    assert!(
+                                        got.is_error
+                                            && got.text.contains("is protected")
+                                            && got.text.contains("no tool may write it")
+                                            && got.text.contains("iota alone writes"),
+                                        "{at} {path} {approved:?}: {got:?}"
+                                    );
+                                }
+                            }
+                            assert_eq!(std::fs::read_to_string(file).expect("file"), "{}", "{at}");
+                        }
+                        // A new bundle cannot be created in the tree either.
+                        let new = sessions.join("new/meta.json");
+                        let got = write_file_call(
+                            &cs,
+                            &RunCtx {
+                                approved: Some(Approved::Once(new.clone())),
+                                ..RunCtx::default()
+                            },
+                            &args(json!({"path": new.display().to_string(), "content": "x"})),
+                        );
+                        assert!(got.is_error && !new.exists(), "{at}: {got:?}");
+                    }
+                }
+            }
+        }
+    }
+
     /// Who asks, per call: inside the roots `!auto_write`; outside them always under `ask` with a user,
     /// never otherwise (refused at the call); an unverifiable path never (refused at the call). The session
     /// grant of an outside write is its real directory.

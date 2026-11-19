@@ -74,8 +74,9 @@ sandbox (shell-toolset.md, Sandbox semantics), so the two cannot drift:
 | linked worktree: `<common>`, `<common>/hooks`, `<common>/config`, `<gitdir>/config.worktree` | entry, tree, tree, tree | as the three rows above |
 | each submodule gitdir `<g>` under `.git/modules` (a directory with a `HEAD`, nested ones too): `<g>`, `hooks`, `config`, `config.worktree` | as for the root | a submodule's hooks run on git commands inside it |
 | `~/.iota.yaml`, `~/.iota.yml` | tree | the user's own config, loaded without asking, takes effect next run |
-| `~/.iota` | the entry itself | so the record below cannot be moved out from under its rule |
+| `~/.iota` | the entry itself | so the two rows below cannot be moved out from under their rules |
 | `~/.iota/trusted.json` | tree | it records which project configs the user trusts |
+| `~/.iota/sessions` | tree | the session bundles and project buckets, which hold the grants: a write there grants the model anything at the next start |
 
 In a linked worktree (`git worktree add`) `<root>/.git` is a `gitdir:` file,
 and git's hooks and config are the main repository's: the table reads the
@@ -90,7 +91,8 @@ A tree entry holds the path and everything under it; an entry holds only the
 name (its contents — `.git/objects`, `~/.iota/skills` — stay writable). Each
 entry's real location is worked out per call, so a `.git/hooks` linked
 elsewhere is matched where it points. The list is the intersection of what
-Claude Code, Codex and Cursor protect, plus iota's own trust record — not
+Claude Code, Codex and Cursor protect, plus iota's own trust record and
+sessions tree — not
 Claude Code's forty-item list, not all of `.git` (Codex's choice, which
 pushes `git commit` out of the sandbox), not shell rc files.
 
@@ -113,9 +115,14 @@ A protected write is its own class (`Write::Protected`):
   approval; ask the user to make the change themselves`, with nobody to ask
   (`-m`, the SDK) `…which this non-interactive run cannot ask for; ask the
   user to make the change themselves`.
-- **The trust record is never written**: no prompt, no approval path, `…
-  no tool may write it; the user trusts a project config by running `iota
-  config trust` themselves`.
+- **The trust record and the sessions tree are never written**
+  (`Why::approvable` is false for both): no prompt, no approval path — not
+  "allow once", a directory grant or `auto_write` — `… no tool may write it;
+  the user trusts a project config by running `iota config trust`
+  themselves`, and for the sessions tree `… no tool may write it; iota alone
+  writes the sessions and the grants they hold`. `~/.iota` being an entry is
+  not enough for the latter: a run in the home directory, or `~` in
+  `write_roots:` or granted, makes a root that covers it.
 
 Reads are untouched. The table is rebuilt for every classified write
 (`CodeSet::protected_at`): a gitfile read, one `lstat` per extra root, one
@@ -180,8 +187,8 @@ project root, a `write_roots:` entry or a live directory grant:
 | INSIDE | asked unless `tools.code.auto_write` | refused unless `auto_write`, saying to set it |
 | OUTSIDE, `outside_writes: ask` | asked ALWAYS — `auto_write` does not waive it | refused, saying to list the directory in `write_roots:` |
 | OUTSIDE, `outside_writes: refuse` | refused, no prompt | refused |
-| PROTECTED (not the trust record), `ask` | asked ALWAYS, "allow once" only | refused, saying the user can make the change |
-| PROTECTED, `refuse`; the trust record | refused, no prompt | refused |
+| PROTECTED (not the trust record or the sessions tree), `ask` | asked ALWAYS, "allow once" only | refused, saying the user can make the change |
+| PROTECTED, `refuse`; the trust record; the sessions tree | refused, no prompt | refused |
 | UNVERIFIABLE | refused, no prompt | refused |
 
 - **The prompt** for an outside write names the RESOLVED real path,
