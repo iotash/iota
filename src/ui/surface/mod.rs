@@ -297,8 +297,8 @@ fn arrow(st: &mut SurfaceState, dir: i32) {
 }
 
 /// Space: switch toggle, Multi check toggle, the Custom editor's check-by-editing
-/// flow, View page-forward, a directory picker's choice (model.go:761-788, 812-820 — the Code and Text arms are
-/// identical; crossterm delivers one `Char(' ')`).
+/// flow, View page-forward, a directory picker's choice (model.go:761-788, 812-820 —
+/// the Code and Text arms are identical; crossterm delivers one `Char(' ')`).
 fn space_key(st: &mut SurfaceState) -> Option<TabbedResult> {
     let (p, ps) = st.focused();
     match p.kind() {
