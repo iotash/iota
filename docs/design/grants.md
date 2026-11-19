@@ -216,7 +216,9 @@ open `~/.ssh` and every shell rc file; `/allow ~`, typed out, still works.
 > directory browser — Enter descends, Space chooses, `./` is the directory shown — whose
 > choice is granted for this session as `/allow <dir>` grants it) and `Grants` (a
 > multi-select of every grant, each row naming its level; committing revokes the checked
-> ones from every level that holds them). The typed forms below are unchanged. What
+> ones from every level that holds them), then — only when there is one — `Static`, a
+> read-only view of the `write_roots:` and `--add-dir` roots, `write_roots:  /path` and
+> `--add-dir     /path`, which replaces the listing's `static …` lines. The typed forms below are unchanged. What
 > follows about `/revoke`, the text listing and the `/revoke: ` prefix is the history.
 
 The only door for the shell, since a sandboxed command cannot be prompted mid-run.

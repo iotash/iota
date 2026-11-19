@@ -54,6 +54,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   saying whether it is this session's or this project's; check some with
   Space and press Enter to take them back, from the session and the project
   at once. This replaces `/revoke`, which is gone, and the old text listing.
+  When the config's `write_roots:` or `--add-dir` makes other directories
+  writable, a third tab, `Static`, lists them with where each comes from;
+  they are not grants, so nothing there can be revoked.
 - **A resumed session keeps what you allowed in it.** The directories and
   tools you allow for a session — in the approval prompt or with `/allow` —
   are saved with it, so `iota resume` and a `/session` switch bring them back

@@ -83,7 +83,7 @@
 //! | `50-list-overlay.sh` | sel-float, sel-top | — (a fresh session: the banner on the first rows, unchanged byte for byte while `/` opens the list under it, `d` narrows it and it closes; over a full screen, `/` opens the list and `d` narrows it: the rows above the area unchanged byte for byte through both, the top edge coming down with the narrowed list onto it and the rows it gave back showing the conversation, the list one blank row over the composer, the gap row blank in raw bytes; closing gives the screen back) |
 //! | `51-xml-tab.sh` | xml-tab | — (a pasted `<hc>` snippet on a plain terminal — no host claims an element — is the user block byte for byte, with no tab, on screen and in the exit's write-out) |
 //! | `53-mcp-grant.sh` | grants-refactor, X-112 | — (a stdio MCP server's tool called by the model: the dialog's four items, Esc denying it, `/allow srv:echo` saying the grant and the bare `/allow`'s Grants tab listing it, the same call then running without a dialog) |
-//! | `54-allow-panel.sh` | allow-panel, X-111 | — (the bare `/allow`: the `Add` tab a directory browser listing `./`, `../` and no file, its hint naming Enter and Space; Enter on `../` descends, Space chooses a sibling directory and the transcript says it is writable, `/status` counting it; the `Grants` tab lists it, Space and Enter revoke it, `/status`'s Grants row gone) |
+//! | `54-allow-panel.sh` | allow-panel, X-111 | — (the bare `/allow`: the `Add` tab a directory browser listing `./`, `../` and no file, its hint naming Enter and Space; Enter on `../` descends, Space chooses a sibling directory and the transcript says it is writable, `/status` counting it; the `Grants` tab lists it, Space and Enter revoke it, `/status`'s Grants row gone; with a `write_roots:` entry the `Static` tab says what it is, lists the root as `write_roots:  <path>`, and Enter there closes it changing nothing) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -758,8 +758,9 @@ fn tmux_mcp_grant() {
     run_scenario("53-mcp-grant.sh");
 }
 
-/// allow-panel (X-111): the bare `/allow`'s two tabs — a directory granted from `Add` by Space after Enter
-/// descended, then revoked from `Grants`, `/status` following both.
+/// allow-panel (X-111): the bare `/allow`'s tabs — a directory granted from `Add` by Space after Enter
+/// descended, then revoked from `Grants`, `/status` following both; the read-only `Static` tab listing the
+/// config's `write_roots:` entry.
 #[test]
 fn tmux_allow_panel() {
     run_scenario("54-allow-panel.sh");

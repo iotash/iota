@@ -11,10 +11,11 @@
 //! of stored, and the grant is keyed by the server's identity (its configured name, or a `--mcp` server's whole flag value),
 //! never the wire segment.
 //!
-//! The BARE `/allow` opens a two-tab surface, the `/file` way — the focused tab IS the verb. `Add` is a
+//! The BARE `/allow` opens a tabbed surface, the `/file` way — the focused tab IS the verb. `Add` is a
 //! directory browser ([`crate::ui::facade::Pick::Dir`]: Enter descends, Space chooses, `./` is the directory shown) whose choice
 //! is granted for this session exactly as `/allow <dir>` grants it; `Grants` is a multi-select of every grant
-//! in effect, by level, and committing it takes each checked grant back from every level that holds it. This
+//! in effect, by level, and committing it takes each checked grant back from every level that holds it; `Static`,
+//! shown only when there is one, is a read-only view of the roots that are not grants (`write_roots:`, `--add-dir`). This
 //! file parses and words; every change is kept by the grants service, [`Door::apply`] (`repl::grants`), as the
 //! dialog's and `/save`'s are.
 //!
@@ -37,6 +38,10 @@ const EXPECTED: &str = "expected a directory (starting with /, ~ or .) or <serve
 
 /// The `Grants` tab's prompt when nothing is granted.
 const NONE: &str = "No grants. Add makes a directory writable for this session; /allow project <dir> for this project.";
+
+/// The `Static` tab's prompt: what its rows are, and why none can be taken back here.
+const STATIC: &str =
+    "Writable from the config and the command line: not grants, so none can be revoked here.";
 
 /// A change made: the notice line, and — the session level changed but its bundle's meta could not be written —
 /// why, said after it.
@@ -75,7 +80,7 @@ pub(crate) async fn cmd_allow(repl: &Repl, arg: &str) {
 }
 
 /// The bare `/allow`: `Add` (a directory browser opened on the project root) and `Grants` (every grant in
-/// effect, checked rows meaning "take back"). A cancel, or a commit with nothing chosen or checked, changes
+/// effect, checked rows meaning "take back"), then `Static` when there is a static root ([`static_tab`]). A cancel, or a commit with nothing chosen or checked, changes
 /// nothing.
 async fn panel(repl: &Repl) {
     let door = repl.door();
@@ -86,11 +91,13 @@ async fn panel(repl: &Repl) {
     if held.is_empty() {
         grants_tab = grants_tab.with_prompt(NONE);
     }
+    let mut panels = vec![
+        Panel::dir_browser("Add", footing.project.root.clone()).with_search(true),
+        grants_tab,
+    ];
+    panels.extend(static_tab(footing));
     let spec = TabbedSpec {
-        panels: vec![
-            Panel::dir_browser("Add", footing.project.root.clone()).with_search(true),
-            grants_tab,
-        ],
+        panels,
         ..TabbedSpec::default()
     };
     // A facade failure is a cancel, as everywhere: a closed facade ends the loop at the next read.
@@ -124,8 +131,22 @@ async fn panel(repl: &Repl) {
                 }
             }
         }
+        // `Static` is read-only: Enter there commits the surface, and nothing is done.
         _ => {}
     }
+}
+
+/// The `Static` tab: a read-only view, one row per writable root that is not a grant, `write_roots:` first,
+/// each labelled with its source (the labels padded to one width). `None` when there is no such root: the
+/// surface then keeps its two tabs.
+fn static_tab(footing: &Footing) -> Option<Panel> {
+    let w = footing.write_roots.iter().map(|r| ("write_roots:", r));
+    let a = footing.added_dirs.iter().map(|r| ("--add-dir", r));
+    let rows: Vec<String> = w
+        .chain(a)
+        .map(|(from, r)| format!("{from:<12}  {}", r.display()))
+        .collect();
+    (!rows.is_empty()).then(|| Panel::view("Static", rows).with_prompt(STATIC))
 }
 
 /// The user's home directory: `~` and the protected table's home rows.
@@ -517,6 +538,7 @@ mod tests {
     use crate::repl::grants::{Door, ProjectFile};
     use crate::session::SessionStore;
     use crate::tool::grants::{McpTool, ServerId};
+    use crate::ui::facade::PanelBody;
 
     /// A temp dir holding `proj/` (the project, a repository) and `out/` beside it; their real locations.
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -571,6 +593,15 @@ mod tests {
         /// `/allow` in a run with no MCP server.
         fn allow(&self, arg: &str) -> Result<String, String> {
             super::allow(&self.door, &self.footing, None, None, arg).map(|d| d.line)
+        }
+
+        /// The `Static` tab's title, prompt and rows; `None` when it is not shown.
+        fn fixed(&self) -> Option<(String, String, Vec<String>)> {
+            let p = super::static_tab(&self.footing)?;
+            let PanelBody::View(v) = p.body else {
+                panic!("the Static tab is not a view");
+            };
+            Some((p.title, p.prompt, v.lines))
         }
 
         /// The `Grants` tab's rows now.
@@ -799,5 +830,30 @@ mod tests {
             std::slice::from_ref(&flag)
         );
         assert!(c.revoke(&[]).is_empty(), "nothing checked revokes nothing");
+    }
+
+    /// The `Static` tab lists `write_roots:` then `--add-dir`, each with its source, the labels aligned; with
+    /// neither, it has no rows and the surface keeps its two tabs.
+    #[test]
+    fn the_static_tab_lists_the_roots_by_source_and_is_absent_without_them() {
+        let (t, root, out) = fixture();
+        let add = PathBuf::from("/tmp/out");
+        let c = Chat::new(
+            &t,
+            &root,
+            std::slice::from_ref(&out),
+            std::slice::from_ref(&add),
+        );
+        let (title, prompt, rows) = c.fixed().expect("the tab is shown");
+        assert_eq!(title, "Static");
+        assert_eq!(prompt, super::STATIC);
+        assert_eq!(
+            rows,
+            [
+                format!("write_roots:  {}", out.display()),
+                "--add-dir     /tmp/out".to_owned(),
+            ]
+        );
+        assert!(Chat::new(&t, &root, &[], &[]).fixed().is_none());
     }
 }
