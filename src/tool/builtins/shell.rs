@@ -33,6 +33,7 @@ use crate::app::HostDirs;
 use crate::provider::model::{JsonObject, ToolDef};
 use crate::text::go_duration;
 use crate::tool::context::RunCtx;
+use crate::tool::grants::Grants;
 use crate::tool::{Artifact, ArtifactKind, Tool, ToolEnv, ToolOutput, ToolResult, post_artifact};
 use serde::Deserialize;
 use serde_json::Value;
@@ -111,8 +112,12 @@ pub(crate) struct ShellTool {
     /// defaults to `root`).
     cwd: PathBuf,
     sandboxed: bool,
-    /// `ToolEnv::write_roots`: writable inside the sandbox beside the root and the temp/cache dirs.
+    /// `ToolEnv::write_roots`, the STATIC roots: writable inside the sandbox beside the root and the temp/cache
+    /// dirs. The live directory grants join them at every call ([`Self::writable`]).
     write_roots: Vec<PathBuf>,
+    /// The run's grant store (`ToolEnv::grants`): its live directory grants are sandbox roots too, read per
+    /// call, so a directory the user grants is writable by the next command as it is by the code writers.
+    grants: Arc<Grants>,
     dirs: HostDirs,
     /// The running binary (`HostDirs::exe`), what a command's first word is compared against to decide
     /// the iota exception; `None` (tests, an OS that cannot say) means no call ever leaves the sandbox.
@@ -166,6 +171,7 @@ pub fn new_shell_set(
             .unwrap_or_default(),
         sandboxed,
         write_roots: env.write_roots.clone(),
+        grants: Arc::clone(&env.grants),
         exe: env.dirs.exe.clone(),
         dirs: env.dirs.clone(),
     })])
@@ -223,7 +229,7 @@ impl Tool for ShellTool {
             let sandbox = (self.sandboxed && !self.leaves_sandbox(&command)).then(|| Sandbox {
                 root: self.root.clone(),
                 network: self.shell_cfg.network,
-                write: self.write_roots.clone(),
+                write: self.writable(),
                 temp_dir: self.dirs.temp.clone(),
                 cache_dir: self.dirs.cache.clone(),
                 home: self.dirs.home.clone(),
@@ -317,6 +323,19 @@ impl Tool for ShellTool {
 }
 
 impl ShellTool {
+    /// The sandbox's extra writable roots for one call: the static `write_roots:`, then the live directory
+    /// grants read now ([`Grants::live_dirs`]) — a stale grant is none of them. The protected table's extra
+    /// roots are the same list (`exec::protected_paths`), so a granted repository keeps its git rows.
+    fn writable(&self) -> Vec<PathBuf> {
+        let mut roots = self.write_roots.clone();
+        for d in self.grants.live_dirs() {
+            if !roots.contains(&d) {
+                roots.push(d);
+            }
+        }
+        roots
+    }
+
     /// Whether `command` is iota itself with arguments (`crate::shell::selfcall`): the one call a sandboxed
     /// set spawns without the sandbox. Meaningless — and never asked — for an unsandboxed set.
     fn leaves_sandbox(&self, command: &str) -> bool {

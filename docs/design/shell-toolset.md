@@ -41,6 +41,15 @@ names them (`confined to the project root, the extra write roots (…) and
 temp/cache directories`); with none the line is unchanged. Network is blocked unless
 `network: true`.
 
+Those are the STATIC roots. The run's live directory grants (docs/design/grants.md
+§3.3, `Grants::live_dirs`) join them at every call: the `Sandbox` value is built per
+call, its `write` the static roots then the grants, so a directory granted in the
+code writers' dialog is writable by the next command, and the protected table's
+extra roots are the same list (a granted repository keeps its git rows). A stale
+grant — the directory since replaced by a symlink, `physical(D) != D` — is no
+root. The description's sandbox line names the static roots only; the harness's
+`write roots:` line lists both, re-composed at the next turn when the grants change.
+
 What a write outside those roots does depends on whether the sandbox is on:
 
 - **Sandbox on**: the command runs without asking (iota's own invocation

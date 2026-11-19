@@ -478,10 +478,11 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         vec![Message::system(system)]
     };
     let persisted = if resumed { history.len() } else { 0 };
-    // The harness, now that the hosts it names in `<environment>` are known; the day it was composed on is
-    // what the first send of the next one compares against.
+    // The harness, now that the hosts it names in `<environment>` are known; the day and the live grants it
+    // was composed with are what each turn compares against (`refresh_harness`).
     let harness_day = harness.today();
-    let harness_text = harness.compose(&harness_day, pres.environment());
+    let harness_roots = grants.live_dirs();
+    let harness_text = harness.compose(&harness_day, pres.environment(), &harness_roots);
     let mut budget = ContextBudget::new(params.context_window.value);
     if bot_state.is_some() {
         // A bot compacts with a larger reserve: the flush turn, and maybe a user turn, come first (§3.6.1).
@@ -652,6 +653,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             compact_declined: 0,
             harness: harness_text,
             harness_day,
+            harness_roots,
             harness_inputs: harness,
             overlay,
             agent,
@@ -996,7 +998,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // title, the host's background answer (up to a second under cmux) — is already the turn's. The host
         // hears it and the status row's whole-turn layer rises with it (`host` module doc).
         repl.handles.pres.set_state(State::Busy);
-        roll_day(&mut repl).await;
+        refresh_harness(&mut repl).await;
 
         // The auto-compaction offer runs on the message about to be sent, BEFORE it joins
         // the history: what it asks about is the projected occupancy, and compacting after
@@ -1352,7 +1354,7 @@ impl Repl {
         };
         // The fourth refresh moment: an edit from outside this process, picked up before the send. The other
         // three are startup (`run`), a successful compaction and the harness's day-change re-composition
-        // (`roll_day`) — the flush machine's `RefreshMemory`, which calls `bot.memory.reload()`.
+        // (`refresh_harness`) — the flush machine's `RefreshMemory`, which calls `bot.memory.reload()`.
         if bot.memory.refresh() {
             self.handles.tr.notice("MEMORY.md reloaded");
             if let Some(warn) = bot.memory.warning() {
@@ -1466,20 +1468,27 @@ async fn after_bot_turn(
     bot_perform(repl, actions, held, "").await;
 }
 
-/// Before every send (bot-mode.md §2.5): the harness's `date:` is today's. On the first send of a new day the
-/// harness is re-composed — the system segment changes, so the prompt cache misses at most once a day — and a
-/// bot's memory copy is refreshed in the same breath (§3.4's third moment), so the two changes cost one miss,
-/// not two. The same day changes nothing.
-async fn roll_day(repl: &mut Repl) {
+/// Before every turn: the harness says today's `date:` and the write roots in force now. On the first turn of a
+/// new day (bot-mode.md §2.5), or the first after the live directory grants changed — a directory granted in the
+/// last turn's dialog, a session switch, a grant gone stale — the harness is re-composed: the system segment
+/// changes, so the prompt cache misses once per change, never per turn. A bot's memory copy is refreshed in the
+/// same breath as a new day (§3.4's third moment), so the two changes cost one miss, not two.
+async fn refresh_harness(repl: &mut Repl) {
     let today = repl.conv.harness_inputs.today();
-    if today == repl.conv.harness_day {
+    let roots = repl.handles.grants.live_dirs();
+    let new_day = today != repl.conv.harness_day;
+    if !new_day && roots == repl.conv.harness_roots {
         return;
     }
-    repl.conv.harness = repl
-        .conv
-        .harness_inputs
-        .compose(&today, repl.handles.pres.environment());
+    repl.conv.harness =
+        repl.conv
+            .harness_inputs
+            .compose(&today, repl.handles.pres.environment(), &roots);
     repl.conv.harness_day = today;
+    repl.conv.harness_roots = roots;
+    if !new_day {
+        return;
+    }
     let Some(bot) = repl.conv.bot.as_mut() else {
         return;
     };

@@ -38,9 +38,10 @@ pub struct Environment {
     pub exe: Option<PathBuf>,
     /// The config files this run reads.
     pub configs: ConfigFiles,
-    /// The top-level `write_roots:` as the tools hold them (`ToolEnv::write_roots`, resolved once at
-    /// assembly): the roots beyond the project root the code tools reach and a sandboxed shell writes. Empty
-    /// prints no line, so a config without the key keeps the block's bytes.
+    /// The roots beyond the project root the code tools reach and a sandboxed shell writes: the top-level
+    /// `write_roots:` as the tools hold them (`ToolEnv::write_roots`, resolved once at assembly), then — in a
+    /// composition through [`HarnessInputs::compose`] — the live directory grants. Empty prints no line, so a
+    /// config without the key and a run without a grant keep the block's bytes.
     pub write_roots: Vec<PathBuf>,
     /// What the detected hosts tell the model (`host::Presenter::environment`): `(key, value)` pairs, one
     /// line each after the run's own facts — `host: herdr`, `herdr pane: w1:p3`. Empty in a plain terminal.
@@ -81,7 +82,8 @@ impl Default for ConfigFiles {
 /// (docs/design/bot-mode.md §2.5).
 #[derive(Clone)]
 pub struct HarnessInputs {
-    /// The run's own facts. `date` and `host` are overwritten by every [`Self::compose`].
+    /// The run's own facts. `date` and `host` are overwritten by every [`Self::compose`], and the live
+    /// grants are appended to `write_roots`.
     pub env: Environment,
     /// The enabled toolsets (`cmd::assemble::enabled_toolsets`).
     pub toolsets: Vec<String>,
@@ -115,13 +117,20 @@ impl HarnessInputs {
         (self.clock)()
     }
 
-    /// The harness text for `day`, with the hosts' `host` facts: `""` for an agent without tools.
-    pub fn compose(&self, day: &str, host: Vec<(String, String)>) -> String {
-        let env = Environment {
+    /// The harness text for `day`, with the hosts' `host` facts and the live directory grants `granted`
+    /// (`Grants::live_dirs`, read by the caller) listed after the static write roots, each root once: `""` for
+    /// an agent without tools.
+    pub fn compose(&self, day: &str, host: Vec<(String, String)>, granted: &[PathBuf]) -> String {
+        let mut env = Environment {
             date: day.to_owned(),
             host,
             ..self.env.clone()
         };
+        for d in granted {
+            if !env.write_roots.contains(d) {
+                env.write_roots.push(d.clone());
+            }
+        }
         compose(&env, &self.toolsets)
     }
 }
@@ -231,7 +240,7 @@ fn environment_block(env: &Environment, out: &mut String) {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{ConfigFiles, Environment, HARNESS_CAP, compose, platform, today};
+    use super::{ConfigFiles, Environment, HARNESS_CAP, HarnessInputs, compose, platform, today};
 
     /// A Homebrew install on a Mac: the paths are as long as they get for most users, which is what makes
     /// the cap assertion below worth having.
@@ -403,6 +412,46 @@ mod tests {
         );
         let text = compose(&env(), &sets(&["code"]));
         assert!(!text.contains("write roots"), "{text}");
+    }
+
+    /// The live directory grants join the static roots on the one `write roots:` line, after them and each
+    /// root once; a grant alone makes the line, and none leaves the bytes of a run without one.
+    #[test]
+    fn write_roots_line_lists_the_live_grants() {
+        let inputs = HarnessInputs {
+            env: Environment {
+                write_roots: vec![PathBuf::from("/Users/someone/scratch")],
+                ..env()
+            },
+            toolsets: sets(&["code"]),
+            ..HarnessInputs::default()
+        };
+        let granted = [
+            PathBuf::from("/Users/someone/scratch"),
+            PathBuf::from("/data/granted"),
+        ];
+        let text = inputs.compose("2026-11-19", Vec::new(), &granted);
+        assert!(
+            text.contains("\nwrite roots: /Users/someone/scratch, /data/granted\n"),
+            "{text}"
+        );
+        let text = inputs.compose("2026-11-19", Vec::new(), &[]);
+        assert!(
+            text.contains("\nwrite roots: /Users/someone/scratch\n"),
+            "{text}"
+        );
+
+        let bare = HarnessInputs {
+            env: env(),
+            ..inputs
+        };
+        let text = bare.compose("2026-11-19", Vec::new(), &granted[1..]);
+        assert!(text.contains("\nwrite roots: /data/granted\n"), "{text}");
+        assert!(
+            !bare
+                .compose("2026-11-19", Vec::new(), &[])
+                .contains("write roots"),
+        );
     }
 
     /// Every environment fact is one line; a missing config file is spelled `(absent)`, a skipped project

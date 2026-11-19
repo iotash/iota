@@ -299,7 +299,10 @@ async fn model_system_tab_carries_the_harness() {
         clock: Arc::new(|| "2026-09-30".to_owned()),
         ..iota::agents::harness::HarnessInputs::default()
     };
-    let lines = harness.compose("2026-09-30", Vec::new()).lines().count();
+    let lines = harness
+        .compose("2026-09-30", Vec::new(), &[])
+        .lines()
+        .count();
     let f = Fixture::new(vec![
         input("/model"),
         Reply::Tabbed(TabbedResult {

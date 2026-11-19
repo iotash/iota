@@ -57,11 +57,14 @@ pub(crate) struct Conversation {
     /// said "Not now" (0 = never asked). Cleared by any successful compaction.
     pub(crate) compact_declined: u64,
     /// The built-in harness prompt ahead of every send (`""` for an agent without tools; brain page
-    /// `harness-prompt`). Composed at startup and again on the first send of a new day (`harness_day`);
-    /// never part of `history`.
+    /// `harness-prompt`). Composed at startup and again on the first send of a new day (`harness_day`) or
+    /// after the live grants changed (`harness_roots`); never part of `history`.
     pub(crate) harness: String,
     /// The day `harness` was composed on (`YYYY-MM-DD`): its `date:` line (docs/design/bot-mode.md §2.5).
     pub(crate) harness_day: String,
+    /// The live directory grants `harness` was composed with (`Grants::live_dirs`): its `write roots:` line
+    /// lists them after the static roots, and a turn that finds them changed re-composes it.
+    pub(crate) harness_roots: Vec<std::path::PathBuf>,
     /// What `harness` is composed from, the clock included.
     pub(crate) harness_inputs: crate::agents::harness::HarnessInputs,
     /// The agent-mode overlay woven into every send (`None` outside agent mode).

@@ -33,6 +33,7 @@ use iota::tool::builtins::shell::{
     sandbox_desc,
 };
 use iota::tool::context::RunCtx;
+use iota::tool::grants::{GrantSet, Grants, Level};
 use iota::tool::sets::{RawNode, SetError, ToolsConfig};
 use iota::tool::{Dispatcher, Tool, ToolEnv};
 use pretty_assertions::assert_eq;
@@ -1269,6 +1270,140 @@ async fn a_write_root_that_is_a_repository_keeps_its_hooks_and_config() {
         fs::read_to_string(outside.join("f.txt")).expect("f"),
         "ok\n"
     );
+}
+
+/// A sandboxed `shell` assembled ONCE over a temp project whose store is the returned one, and `out`: a real
+/// directory beside the project, under the target dir (`/tmp` and the system temp dir are writable in the
+/// sandbox whatever is granted, so a write there would prove nothing). `None`: no sandbox here to test.
+async fn granted_shell(
+    test: &str,
+) -> Option<(TempDir, TempDir, PathBuf, Arc<Grants>, Arc<dyn Tool>)> {
+    let (dir, env, root) = shell_env();
+    let grants = Arc::new(Grants::default());
+    let env = ToolEnv {
+        grants: Arc::clone(&grants),
+        ..env
+    };
+    let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    fs::create_dir_all(&base).expect("target tmp dir");
+    let out_dir = tempfile::tempdir_in(&base).expect("out");
+    let out = fs::canonicalize(out_dir.path()).expect("real out");
+    let sb = Sandbox {
+        root: root.clone(),
+        network: false,
+        write: Vec::new(),
+        temp_dir: env.dirs.temp.clone(),
+        cache_dir: env.dirs.cache.clone(),
+        home: env.dirs.home.clone(),
+    };
+    if skip_unless_sandboxed(test, &sb, &root).await {
+        return None;
+    }
+    let shell = Arc::clone(&new_shell_set(&env, None).expect("shell set")[0]);
+    Some((dir, out_dir, out, grants, shell))
+}
+
+/// A directory granted while the run goes on is a sandbox root from the very next call of the shell tool that
+/// was assembled before it (DIVERGENCES X-91 amended): "allow this directory" means the same to a command as to
+/// `write_file`.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_granted_directory_is_writable_in_the_sandbox_from_the_next_call() {
+    let Some((_dir, _out_dir, out, grants, shell)) =
+        granted_shell("a_granted_directory_is_writable_in_the_sandbox_from_the_next_call").await
+    else {
+        return;
+    };
+    let write = |name: &str| json!({"command": format!("echo ok > {}/{name}", shell_path(&out))});
+    let (text, is_err) = call(&shell, write("before.txt")).await;
+    assert!(is_err, "nothing granted yet: {text}");
+    assert!(!out.join("before.txt").exists());
+
+    assert!(grants.grant_dir(Level::Session, out.clone()));
+    fs::create_dir(out.join("sub")).expect("sub");
+    for name in ["after.txt", "sub/deeper.txt"] {
+        let (text, is_err) = call(&shell, write(name)).await;
+        assert!(!is_err, "{name}: {text}");
+        assert_eq!(fs::read_to_string(out.join(name)).expect(name), "ok\n");
+    }
+
+    grants.replace_session(GrantSet::default());
+    let (text, is_err) = call(&shell, write("gone.txt")).await;
+    assert!(is_err, "the grant is gone, so is the root: {text}");
+    assert!(!out.join("gone.txt").exists());
+}
+
+/// A grant whose directory was replaced by a symlink is stale (`physical(D) != D`) and opens nothing: the
+/// sandbox would otherwise bind through the link (bwrap) or add its canonical form (Seatbelt), and write where
+/// the code jail refuses. The directory coming back makes the grant live again.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_stale_grant_is_not_a_sandbox_root() {
+    let Some((_dir, _out_dir, out, grants, shell)) =
+        granted_shell("a_stale_grant_is_not_a_sandbox_root").await
+    else {
+        return;
+    };
+    let granted = out.join("granted");
+    let elsewhere = out.join("elsewhere");
+    let moved = out.join("moved");
+    fs::create_dir(&granted).expect("granted");
+    fs::create_dir(&elsewhere).expect("elsewhere");
+    assert!(grants.grant_dir(Level::Session, granted.clone()));
+    let write = || json!({"command": format!("echo ok > {}/f.txt", shell_path(&granted))});
+    let (text, is_err) = call(&shell, write()).await;
+    assert!(!is_err, "a live grant: {text}");
+
+    fs::rename(&granted, &moved).expect("move the directory away");
+    std::os::unix::fs::symlink(&elsewhere, &granted).expect("a link in its place");
+    assert!(grants.live_dirs().is_empty(), "the grant is stale");
+    let (text, is_err) = call(&shell, write()).await;
+    assert!(is_err, "a stale grant opened the link's target: {text}");
+    assert!(!elsewhere.join("f.txt").exists());
+
+    fs::remove_file(&granted).expect("drop the link");
+    fs::rename(&moved, &granted).expect("the directory comes back");
+    fs::remove_file(granted.join("f.txt")).expect("reset");
+    let (text, is_err) = call(&shell, write()).await;
+    assert!(!is_err, "live again: {text}");
+}
+
+/// A granted directory that is a repository gets the git rows a `write_roots:` entry gets: a sandboxed command
+/// writes files there, but not the hooks git would run in it nor the config that points git at a program.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_granted_repository_keeps_its_hooks_and_config() {
+    let Some((_dir, _out_dir, out, grants, shell)) =
+        granted_shell("a_granted_repository_keeps_its_hooks_and_config").await
+    else {
+        return;
+    };
+    let st = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&out)
+        .output()
+        .expect("git init");
+    assert!(st.status.success(), "{st:?}");
+    fs::create_dir_all(out.join(".git/hooks")).expect("hooks");
+    let config = fs::read(out.join(".git/config")).expect("config");
+    assert!(grants.grant_dir(Level::Session, out.clone()));
+    let repo = shell_path(&out);
+    for command in [
+        format!("echo x > {repo}/.git/hooks/pre-commit"),
+        format!("echo x >> {repo}/.git/config"),
+    ] {
+        let (text, is_err) = call(&shell, json!({ "command": command })).await;
+        assert!(is_err, "{command}: {text}");
+    }
+    assert!(!out.join(".git/hooks/pre-commit").exists(), "a hook landed");
+    assert_eq!(fs::read(out.join(".git/config")).expect("config"), config);
+    let (text, is_err) = call(
+        &shell,
+        json!({"command": format!("echo ok > {repo}/f.txt")}),
+    )
+    .await;
+    assert!(!is_err, "an ordinary write failed: {text}");
+    assert_eq!(fs::read_to_string(out.join("f.txt")).expect("f"), "ok\n");
 }
 
 /// The writers are not the exception (DIVERGENCES X-44, X-95): `iota config trust|untrust|init` and

@@ -27,6 +27,13 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   are asked, as in the project. Before, the grant covered one tool in that exact
   directory. The prompt never offers `/`, your home directory or a directory
   above it.
+- **A directory you make writable is writable by sandboxed commands too.**
+  After `Allow, and make <dir> writable for this session`, a `shell` command
+  in the sandbox can write under that directory from its next call, as
+  `edit_file` and `write_file` can, and the model is told about it in the
+  environment's `write roots:` line from the next turn. A repository's
+  `.git/hooks` and `.git/config` stay read-only there, and a granted directory
+  later replaced by a symlink opens nothing.
 
 ### Fixed
 

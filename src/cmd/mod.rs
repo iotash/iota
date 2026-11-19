@@ -794,7 +794,11 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     let opts = OnceOptions {
         message,
         system: settings.system,
-        harness: harness.compose(&harness.today(), pres.environment()),
+        harness: harness.compose(
+            &harness.today(),
+            pres.environment(),
+            &tool_env.grants.live_dirs(),
+        ),
         agent,
         max_turns: settings.max_turns,
         format,
