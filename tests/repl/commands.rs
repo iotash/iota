@@ -3434,9 +3434,9 @@ async fn allow_makes_a_directory_writable_and_says_where_it_really_is() {
     );
 }
 
-/// What is not a directory is refused with the reason, and so is a form this build does not take yet: the
-/// refusal names only what `/allow` accepts. The project root is already writable and says so. Nothing is
-/// granted.
+/// What is not a directory is refused with the reason; what is neither a directory nor `<server>:<tool>` is
+/// refused naming both, and a tool of a run with no MCP server at all names the server it cannot find. The
+/// project root is already writable and says so. Nothing is granted.
 #[tokio::test]
 async fn allow_refuses_what_is_not_a_directory() {
     let (_t, root, _out) = allow_fixture();
@@ -3444,6 +3444,7 @@ async fn allow_refuses_what_is_not_a_directory() {
         input("/allow ./file.txt"),
         input("/allow ./missing"),
         input("/allow github:search_issues"),
+        input("/allow github"),
         input("/allow project ./file.txt"),
         input("/allow ."),
         Reply::Interrupted,
@@ -3463,7 +3464,8 @@ async fn allow_refuses_what_is_not_a_directory() {
         [
             "/allow: ./file.txt is not a directory".to_owned(),
             "/allow: ./missing is not a directory".to_owned(),
-            "/allow: expected a directory (starting with /, ~ or .)".to_owned(),
+            "/allow: no MCP server named \"github\" is connected".to_owned(),
+            "/allow: expected a directory (starting with /, ~ or .) or <server>:<tool>".to_owned(),
             "/allow: ./file.txt is not a directory".to_owned(),
             format!(
                 "/allow: {} is already writable (the project root)",
@@ -3580,6 +3582,208 @@ async fn allow_project_writes_the_bucket_file() {
     assert!(shown.contains(&want), "{want:?} missing:\n{shown:#?}");
 }
 
+/// [`SH_SERVER`] listing two tools, `echo` and `ping`.
+#[cfg(unix)]
+fn two_tool_server() -> String {
+    SH_SERVER.replace(
+        r#"{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}"#,
+        r#"{"name":"echo","description":"says pong","inputSchema":{"type":"object"}},{"name":"ping","description":"pings","inputSchema":{"type":"object"}}"#,
+    )
+}
+
+/// A manager over `configs`, connected; the hooks a chat holds it by.
+#[cfg(unix)]
+async fn connected_mcp(
+    configs: Vec<iota::mcp::config::ServerConfig>,
+) -> (Arc<iota::mcp::Manager>, McpHooks) {
+    let manager = iota::mcp::Manager::new(
+        configs,
+        iota::mcp::ManagerOptions::new(reqwest::Client::new(), iota::app::env::Env::default()),
+    );
+    manager.connect_all(&CancellationToken::new()).await;
+    let snapshot = Arc::clone(&manager);
+    let hooks = McpHooks {
+        servers: Some(Arc::new(move || snapshot.servers())),
+        events: None,
+        manager: Some(Arc::clone(&manager)),
+    };
+    (manager, hooks)
+}
+
+/// An `mcp_servers:` entry running `sh -c <script>`.
+#[cfg(unix)]
+fn sh_entry(name: &str, script: &str, auto_run: bool) -> iota::mcp::config::ServerConfig {
+    iota::mcp::config::ServerConfig {
+        name: name.to_owned(),
+        command: "sh".to_owned(),
+        args: vec!["-c".to_owned(), script.to_owned()],
+        auto_run,
+        ..iota::mcp::config::ServerConfig::default()
+    }
+}
+
+/// `/allow gh:*` grants every tool of the server by its configured name — the tools it lists, and one it
+/// starts exposing later — so a call of any of them is no longer gated; a tool it covers is then refused as
+/// already allowed. `project` writes the wildcard to the project's file; the listing names both levels; and
+/// `/revoke gh:*` takes it back from both.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn allow_server_star_covers_every_tool() {
+    use iota::tool::approval::{Gate, gate};
+    use iota::tool::grants::{Level, McpTool, ServerId, ToolKey};
+
+    let (_t, root, _out) = allow_fixture();
+    let (manager, hooks) = connected_mcp(vec![sh_entry("gh", &two_tool_server(), false)]).await;
+    let f = Fixture::new(vec![
+        input("/allow gh:*"),
+        input("/allow gh:echo"),
+        input("/allow project gh:*"),
+        input("/allow"),
+        Reply::Interrupted,
+    ]);
+    let grants = Arc::new(iota::tool::grants::Grants::default());
+    let mut params = allow_params(&f, &root, &grants);
+    params.mcp = hooks;
+    iota::repl::run(params).await.expect("clean exit");
+
+    let any = ToolKey::Mcp {
+        server: ServerId::Config("gh".to_owned()),
+        tool: McpTool::Any,
+    };
+    assert_eq!(
+        grants.snapshot(Level::Session).tools,
+        std::slice::from_ref(&any)
+    );
+    assert_eq!(
+        grants.snapshot(Level::Project).tools,
+        std::slice::from_ref(&any)
+    );
+    let args = serde_json::Map::new();
+    for wire in ["mcp__gh__echo", "mcp__gh__ping"] {
+        assert!(
+            manager.requires_approval(wire, None),
+            "{wire}: the config still gates it"
+        );
+        assert_eq!(gate(&*manager, &grants, wire, &args), Gate::Run, "{wire}");
+    }
+    let later = ToolKey::Mcp {
+        server: ServerId::Config("gh".to_owned()),
+        tool: McpTool::Named("added_next_month".to_owned()),
+    };
+    assert!(
+        grants.allows(&later),
+        "the wildcard covers a tool exposed later"
+    );
+    let file: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(f.store.grants_path(&root)).expect("the bucket file"),
+    )
+    .expect("json");
+    assert_eq!(
+        file["roots"][root.to_str().expect("utf-8")],
+        serde_json::json!({"tools": [{"server": "gh", "tool": "*"}]})
+    );
+    let shown = printed(&f.ui);
+    for want in [
+        "✓ every tool of gh runs without asking in this session".to_owned(),
+        "/allow: gh:echo already runs without asking (this session)".to_owned(),
+        format!(
+            "✓ every tool of gh runs without asking in this project ({})",
+            root.display()
+        ),
+        "  this session   gh:*".to_owned(),
+        "  this project   gh:*".to_owned(),
+    ] {
+        assert!(shown.contains(&want), "{want:?} missing:\n{shown:#?}");
+    }
+
+    // A second chat in the project, which loads the file as every start does: `/revoke` takes the wildcard back.
+    let g = Fixture::new(vec![input("/revoke gh:*"), Reply::Interrupted]);
+    let fresh = Arc::new(iota::tool::grants::Grants::default());
+    fresh.replace_project(f.store.project_grants(&root).expect("read"));
+    assert!(fresh.allows(&later));
+    let mut params = allow_params(&g, &root, &fresh);
+    params.session.store = f.store.clone();
+    iota::repl::run(params).await.expect("clean exit");
+    assert!(!fresh.allows(&later));
+    assert!(f.store.project_grants(&root).expect("read").is_empty());
+    assert!(
+        printed(&g.ui).contains(&"✓ revoked gh:* (this project)".to_owned()),
+        "{:#?}",
+        printed(&g.ui)
+    );
+    manager.close().await;
+}
+
+/// `/allow <server>:<tool>` resolves against what is CONNECTED now, so a typo is refused instead of stored:
+/// a server nobody configured, one that failed to start, a tool the server does not list, a server whose
+/// tools already run (`auto_run`), and a name two `--mcp` servers share — which identifies neither.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn allow_refuses_a_server_that_is_not_connected() {
+    let (t, root, _out) = allow_fixture();
+    let script = t.path().join("server.sh");
+    std::fs::write(&script, SH_SERVER).expect("script");
+    let flag = |copy: &str| {
+        let path = t.path().join(copy);
+        std::fs::copy(&script, &path).expect("copy");
+        iota::mcp::config::parse_mcp_flag(&format!("sh {}", path.display())).expect("flag")
+    };
+    let (manager, hooks) = connected_mcp(vec![
+        sh_entry("gh", SH_SERVER, false),
+        sh_entry("auto", SH_SERVER, true),
+        iota::mcp::config::ServerConfig {
+            name: "down".to_owned(),
+            command: "false".to_owned(),
+            ..iota::mcp::config::ServerConfig::default()
+        },
+        flag("a.sh"),
+        flag("b.sh"),
+    ])
+    .await;
+    let f = Fixture::new(vec![
+        input("/allow nope:echo"),
+        input("/allow down:echo"),
+        input("/allow gh:nope"),
+        input("/allow project auto:*"),
+        input("/allow sh:echo"),
+        input("/revoke gh:echo"),
+        Reply::Interrupted,
+    ]);
+    let grants = Arc::new(iota::tool::grants::Grants::default());
+    let mut params = allow_params(&f, &root, &grants);
+    params.mcp = hooks;
+    iota::repl::run(params).await.expect("clean exit");
+
+    let connected = "(connected: gh, auto, sh)";
+    let refusals: Vec<String> = printed(&f.ui)
+        .into_iter()
+        .filter(|l| l.starts_with("/allow: ") || l.starts_with("/revoke: "))
+        .collect();
+    assert_eq!(
+        refusals,
+        [
+            format!("/allow: no MCP server named \"nope\" is connected {connected}"),
+            format!("/allow: no MCP server named \"down\" is connected {connected}"),
+            "/allow: server \"gh\" has no tool \"nope\"".to_owned(),
+            "/allow: auto's tools already run without asking (auto_run)".to_owned(),
+            "/allow: \"sh\" names 2 connected servers; add one to mcp_servers: under its own name to grant it"
+                .to_owned(),
+            "/revoke: nothing granted matches gh:echo".to_owned(),
+        ]
+    );
+    assert!(
+        grants
+            .snapshot(iota::tool::grants::Level::Session)
+            .is_empty()
+    );
+    assert!(
+        grants
+            .snapshot(iota::tool::grants::Level::Project)
+            .is_empty()
+    );
+    manager.close().await;
+}
+
 /// Both commands are rows of the table, after `/tools`, with their descriptions — in every mode, a bot's too.
 #[tokio::test]
 async fn allow_and_revoke_are_in_the_table() {
@@ -3608,9 +3812,9 @@ async fn allow_and_revoke_are_in_the_table() {
         [
             (
                 "/allow",
-                "Make a directory writable for this session or project, or list the grants"
+                "Make a directory writable or stop asking for an MCP tool, or list the grants"
             ),
-            ("/revoke", "Take a directory grant back"),
+            ("/revoke", "Take a grant back"),
         ]
     );
 }

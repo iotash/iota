@@ -65,11 +65,13 @@ pub struct ServerConfig {
     /// manager's default, [`crate::mcp::DEFAULT_CALL_TIMEOUT`]).
     pub tool_timeout_sec: Option<u64>,
     /// `auto_run:` — the server's tools run without asking. Off (the default), every call is put to the
-    /// user at the approval gate, and a non-interactive run refuses it. A `--mcp` flag server is always off.
+    /// user at the approval gate unless a grant covers it, and a non-interactive run refuses it. A `--mcp` flag
+    /// server is always off.
     pub auto_run: bool,
-    /// The server came from a `--mcp` flag ([`parse_mcp_flag`]), not an `mcp_servers` entry: it has no entry
-    /// to write `auto_run` in, so what a non-interactive run says about refusing its calls differs.
-    pub from_flag: bool,
+    /// The server came from a `--mcp` flag ([`parse_mcp_flag`]), not an `mcp_servers` entry: the flag's value,
+    /// trimmed. It is the server's identity in a grant (its `name` is only `argv[0]` or the URL), and it has no
+    /// entry to write `auto_run` in, so what a non-interactive run says about refusing its calls differs.
+    pub flag: Option<String>,
 }
 
 impl ServerConfig {
@@ -133,7 +135,7 @@ pub fn parse_mcp_flag(value: &str) -> Result<ServerConfig, McpFlagError> {
         return Ok(ServerConfig {
             name: value.to_owned(),
             url: value.to_owned(),
-            from_flag: true,
+            flag: Some(value.to_owned()),
             ..ServerConfig::default()
         });
     }
@@ -144,7 +146,7 @@ pub fn parse_mcp_flag(value: &str) -> Result<ServerConfig, McpFlagError> {
         name: argv0.clone(),
         command: argv0,
         args: parts.map(str::to_owned).collect(),
-        from_flag: true,
+        flag: Some(value.to_owned()),
         ..ServerConfig::default()
     })
 }
@@ -173,7 +175,7 @@ pub(crate) fn expand_server_config(server_cfg: &ServerConfig, env: &Env) -> Serv
         redirect_port: server_cfg.redirect_port,
         tool_timeout_sec: server_cfg.tool_timeout_sec,
         auto_run: server_cfg.auto_run,
-        from_flag: server_cfg.from_flag,
+        flag: server_cfg.flag.clone(),
     }
 }
 
@@ -216,7 +218,7 @@ mod tests {
             ServerConfig {
                 name: "https://mcp.example.com/mcp".to_owned(),
                 url: "https://mcp.example.com/mcp".to_owned(),
-                from_flag: true,
+                flag: Some("https://mcp.example.com/mcp".to_owned()),
                 ..ServerConfig::default()
             }
         );
@@ -238,7 +240,7 @@ mod tests {
                     "@modelcontextprotocol/server-filesystem".to_owned(),
                     "/tmp".to_owned(),
                 ],
-                from_flag: true,
+                flag: Some("npx  -y\t@modelcontextprotocol/server-filesystem /tmp".to_owned()),
                 ..ServerConfig::default()
             }
         );
@@ -292,7 +294,7 @@ mod tests {
             redirect_port: Some(18000),
             tool_timeout_sec: Some(90),
             auto_run: true,
-            from_flag: true,
+            flag: Some("srv".to_owned()),
         };
         let got = expand_server_config(&server_cfg, &fixed());
         assert_eq!(
@@ -309,7 +311,7 @@ mod tests {
             "the call deadline rides along"
         );
         assert!(got.auto_run, "auto_run rides along");
-        assert!(got.from_flag, "from_flag rides along");
+        assert_eq!(got.flag.as_deref(), Some("srv"), "the flag rides along");
         assert_eq!(super::redirect_uri(None), "http://127.0.0.1:17801/callback");
         assert_eq!(
             super::redirect_uri(Some(18000)),

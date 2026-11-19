@@ -150,6 +150,11 @@ impl Dispatcher for MarkedDispatcher {
     }
 
     /// Pass-through.
+    fn grant_key(&self, name: &str) -> crate::tool::grants::ToolKey {
+        self.inner.grant_key(name)
+    }
+
+    /// Pass-through.
     fn presentation(&self, name: &str) -> Presentation {
         self.inner.presentation(name)
     }
@@ -210,6 +215,11 @@ impl Dispatcher for SearchingDispatcher {
     /// As `MarkedDispatcher`.
     fn unattended_refusal(&self, name: &str) -> Option<String> {
         self.0.unattended_refusal(name)
+    }
+
+    /// Pass-through.
+    fn grant_key(&self, name: &str) -> crate::tool::grants::ToolKey {
+        self.0.grant_key(name)
     }
 
     /// As `MarkedDispatcher`.

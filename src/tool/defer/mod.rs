@@ -471,6 +471,11 @@ impl Dispatcher for DeferDispatcher {
     }
 
     /// Pass-through.
+    fn grant_key(&self, name: &str) -> crate::tool::grants::ToolKey {
+        self.inner.grant_key(name)
+    }
+
+    /// Pass-through.
     fn presentation(&self, name: &str) -> Presentation {
         self.inner.presentation(name)
     }

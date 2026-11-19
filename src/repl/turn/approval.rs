@@ -27,8 +27,11 @@ pub(crate) enum Answer {
 /// What the dialog offers beyond "Allow once" for a call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Offer<'a> {
-    /// A tool grant — `Allow for this session` (a call bound to no location).
+    /// A built-in tool grant — `Allow for this session` (a call bound to no location).
     Tool,
+    /// An MCP tool grant, `<server>:<tool>` — `Always allow <server>:<tool> in this session`, then `…in this
+    /// project`. Never the server's `*`: that is `/allow`'s, typed out.
+    Mcp(&'a str),
     /// A directory grant — `Allow, and make <dir> writable for this session`, then `…for this project` (a
     /// `code` write outside every root, `<dir>` its real parent).
     Dir(&'a Path),
@@ -64,6 +67,10 @@ impl ApprovalGate {
         // The grant items, in the order their answers are: session, then project.
         let grants: Vec<(String, Level)> = match offer {
             Offer::Tool => vec![("Allow for this session".to_owned(), Level::Session)],
+            Offer::Mcp(key) => [(Level::Session, "session"), (Level::Project, "project")]
+                .into_iter()
+                .map(|(level, word)| (format!("Always allow {key} in this {word}"), level))
+                .collect(),
             Offer::Dir(dir) => [(Level::Session, "session"), (Level::Project, "project")]
                 .into_iter()
                 .map(|(level, word)| {

@@ -31,12 +31,96 @@ pub enum Level {
     Project,
 }
 
-/// What a tool grant names. On disk, `{"builtin": "<name>"}`.
+/// What a tool grant names (docs/design/grants.md §3.2). On disk, `{"builtin": "<name>"}`,
+/// `{"server": "<configured name>", "tool": "<raw name>"}` or `{"flag": "<--mcp spec>", "tool": "*"}`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(from = "KeyRepr", into = "KeyRepr")]
 pub enum ToolKey {
-    /// A tool by its wire name.
+    /// A built-in tool by its wire name. Session level only: its permanent form is the config's.
     Builtin(String),
+    /// One MCP tool, or every tool of the server.
+    Mcp {
+        /// Which server: never the wire segment, which is sanitized and suffixed by connect order.
+        server: ServerId,
+        /// Which of its tools.
+        tool: McpTool,
+    },
+}
+
+/// An MCP server's identity in a grant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ServerId {
+    /// An `mcp_servers:` entry, by its CONFIGURED name.
+    Config(String),
+    /// A `--mcp` server, by the flag's whole value, trimmed: its name is only `argv[0]` (or the URL), and a
+    /// grant to `npx` would approve whatever `npx` starts next.
+    Flag(String),
+}
+
+/// The tool part of an MCP grant. On disk, the raw name or `*`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum McpTool {
+    /// One tool, by the server's raw (un-namespaced) name.
+    Named(String),
+    /// Every tool of the server, those it exposes later included: matched at call time by server identity.
+    Any,
+}
+
+impl McpTool {
+    /// `*` is [`McpTool::Any`]; anything else names a tool.
+    pub fn parse(s: &str) -> Self {
+        if s == "*" {
+            Self::Any
+        } else {
+            Self::Named(s.to_owned())
+        }
+    }
+
+    /// The raw name, or `*`.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Named(t) => t,
+            Self::Any => "*",
+        }
+    }
+}
+
+/// [`ToolKey`]'s on-disk shape: an object told apart by its keys.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum KeyRepr {
+    Builtin { builtin: String },
+    Config { server: String, tool: String },
+    Flag { flag: String, tool: String },
+}
+
+impl From<KeyRepr> for ToolKey {
+    fn from(r: KeyRepr) -> Self {
+        let mcp = |server, tool: String| Self::Mcp {
+            server,
+            tool: McpTool::parse(&tool),
+        };
+        match r {
+            KeyRepr::Builtin { builtin } => Self::Builtin(builtin),
+            KeyRepr::Config { server, tool } => mcp(ServerId::Config(server), tool),
+            KeyRepr::Flag { flag, tool } => mcp(ServerId::Flag(flag), tool),
+        }
+    }
+}
+
+impl From<ToolKey> for KeyRepr {
+    fn from(k: ToolKey) -> Self {
+        match k {
+            ToolKey::Builtin(builtin) => Self::Builtin { builtin },
+            ToolKey::Mcp { server, tool } => {
+                let tool = tool.as_str().to_owned();
+                match server {
+                    ServerId::Config(server) => Self::Config { server, tool },
+                    ServerId::Flag(flag) => Self::Flag { flag, tool },
+                }
+            }
+        }
+    }
 }
 
 /// One level's grants. On disk, each list is omitted when empty (docs/design/grants.md §4.1).
@@ -106,12 +190,19 @@ impl Grants {
         dirs.into_iter().filter(|d| is_live(d)).collect()
     }
 
-    /// Whether any level grants the tool `key`.
+    /// Whether any level grants the tool `key` — for an MCP tool, by name or by its server's `*`.
     pub fn allows(&self, key: &ToolKey) -> bool {
+        let any = match key {
+            ToolKey::Mcp { server, .. } => Some(ToolKey::Mcp {
+                server: server.clone(),
+                tool: McpTool::Any,
+            }),
+            ToolKey::Builtin(_) => None,
+        };
         lock(&self.inner)
             .levels()
             .into_iter()
-            .any(|s| s.tools.contains(key))
+            .any(|s| s.tools.contains(key) || any.as_ref().is_some_and(|a| s.tools.contains(a)))
     }
 
     /// Grants the directory `dir` — an absolute REAL path, resolved by the caller when the user chose it — at
@@ -146,6 +237,15 @@ impl Grants {
         set.dirs.len() != before
     }
 
+    /// Takes the tool `key` back from `level`. False when that level did not hold it.
+    pub fn revoke_tool(&self, level: Level, key: &ToolKey) -> bool {
+        let mut inner = lock(&self.inner);
+        let set = inner.level(level);
+        let before = set.tools.len();
+        set.tools.retain(|k| k != key);
+        set.tools.len() != before
+    }
+
     /// A copy of what `level` holds, in the order it was granted — stale directories included.
     pub fn snapshot(&self, level: Level) -> GrantSet {
         let mut inner = lock(&self.inner);
@@ -176,7 +276,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
-    use super::{GrantSet, Grants, Level, ToolKey};
+    use super::{GrantSet, Grants, Level, McpTool, ServerId, ToolKey};
     use crate::tool::builtins::code::{CodeSet, Outside, Write};
 
     /// A temp dir holding `proj/` (the project) and `out/` beside it; `out`'s real location.
@@ -276,5 +376,57 @@ mod tests {
         std::fs::create_dir(&out).expect("the directory again");
         assert_eq!(grants.live_dirs(), std::slice::from_ref(&out));
         assert!(inside(&cs, &out.join("x.txt")));
+    }
+
+    fn mcp(server: ServerId, tool: &str) -> ToolKey {
+        ToolKey::Mcp {
+            server,
+            tool: McpTool::parse(tool),
+        }
+    }
+
+    /// `server:*` is matched at call time by the server's identity, so it covers a tool the server did not
+    /// expose when it was granted — and nothing of another server, nor of a `--mcp` server whose name is the
+    /// same. On disk each key is the object §4.1 shows.
+    #[test]
+    fn any_covers_a_tool_named_later() {
+        let g = Grants::default();
+        let github = || ServerId::Config("github".to_owned());
+        assert!(!g.allows(&mcp(github(), "search_issues")));
+        assert!(g.grant_tool(Level::Project, mcp(github(), "*")));
+        for tool in ["search_issues", "a_tool_added_next_month"] {
+            assert!(g.allows(&mcp(github(), tool)), "{tool}");
+        }
+        assert!(!g.allows(&mcp(ServerId::Config("gitlab".to_owned()), "search_issues")));
+        assert!(!g.allows(&mcp(ServerId::Flag("github".to_owned()), "search_issues")));
+        assert!(!g.allows(&ToolKey::Builtin("search_issues".to_owned())));
+
+        // One tool by name is that tool only.
+        let flag = || ServerId::Flag("npx -y @acme/mcp".to_owned());
+        g.grant_tool(Level::Session, mcp(flag(), "push"));
+        assert!(g.allows(&mcp(flag(), "push")));
+        assert!(!g.allows(&mcp(flag(), "pull")));
+        assert!(!g.allows(&mcp(ServerId::Flag("npx -y @other/mcp".to_owned()), "push")));
+
+        let set = GrantSet {
+            dirs: Vec::new(),
+            tools: vec![
+                ToolKey::Builtin("edit_file".to_owned()),
+                mcp(github(), "search_issues"),
+                mcp(flag(), "*"),
+            ],
+        };
+        let json = serde_json::to_value(&set).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"tools": [
+                {"builtin": "edit_file"},
+                {"server": "github", "tool": "search_issues"},
+                {"flag": "npx -y @acme/mcp", "tool": "*"},
+            ]})
+        );
+        assert_eq!(serde_json::from_value::<GrantSet>(json).unwrap(), set);
+        assert!(g.revoke_tool(Level::Project, &mcp(github(), "*")));
+        assert!(!g.allows(&mcp(github(), "search_issues")));
     }
 }

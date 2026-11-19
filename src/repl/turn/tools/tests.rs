@@ -3080,7 +3080,7 @@ async fn an_mcp_tool_asks_unless_its_server_is_auto_run() {
         assert_eq!(called, ["push"], "{at}");
 
         // Interactive, off: "Deny" — nothing reaches the server, the model gets an error result.
-        let (asks, res, called) = mcp_turn(false, deferred, &[PUSH], vec![choose(2)]).await;
+        let (asks, res, called) = mcp_turn(false, deferred, &[PUSH], vec![choose(3)]).await;
         assert_eq!(asks.len(), 1, "{at}");
         assert_eq!(
             res,
@@ -3136,7 +3136,7 @@ async fn an_mcp_tool_asks_unless_its_server_is_auto_run() {
 }
 
 // Every defer mode's wrapper passes the manager's answers through: whether a server waives (the hold), whether
-// a call asks, and the refusal a non-interactive run gives — `reference` (`MarkedDispatcher`) and `tool-search`
+// a call asks, the key a grant of it is stored under, and the refusal a non-interactive run gives — `reference` (`MarkedDispatcher`) and `tool-search`
 // (`SearchingDispatcher`) included, which no run in the matrix above goes through.
 #[test]
 fn every_defer_mode_forwards_the_mcp_approval_answers() {
@@ -3166,29 +3166,69 @@ fn every_defer_mode_forwards_the_mcp_approval_answers() {
                 "{at}"
             );
             assert!(wrapped.unattended_refusal(PUSH).is_some(), "{at}");
+            assert_eq!(wrapped.grant_key(PUSH), m.grant_key(PUSH), "{at}");
         }
     }
 }
 
-// "Allow for this session" is per tool: the second call of the SAME tool is not asked again, a different tool
-// of the same server still is.
+// The dialog offers an MCP tool at both levels, named `<server>:<tool>` — never the server's `*`. "Always allow
+// … in this session" stores the tool's key (its CONFIGURED server, its RAW name, not the wire name): the second
+// call of the SAME tool is not asked again, a different tool of the same server still is — and the same holds
+// behind the deferring wrapper.
 #[tokio::test]
-async fn an_mcp_session_grant_covers_that_tool_alone() {
-    let (asks, res, called) = mcp_turn(
-        false,
-        false,
-        &[PUSH, PUSH, PULL],
-        vec![choose(1), choose(0)],
-    )
-    .await;
-    assert_eq!(asks, ["srv:push — allow?", "srv:pull — allow?"]);
-    assert_eq!(
-        res,
-        [
-            ("push ran".to_owned(), false),
-            ("push ran".to_owned(), false),
-            ("pull ran".to_owned(), false)
-        ]
-    );
-    assert_eq!(called, ["push", "push", "pull"]);
+async fn an_mcp_tool_granted_for_the_session_is_not_asked_again() {
+    use crate::tool::grants::{Level, McpTool, ServerId, ToolKey};
+    for deferred in [false, true] {
+        let (m, server) = crate::mcp::testutil::approval_manager(false);
+        let grants = Arc::new(crate::tool::grants::Grants::default());
+        let mut script = vec![choose(1), choose(0)];
+        script.extend(quiet(1));
+        let fx = Fx::new(mcp_dispatch(&m, deferred), script).granting(&grants);
+        let tcs = [PUSH, PUSH, PULL]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| call(&format!("c{i}"), name, serde_json::json!({})))
+            .collect();
+        let p = stream(vec![Round::calls(tcs), Round::text("done")]);
+        let mut history = vec![Message::user("go")];
+        fx.turn(&p, &mut history).await.outcome.expect("turn");
+
+        let events = fx.events();
+        let dialogs: Vec<&crate::testing::TabbedSummary> = events
+            .iter()
+            .filter_map(|e| match e {
+                UiEvent::Tabbed(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dialogs.len(), 2, "deferred={deferred}");
+        assert_eq!(dialogs[0].panels[0].title, "srv:push — allow?");
+        assert_eq!(
+            dialogs[0].panels[0].items,
+            [
+                "Allow once",
+                "Always allow srv:push in this session",
+                "Always allow srv:push in this project",
+                "Deny",
+            ]
+        );
+        assert_eq!(dialogs[1].panels[0].title, "srv:pull — allow?");
+        assert_eq!(
+            grants.snapshot(Level::Session).tools,
+            [ToolKey::Mcp {
+                server: ServerId::Config("srv".to_owned()),
+                tool: McpTool::Named("push".to_owned()),
+            }]
+        );
+        assert!(grants.snapshot(Level::Project).is_empty());
+        assert_eq!(
+            results(&history),
+            [
+                ("push ran".to_owned(), false),
+                ("push ran".to_owned(), false),
+                ("pull ran".to_owned(), false)
+            ]
+        );
+        assert_eq!(*lock(&server.called), ["push", "push", "pull"]);
+    }
 }

@@ -225,6 +225,11 @@ pub trait Dispatcher: Send + Sync {
     fn approval_subject(&self, _name: &str, _args: &JsonObject) -> Option<ApprovalSubject> {
         None
     }
+    /// The tool grant that answers the named tool's question (docs/design/grants.md §3.4): a built-in by its
+    /// wire name; an MCP tool by its server's identity and raw name, which the wire name does not carry.
+    fn grant_key(&self, name: &str) -> crate::tool::grants::ToolKey {
+        crate::tool::grants::ToolKey::Builtin(name.to_owned())
+    }
     /// What a run with nobody to ask tells the model instead of running the named tool's gated call, when
     /// this dispatcher knows better than the generic `crate::headless::run::refusal_text` — an MCP server's
     /// tool names its server and the `auto_run` key that would allow it. `None` = the generic text.

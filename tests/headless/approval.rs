@@ -493,3 +493,114 @@ async fn a_project_grant_runs_unattended() {
     assert!(result.is_error(), "another project's grant applied");
     assert!(!lib.join("twin.txt").exists());
 }
+
+/// A minimal MCP server in POSIX `sh`: `initialize`, `tools/list` (one tool `echo`) and `tools/call`
+/// (`"pong"`), exiting on stdin EOF.
+#[cfg(unix)]
+const SH_SERVER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1.0.0"}}}' ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}' ;;
+    *'"method":"tools/call"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"content":[{"type":"text","text":"pong"}],"isError":false}}' ;;
+  esac
+done
+"#;
+
+/// An MCP tool's project grant is inherited by an unattended run as a directory's is: `gh:echo` in the
+/// project's `grants.json`, loaded into the run's store, lets the `-m` loop call the tool with nobody to ask —
+/// while a project without the grant is refused, with the refusal naming the grant that would allow it.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_project_mcp_grant_runs_unattended() {
+    use iota::mcp::config::ServerConfig;
+    use iota::session::SessionStore;
+    use iota::tool::grants::{Grants, McpTool, ServerId, ToolKey};
+    use tokio_util::sync::CancellationToken;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let real = std::fs::canonicalize(dir.path()).expect("real");
+    let (root, other) = (real.join("proj"), real.join("other"));
+    for d in [&root, &other] {
+        std::fs::create_dir_all(d).expect("dir");
+    }
+    let store = SessionStore::new(real.join("sessions"));
+    store
+        .update_project_grants(&root, |s| {
+            s.tools.push(ToolKey::Mcp {
+                server: ServerId::Config("gh".to_owned()),
+                tool: McpTool::Named("echo".to_owned()),
+            });
+        })
+        .expect("a project grant");
+    let manager = iota::mcp::Manager::new(
+        vec![ServerConfig {
+            name: "gh".to_owned(),
+            command: "sh".to_owned(),
+            args: vec!["-c".to_owned(), SH_SERVER.to_owned()],
+            ..ServerConfig::default()
+        }],
+        iota::mcp::ManagerOptions::new(reqwest::Client::new(), iota::app::env::Env::default()),
+    );
+    manager.connect_all(&CancellationToken::new()).await;
+    let wire = "mcp__gh__echo";
+
+    let run = |project: &std::path::Path| {
+        let grants = Arc::new(Grants::default());
+        grants.replace_project(store.project_grants(project).expect("read"));
+        let d: Arc<dyn Dispatcher> = Arc::clone(&manager) as Arc<dyn Dispatcher>;
+        let tp = FakeProvider::new().with_tools().answering(move |n, _| {
+            if n == 1 {
+                return Round::calls(vec![ToolCall {
+                    id: "c1".to_owned(),
+                    name: wire.to_owned(),
+                    arguments: JsonObject::new(),
+                }]);
+            }
+            Round::reply("done")
+        });
+        async move {
+            let mut history = vec![Message::user("go")];
+            let mut host = QuietHost {
+                grants,
+                ..QuietHost::new()
+            };
+            execute_with_tools(
+                TurnParams {
+                    cx: &RunCtx::default(),
+                    tp: &tp,
+                    dispatch: Arc::clone(&d),
+                    tools: d.tools(),
+                    harness: "",
+                    overlay: "",
+                    max_turns: None,
+                },
+                &mut history,
+                &mut host,
+            )
+            .await
+            .expect("loop");
+            history[2].clone()
+        }
+    };
+
+    let result = run(&root).await;
+    assert!(!result.is_error(), "{}", result.content);
+    assert_eq!(result.content, "pong");
+
+    let result = run(&other).await;
+    assert!(result.is_error());
+    assert_eq!(
+        result.content,
+        format!(
+            "{wire} was not executed: the tools of MCP server \"gh\" need the user's approval, which this \
+             non-interactive run cannot ask for; set `mcp_servers.gh.auto_run: true`, or allow it for the \
+             project from a chat (/allow project gh:echo)."
+        )
+    );
+    manager.close().await;
+}

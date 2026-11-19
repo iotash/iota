@@ -13,6 +13,7 @@ use crate::provider::model::{JsonObject, ToolDef};
 use crate::text::go_quote;
 use crate::tool::context::RunCtx;
 use crate::tool::error::ToolError;
+use crate::tool::grants::ToolKey;
 use crate::tool::{
     ApprovalSubject, DeferredToolStatus, Dispatcher, Owner, Presentation, Tool, ToolEnv,
     ToolResult, ToolSearcher,
@@ -273,6 +274,12 @@ impl Dispatcher for Merged {
         self.owner(name).and_then(|p| p.unattended_refusal(name))
     }
 
+    /// Owner's answer or the default.
+    fn grant_key(&self, name: &str) -> ToolKey {
+        self.owner(name)
+            .map_or_else(|| ToolKey::Builtin(name.to_owned()), |p| p.grant_key(name))
+    }
+
     /// The FIRST part with a searcher speaks for the merge; none when no part has one.
     fn as_tool_searcher(&self) -> Option<&dyn ToolSearcher> {
         self.parts
@@ -367,6 +374,10 @@ impl Dispatcher for Only {
 
     fn unattended_refusal(&self, name: &str) -> Option<String> {
         self.inner.unattended_refusal(name)
+    }
+
+    fn grant_key(&self, name: &str) -> ToolKey {
+        self.inner.grant_key(name)
     }
 }
 

@@ -4,8 +4,12 @@
 //! is made writable here, typed by the user. `/allow <dir>` grants the directory's REAL location and its
 //! subtree for this session — the code jail and the shell sandbox read it at their next call, the harness's
 //! `write roots:` line at the next turn (`refresh_harness`). `/allow project <dir>` grants it for the project,
-//! in every session and every mode. `/revoke <dir>` takes it back from every level that holds it; a bare
-//! `/allow` lists what is in effect, by level. Every change of the session level is written into the bundle's
+//! in every session and every mode. `/allow [project] <server>:<tool>` stops the question for one MCP tool,
+//! `<server>:*` for every tool of the server, those it exposes later included: `<server>` is resolved against
+//! the CONNECTED servers and `<tool>` against its current tool list, so a typo is refused instead of stored, and
+//! the grant is keyed by the server's identity (its configured name, or a `--mcp` server's whole flag value),
+//! never the wire segment. `/revoke <dir | server:tool | server:*>` takes it back from every level that holds
+//! it; a bare `/allow` lists what is in effect, by level. Every change of the session level is written into the bundle's
 //! meta ([`save_session`]) — the dialog's grants too — so a resume restores it; an ephemeral chat keeps it in
 //! memory until `/save` stamps it. A change of the project level is written to the project's `grants.json`
 //! FIRST ([`ProjectFile::update`]) and only then takes effect — `--no-save` included: it is not conversation.
@@ -17,15 +21,17 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::app::{fs, paths, protected};
+use crate::mcp::Manager;
+use crate::mcp::config::parse_mcp_flag;
 use crate::repl::render::styles::dim;
 use crate::repl::run::Repl;
 use crate::repl::title::WriterSlot;
 use crate::session::{SessionError, SessionStore};
 use crate::sync::lock;
-use crate::tool::grants::{self, GrantSet, Grants, Level, ToolKey};
+use crate::tool::grants::{self, GrantSet, Grants, Level, McpTool, ServerId, ToolKey};
 
 /// What the user is told when the argument is not something `/allow` takes.
-const EXPECTED: &str = "expected a directory (starting with /, ~ or .)";
+const EXPECTED: &str = "expected a directory (starting with /, ~ or .) or <server>:<tool>";
 
 /// Where the project level is kept: the store's `grants.json` for the project root the tools read paths
 /// against (`ToolEnv::root`), in every mode.
@@ -126,7 +132,14 @@ pub(crate) fn cmd_allow(repl: &Repl, arg: &str) {
         tr.notice_lines(&listing(&repl.handles.grants, b.static_roots));
         return;
     }
-    match allow(&repl.handles.grants, &ProjectFile::of(repl), &b, arg) {
+    let servers = repl.handles.mcp.manager.as_deref();
+    match allow(
+        &repl.handles.grants,
+        &ProjectFile::of(repl),
+        &b,
+        servers,
+        arg,
+    ) {
         Ok(line) => {
             tr.notice(&line);
             saved(repl);
@@ -201,19 +214,23 @@ pub(crate) fn loaded_in_chat(grants: &Grants) -> Option<String> {
     loaded(grants).map(|l| format!("{l} (/allow lists them)"))
 }
 
-/// Grants the directory `arg` for this session — or, after the keyword `project`, for this project: the notice
-/// line, or why not.
+/// Grants the directory or the MCP tool `arg` for this session — or, after the keyword `project`, for this
+/// project: the notice line, or why not. `servers` is the run's MCP manager, `None` in a run with no server.
 fn allow(
     grants: &Grants,
     project: &ProjectFile,
     b: &Boundary<'_>,
+    servers: Option<&Manager>,
     arg: &str,
 ) -> Result<String, String> {
     let (level, arg) = match arg.strip_prefix("project") {
         Some(rest) if rest.starts_with(char::is_whitespace) => (Level::Project, rest.trim_start()),
         _ => (Level::Session, arg),
     };
-    let typed = b.path(arg).ok_or_else(|| EXPECTED.to_owned())?;
+    let Some(typed) = b.path(arg) else {
+        let (server, tool) = server_tool(arg).ok_or_else(|| EXPECTED.to_owned())?;
+        return allow_tool(grants, project, servers, level, server, tool);
+    };
     if !typed.is_dir() {
         return Err(format!("{arg} is not a directory"));
     }
@@ -257,6 +274,142 @@ fn allow(
     Ok(line)
 }
 
+/// `<server>:<tool>` split at its first `:`, both halves non-empty; `None` for anything else.
+fn server_tool(arg: &str) -> Option<(&str, &str)> {
+    arg.split_once(':')
+        .filter(|(s, t)| !s.is_empty() && !t.is_empty())
+}
+
+/// Grants `server`'s `tool` (or, as `*`, every tool of it) at `level`: the notice line, or why not. The server
+/// must be connected, under that name, exactly once — a name two `--mcp` servers share identifies neither —
+/// and must not be `auto_run`; a named tool must be one it lists now.
+fn allow_tool(
+    grants: &Grants,
+    project: &ProjectFile,
+    servers: Option<&Manager>,
+    level: Level,
+    server: &str,
+    tool: &str,
+) -> Result<String, String> {
+    let found = servers
+        .map(|m| m.connected_named(server))
+        .unwrap_or_default();
+    let target = match found.as_slice() {
+        [] => {
+            let names = servers.map(Manager::connected_names).unwrap_or_default();
+            let connected = if names.is_empty() {
+                String::new()
+            } else {
+                format!(" (connected: {})", names.join(", "))
+            };
+            return Err(format!(
+                "no MCP server named \"{server}\" is connected{connected}"
+            ));
+        }
+        [one] => one,
+        many => {
+            return Err(format!(
+                "\"{server}\" names {} connected servers; add one to mcp_servers: under its own name to grant it",
+                many.len()
+            ));
+        }
+    };
+    if target.auto_run {
+        return Err(format!(
+            "{server}'s tools already run without asking (auto_run)"
+        ));
+    }
+    let tool = McpTool::parse(tool);
+    if let McpTool::Named(t) = &tool
+        && !target.tools.contains(t)
+    {
+        return Err(format!("server \"{server}\" has no tool \"{t}\""));
+    }
+    let key = ToolKey::Mcp {
+        server: target.id.clone(),
+        tool,
+    };
+    let shown = label(&key);
+    let held = |l: Level| covered(&grants.snapshot(l), &key);
+    if held(Level::Project) {
+        return Err(format!(
+            "{shown} already runs without asking (this project)"
+        ));
+    }
+    if level == Level::Session && held(Level::Session) {
+        return Err(format!(
+            "{shown} already runs without asking (this session)"
+        ));
+    }
+    let what = match &key {
+        ToolKey::Mcp {
+            tool: McpTool::Any, ..
+        } => format!("every tool of {server}"),
+        _ => shown,
+    };
+    match level {
+        Level::Session => {
+            grants.grant_tool(Level::Session, key);
+            Ok(format!("✓ {what} runs without asking in this session"))
+        }
+        Level::Project => {
+            project
+                .update(grants, |s| {
+                    if !s.tools.contains(&key) {
+                        s.tools.push(key);
+                    }
+                })
+                .map_err(|e| format!("could not save the grant ({e})"))?;
+            let root = fs::physical(&project.root).unwrap_or_else(|| project.root.clone());
+            Ok(format!(
+                "✓ {what} runs without asking in this project ({})",
+                root.display()
+            ))
+        }
+    }
+}
+
+/// Whether `set` answers the tool `key`: by name, or — an MCP tool — by its server's `*`.
+fn covered(set: &GrantSet, key: &ToolKey) -> bool {
+    let any = match key {
+        ToolKey::Mcp { server, .. } => ToolKey::Mcp {
+            server: server.clone(),
+            tool: McpTool::Any,
+        },
+        ToolKey::Builtin(_) => return set.tools.contains(key),
+    };
+    set.tools.contains(key) || set.tools.contains(&any)
+}
+
+/// The name a server's identity is typed as: an entry's name; a `--mcp` server's `argv[0]` (or URL), as it is
+/// named in `/tools`.
+fn server_name(id: &ServerId) -> String {
+    match id {
+        ServerId::Config(name) => name.clone(),
+        ServerId::Flag(spec) => parse_mcp_flag(spec).map_or_else(|_| spec.clone(), |c| c.name),
+    }
+}
+
+/// A tool grant as the dialog and the notices name it: a built-in by its name, an MCP tool as
+/// `<server>:<tool>` (`<server>:*` for every tool).
+pub(crate) fn label(key: &ToolKey) -> String {
+    match key {
+        ToolKey::Builtin(name) => name.clone(),
+        ToolKey::Mcp { server, tool } => format!("{}:{}", server_name(server), tool.as_str()),
+    }
+}
+
+/// [`label`] as the listing shows it: a `--mcp` server's grant also names the whole flag value it is keyed by.
+fn listed(key: &ToolKey) -> String {
+    match key {
+        ToolKey::Mcp {
+            server: ServerId::Flag(spec),
+            ..
+        } => format!("{} (--mcp {spec})", label(key)),
+        _ => label(key),
+    }
+}
+
 /// What already makes the real directory `real` writable for a grant at `level`, if anything: the project
 /// root, a `write_roots:` entry, or a grant that covers it — of this project at either level, of this session
 /// only for another session grant (a project grant is what a session grant becomes when it should last).
@@ -295,7 +448,10 @@ fn revoke(
     b: &Boundary<'_>,
     arg: &str,
 ) -> Result<String, String> {
-    let typed = b.path(arg).ok_or_else(|| EXPECTED.to_owned())?;
+    let Some(typed) = b.path(arg) else {
+        let (server, tool) = server_tool(arg).ok_or_else(|| EXPECTED.to_owned())?;
+        return revoke_tool(grants, project, server, tool, arg);
+    };
     let real = fs::physical(&typed);
     for dir in [Some(typed), real].into_iter().flatten() {
         let mut from = Vec::new();
@@ -315,6 +471,48 @@ fn revoke(
     Err(format!("nothing granted matches {arg}"))
 }
 
+/// Takes back every grant of `server`'s `tool` (`*` as itself, never as a pattern) from every level that holds
+/// it: the server need not be connected, and is matched by the name it is typed as ([`server_name`]) — so one
+/// `--mcp` name revokes the grants of every flag value it starts. The project level goes through its file first.
+fn revoke_tool(
+    grants: &Grants,
+    project: &ProjectFile,
+    server: &str,
+    tool: &str,
+    arg: &str,
+) -> Result<String, String> {
+    let matches = |k: &ToolKey| match k {
+        ToolKey::Mcp {
+            server: id,
+            tool: t,
+        } => t.as_str() == tool && server_name(id) == server,
+        ToolKey::Builtin(_) => false,
+    };
+    let mut from = Vec::new();
+    if grants.snapshot(Level::Project).tools.iter().any(matches) {
+        project
+            .update(grants, |s| s.tools.retain(|k| !matches(k)))
+            .map_err(|e| format!("could not save the revocation ({e})"))?;
+        from.push("this project");
+    }
+    let session: Vec<ToolKey> = grants
+        .snapshot(Level::Session)
+        .tools
+        .into_iter()
+        .filter(matches)
+        .collect();
+    if !session.is_empty() {
+        for k in &session {
+            grants.revoke_tool(Level::Session, k);
+        }
+        from.insert(0, "this session");
+    }
+    if from.is_empty() {
+        return Err(format!("nothing granted matches {arg}"));
+    }
+    Ok(format!("✓ revoked {server}:{tool} ({})", from.join(", ")))
+}
+
 /// The bare `/allow`: every grant in effect, by level, then the static roots — or, with none, how to make one.
 fn listing(grants: &Grants, static_roots: &[PathBuf]) -> Vec<String> {
     let session = grants.snapshot(Level::Session);
@@ -330,8 +528,8 @@ fn listing(grants: &Grants, static_roots: &[PathBuf]) -> Vec<String> {
             let stale = if grants::is_live(d) { "" } else { " (stale)" };
             rows.push((label, format!("{}{stale}", d.display())));
         }
-        for ToolKey::Builtin(name) in &set.tools {
-            rows.push((label, name.clone()));
+        for key in &set.tools {
+            rows.push((label, listed(key)));
         }
     }
     for r in static_roots {
@@ -353,7 +551,13 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use std::path::PathBuf;
 
-    use super::{Boundary, Grants, Level, ProjectFile, ToolKey, allow, listing, revoke};
+    use super::{Boundary, Grants, Level, ProjectFile, ToolKey, listing, revoke};
+    use crate::tool::grants::{McpTool, ServerId};
+
+    /// `/allow` in a run with no MCP server.
+    fn allow(g: &Grants, pf: &ProjectFile, b: &Boundary<'_>, arg: &str) -> Result<String, String> {
+        super::allow(g, pf, b, None, arg)
+    }
     use crate::session::SessionStore;
     use crate::text::ansi::strip_sgr;
 
@@ -508,6 +712,20 @@ mod tests {
         g.grant_dir(Level::Session, gone.clone());
         g.grant_tool(Level::Session, ToolKey::Builtin("edit_file".to_owned()));
         g.grant_dir(Level::Project, out.join("sub"));
+        g.grant_tool(
+            Level::Project,
+            ToolKey::Mcp {
+                server: ServerId::Config("github".to_owned()),
+                tool: McpTool::Any,
+            },
+        );
+        g.grant_tool(
+            Level::Project,
+            ToolKey::Mcp {
+                server: ServerId::Flag("npx -y @acme/mcp".to_owned()),
+                tool: McpTool::Named("push".to_owned()),
+            },
+        );
         let lines: Vec<String> = listing(&g, &[PathBuf::from("/data/a")])
             .iter()
             .map(|l| strip_sgr(l))
@@ -520,6 +738,8 @@ mod tests {
                 format!("                 {} (stale)", gone.display()),
                 "                 edit_file".to_owned(),
                 format!("  this project   {}", out.join("sub").display()),
+                "                 github:*".to_owned(),
+                "                 npx:push (--mcp npx -y @acme/mcp)".to_owned(),
                 "  static         /data/a (write_roots:)".to_owned(),
             ]
         );

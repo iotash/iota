@@ -23,6 +23,7 @@ use crate::sync::{read, write};
 use crate::text::truncate_to_char_boundary;
 use crate::tool::context::RunCtx;
 use crate::tool::error::ToolError;
+use crate::tool::grants::{McpTool, ServerId, ToolKey};
 use crate::tool::{Dispatcher, Owner, PrefixOf, ToolOutput, ToolResult};
 use sha2::{Digest, Sha256};
 use tokio::task::JoinSet;
@@ -953,11 +954,64 @@ enum Unavailable {
 }
 
 impl Manager {
-    /// The config of the server that owns wire name `name`; `None` when no server routes it.
-    fn server_of(&self, name: &str) -> Option<&ServerConfig> {
-        let config = read(&self.state).tool_index.get(name)?.config;
-        self.configs.get(config)
+    /// The config of the server that owns wire name `name`, and the tool's raw name; `None` when no server
+    /// routes it.
+    fn server_of(&self, name: &str) -> Option<(&ServerConfig, String)> {
+        let (config, raw) = {
+            let st = read(&self.state);
+            let t = st.tool_index.get(name)?;
+            (t.config, t.raw.clone())
+        };
+        Some((self.configs.get(config)?, raw))
     }
+
+    /// The servers called `name` that are connected now: each one's identity in a grant, whether it is
+    /// `auto_run`, and its raw tool names — what `/allow <server>:<tool>` resolves against. More than one only
+    /// for `--mcp` servers sharing an `argv[0]` (or one beside an entry of that name).
+    pub fn connected_named(&self, name: &str) -> Vec<ConnectedServer> {
+        let st = read(&self.state);
+        st.servers
+            .iter()
+            .zip(&self.configs)
+            .filter(|(status, cfg)| status.connected() && cfg.name == name)
+            .map(|(status, cfg)| ConnectedServer {
+                id: server_id(cfg),
+                auto_run: cfg.auto_run,
+                tools: status.tools.clone(),
+            })
+            .collect()
+    }
+
+    /// The names of the servers connected now, each once, in config order.
+    pub fn connected_names(&self) -> Vec<String> {
+        let st = read(&self.state);
+        let mut names: Vec<String> = Vec::new();
+        for (status, cfg) in st.servers.iter().zip(&self.configs) {
+            if status.connected() && !names.contains(&cfg.name) {
+                names.push(cfg.name.clone());
+            }
+        }
+        names
+    }
+}
+
+/// One connected server as `/allow` sees it ([`Manager::connected_named`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectedServer {
+    /// Its identity in a grant.
+    pub id: ServerId,
+    /// Whether its tools already run without asking.
+    pub auto_run: bool,
+    /// Its raw tool names.
+    pub tools: Vec<String>,
+}
+
+/// A server's identity in a grant: an entry's CONFIGURED name, or a `--mcp` server's whole flag value — never
+/// the wire segment, which is sanitized and suffixed by connect order (docs/design/mcp-tool-naming.md).
+pub fn server_id(cfg: &ServerConfig) -> ServerId {
+    cfg.flag
+        .clone()
+        .map_or_else(|| ServerId::Config(cfg.name.clone()), ServerId::Flag)
 }
 
 impl Owner for Manager {
@@ -980,10 +1034,23 @@ impl Dispatcher for Manager {
 
     /// Every call of a server's tool is put to the user unless the server is `auto_run` — whatever the
     /// tool's name, description or annotations claim (nothing about it is read as proof that it is safe).
-    /// Per tool, not per call: the gate's "allow for this session" covers that one wire name. A name this
-    /// manager does not route (the deferring wrapper's `search_tools`, a closed manager) asks nothing.
+    /// Per tool, not per call: a grant ([`grant_key`](Dispatcher::grant_key)) covers the tool or its server.
+    /// A name this manager does not route (the deferring wrapper's `search_tools`, a closed manager) asks
+    /// nothing.
     fn requires_approval(&self, name: &str, _args: Option<&JsonObject>) -> bool {
-        self.server_of(name).is_some_and(|cfg| !cfg.auto_run)
+        self.server_of(name).is_some_and(|(cfg, _)| !cfg.auto_run)
+    }
+
+    /// The server's identity ([`server_id`]) and the tool's raw name; a name this manager does not route is
+    /// keyed as a built-in, as the default.
+    fn grant_key(&self, name: &str) -> ToolKey {
+        self.server_of(name).map_or_else(
+            || ToolKey::Builtin(name.to_owned()),
+            |(cfg, raw)| ToolKey::Mcp {
+                server: server_id(cfg),
+                tool: McpTool::Named(raw),
+            },
+        )
     }
 
     /// Whether any configured server is `auto_run` — known from the configs, before anything connects.
@@ -992,20 +1059,20 @@ impl Dispatcher for Manager {
     }
 
     /// The tool's server and what would let its calls run here (the outside-write refusal's shape): the
-    /// entry's `auto_run` key, or — for a `--mcp` server, which has no entry and always asks — writing it as
-    /// one.
+    /// entry's `auto_run` key — or, for a `--mcp` server, which has no entry, writing it as one — or a project
+    /// grant made from a chat, which a later unattended run inherits.
     fn unattended_refusal(&self, name: &str) -> Option<String> {
-        let cfg = self.server_of(name)?;
+        let (cfg, raw) = self.server_of(name)?;
         let server = &cfg.name;
-        let allow = if cfg.from_flag {
-            "a --mcp server always asks; write it as an `mcp_servers` entry with `auto_run: true` to allow it"
-                .to_owned()
+        let config = if cfg.flag.is_some() {
+            "write it as an `mcp_servers` entry with `auto_run: true`".to_owned()
         } else {
-            format!("set `mcp_servers.{server}.auto_run: true` to allow it")
+            format!("set `mcp_servers.{server}.auto_run: true`")
         };
         Some(format!(
             "{name} was not executed: the tools of MCP server \"{server}\" need the user's approval, which \
-             this non-interactive run cannot ask for; {allow}."
+             this non-interactive run cannot ask for; {config}, or allow it for the project from a chat \
+             (/allow project {server}:{raw})."
         ))
     }
 
@@ -1166,7 +1233,8 @@ mod tests {
             asks.unattended_refusal("mcp__srv__push").as_deref(),
             Some(
                 "mcp__srv__push was not executed: the tools of MCP server \"srv\" need the user's approval, \
-                 which this non-interactive run cannot ask for; set `mcp_servers.srv.auto_run: true` to allow it."
+                 which this non-interactive run cannot ask for; set `mcp_servers.srv.auto_run: true`, or allow it \
+                 for the project from a chat (/allow project srv:push)."
             )
         );
         assert_eq!(asks.unattended_refusal("search_tools"), None);
@@ -1180,14 +1248,77 @@ mod tests {
             flagged.unattended_refusal(&wire),
             Some(format!(
                 "{wire} was not executed: the tools of MCP server \"https://mcp.example.com/mcp\" need the user's \
-                 approval, which this non-interactive run cannot ask for; a --mcp server always asks; write it as \
-                 an `mcp_servers` entry with `auto_run: true` to allow it."
+                 approval, which this non-interactive run cannot ask for; write it as an `mcp_servers` entry with \
+                 `auto_run: true`, or allow it for the project from a chat \
+                 (/allow project https://mcp.example.com/mcp:push)."
             ))
         );
 
         let (trusted, _) = approval_manager(true);
         assert!(!trusted.requires_approval("mcp__srv__push", Some(&args)));
         assert!(trusted.waives_approval());
+    }
+
+    /// A grant names the server by its CONFIGURED name and the tool by the name the server gave it — never
+    /// the wire name, whose segment is sanitized (`my-srv` → `my_srv`) and suffixed by connect order (`_2`),
+    /// and whose tool part is sanitized and hashed. Two entries whose segments collide keep their own keys; a name nothing routes is a built-in's.
+    #[test]
+    fn the_grant_key_is_the_configured_name_and_the_raw_tool() {
+        use crate::tool::grants::{McpTool, ServerId, ToolKey};
+
+        let m = manager(&["my-srv", "my_srv"]);
+        for (i, name) in ["my-srv", "my_srv"].into_iter().enumerate() {
+            let tools = vec![ToolDef {
+                name: "Get-Item".to_owned(),
+                ..ToolDef::default()
+            }];
+            let session = Arc::new(EchoSession {
+                id: name.to_owned(),
+            });
+            m.merge_result(i, connected(name, session, tools));
+        }
+        let wires: Vec<String> = m.tools().into_iter().map(|t| t.name).collect();
+        assert_eq!(
+            wires,
+            [
+                "mcp__my_srv__Get_Item_9280fd82",
+                "mcp__my_srv_2__Get_Item_19a5d85c"
+            ]
+        );
+        let key = |server: &str| ToolKey::Mcp {
+            server: ServerId::Config(server.to_owned()),
+            tool: McpTool::Named("Get-Item".to_owned()),
+        };
+        assert_eq!(m.grant_key(&wires[0]), key("my-srv"));
+        assert_eq!(m.grant_key(&wires[1]), key("my_srv"));
+        assert_eq!(
+            m.grant_key("search_tools"),
+            ToolKey::Builtin("search_tools".to_owned())
+        );
+    }
+
+    /// A `--mcp` server is keyed by the flag's whole value: its name is only `argv[0]`, which two different
+    /// servers started by `npx` share — and a grant to one must not approve the other.
+    #[test]
+    fn a_flag_server_is_keyed_by_its_spec() {
+        use crate::tool::grants::{McpTool, ServerId, ToolKey};
+
+        for spec in ["npx -y @acme/mcp", "npx -y @other/mcp"] {
+            let cfg = crate::mcp::config::parse_mcp_flag(&format!("  {spec} ")).expect("flag");
+            assert_eq!(cfg.name, "npx");
+            let (m, _) = crate::mcp::testutil::approval_manager_for(cfg);
+            assert_eq!(
+                m.grant_key("mcp__npx__push"),
+                ToolKey::Mcp {
+                    server: ServerId::Flag(spec.to_owned()),
+                    tool: McpTool::Named("push".to_owned()),
+                }
+            );
+            let found = m.connected_named("npx");
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].id, ServerId::Flag(spec.to_owned()));
+            assert_eq!(found[0].tools, ["push", "pull"]);
+        }
     }
 
     // Go: mcp/manager_test.go:204

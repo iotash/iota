@@ -22,7 +22,7 @@ pub enum Gate {
     Run,
     /// The user must be asked (a walk with nobody to ask refuses). `subject` is what the call is bound to —
     /// resolved ONCE, so the prompt, the directory it offers and what the call must hit agree — and `key` is
-    /// what "allow for this session" grants when the call is bound to nothing.
+    /// what the dialog's tool items grant when the call is bound to nothing.
     Ask {
         /// The call's location ([`Dispatcher::approval_subject`]); `None` = the question is about the tool.
         subject: Option<ApprovalSubject>,
@@ -33,14 +33,15 @@ pub enum Gate {
 
 /// Whether the named call runs unasked. A call the config does not gate ([`Dispatcher::requires_approval`])
 /// runs; one bound to a location (an outside or protected write) is always asked — a tool grant never answers
-/// it, so an inside grant never covers an outside write; any other runs when `grants` holds its tool. A
+/// it, so an inside grant never covers an outside write; any other runs when `grants` holds its tool
+/// ([`Dispatcher::grant_key`] — for an MCP tool, by name or by its server's `*`). A
 /// directory grant is not consulted here: it makes a write under it INSIDE, which the tool itself decides.
 pub fn gate(d: &dyn Dispatcher, grants: &Grants, name: &str, args: &JsonObject) -> Gate {
     if !d.requires_approval(name, Some(args)) {
         return Gate::Run;
     }
     let subject = d.approval_subject(name, args);
-    let key = ToolKey::Builtin(name.to_owned());
+    let key = d.grant_key(name);
     if subject.is_none() && grants.allows(&key) {
         return Gate::Run;
     }

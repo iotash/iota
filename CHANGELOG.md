@@ -62,6 +62,14 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   in `~/.iota/sessions/projects/<project>/grants.json`; `/revoke <dir>` takes a
   directory back from the session and the project at once, and `/status` and
   a bare `/allow` show both.
+- **An MCP tool can be allowed for a session or a project, one tool or a
+  whole server.** Its approval prompt now offers `Always allow <server>:<tool>
+  in this session` and `… in this project`, and `/allow [project]
+  <server>:<tool>` or `<server>:*` (every tool of the server, including ones
+  it adds later) does the same; `/revoke` takes it back. A project grant also
+  lets `iota run -m` call the tool. Servers given with `--mcp`, which have no
+  config entry to set `auto_run` in, can now be allowed this way too — the
+  grant is tied to the whole `--mcp` value, not just the command name.
 
 ### Fixed
 

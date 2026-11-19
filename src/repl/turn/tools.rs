@@ -27,7 +27,7 @@ use crate::tool::approval::{Gate, gate};
 use crate::tool::context::RunCtx;
 use crate::tool::context::{Approved, ArtifactSlot};
 use crate::tool::fmt::{display_tool_name, tool_call_detail, tool_label};
-use crate::tool::grants::{GrantSet, Level};
+use crate::tool::grants::{GrantSet, Level, ToolKey};
 use crate::tool::{ApprovalSubject, Presentation};
 use crate::ui::facade::UiError;
 
@@ -255,9 +255,11 @@ async fn walk(
             let detail = subject
                 .as_ref()
                 .map_or_else(|| tool_call_detail(&*dispatch, tc), |s| s.detail.clone());
-            let offer = match &subject {
-                None => Offer::Tool,
-                Some(s) => s.scope.as_deref().map_or(Offer::Nothing, Offer::Dir),
+            let label = crate::repl::commands::allow::label(&key);
+            let offer = match (&subject, &key) {
+                (None, ToolKey::Mcp { .. }) => Offer::Mcp(&label),
+                (None, ToolKey::Builtin(_)) => Offer::Tool,
+                (Some(s), _) => s.scope.as_deref().map_or(Offer::Nothing, Offer::Dir),
             };
             let answer = match t.cx.gate.ask(&t.cancel, &tc.name, offer, &detail).await {
                 Ok(a) => a,

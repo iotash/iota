@@ -100,6 +100,22 @@ which is accepted as-is. Applied at: the tool-call header, the spinner label,
 the `/tools` list, the `/compact` summary text, and the HTML export summary
 (escaped after formatting).
 
+## Grant key
+
+A grant that stops the approval question for an MCP tool (docs/design/grants.md
+§3.2, DIVERGENCES X-112) is NOT keyed by the wire name, nor by its segment: the
+segment is sanitized and suffixed by connect order (`my-srv` and `my_srv` are
+`my_srv` and `my_srv_2`, in whichever order they connected), and a lossy tool
+name carries a hash. A stored grant has to name the same tool in next month's
+run. `Dispatcher::grant_key(wire)` looks the wire name up in the tool index and
+returns `ToolKey::Mcp { server, tool }`: `server` is the server's CONFIGURED
+name (`ServerId::Config`), or, for a `--mcp` server, the flag's whole trimmed
+value (`ServerId::Flag`) — its `name` is only `argv[0]` or the URL, and a grant
+to `npx` would approve whatever `npx` starts next; `tool` is the server's raw
+tool name (`McpTool::Named`) or `*` (`McpTool::Any`, every tool of the server,
+matched at call time, so it covers a tool exposed later). The dialog shows the
+key as `<server>:<tool>` with the server's typed name, which `/allow` takes.
+
 ## Old-session compatibility
 
 Session records store whatever `ToolCall.Name` was at the time, so sessions
