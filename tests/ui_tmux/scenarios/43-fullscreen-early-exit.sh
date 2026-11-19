@@ -26,7 +26,8 @@ pipe_raw
 bin="env -u HERDR_ENV HOME=$SCEN_HOME $IOTA_BIN"
 
 run_in_shell "--help" "$bin --help"
-if _vis_has 'Commands:'; then ok "--help: the usage is on the shell's screen"; else bad "--help: no usage"; dump_pane; fi
+# The help's LAST line: its first ones scroll off a 30-row pane as the flag list grows.
+if _vis_has 'Print version'; then ok "--help: the usage is on the shell's screen"; else bad "--help: no usage"; dump_pane; fi
 check_raw "--help: the alternate screen was never entered" "$ALT_ON" no
 check "--help: exit 0" "$(rc)" "rc=0"
 clear_screen
