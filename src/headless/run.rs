@@ -11,6 +11,7 @@ use crate::provider::model::{
 use crate::provider::sink::NullSink;
 use crate::provider::usage::Usage;
 use crate::provider::{Provider, RoundResult, ToolProvider};
+use crate::tool::approval::{Gate, gate};
 use crate::tool::context::{BudgetExt, RunCtx};
 use crate::tool::{Approval, Dispatcher};
 
@@ -34,6 +35,9 @@ pub struct QuietHost {
     pub approve: Option<Approver>,
     /// The run's background jobs; `None` = this run has none and never waits.
     pub jobs: Option<Arc<crate::shell::jobs::Jobs>>,
+    /// The run's grant store (`ToolEnv::grants`): a call a tool grant covers runs unasked
+    /// ([`crate::tool::approval::gate`]). Empty by default; nothing here can add to it.
+    pub grants: Arc<crate::tool::grants::Grants>,
 }
 
 impl QuietHost {
@@ -414,7 +418,7 @@ pub async fn execute_with_tools(
             let tc = &tool_calls[i];
             i += 1;
             // Approval gate: with nobody to ask, refuse and say how to enable the call (chat.go:348-364).
-            if dispatch.requires_approval(&tc.name, Some(&tc.arguments)) {
+            if let Gate::Ask { .. } = gate(&*dispatch, &host.grants, &tc.name, &tc.arguments) {
                 let detail = dispatch
                     .header_summary(&tc.name, &tc.arguments)
                     .unwrap_or_default();

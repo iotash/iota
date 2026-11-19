@@ -104,6 +104,7 @@ async fn run_json(
             images_dir: None,
             history: Vec::new(),
             jobs: None,
+            grants: Default::default(),
         },
         &mut buf,
     )
@@ -204,6 +205,7 @@ async fn once_in_text_mode_prints_the_bare_reply() {
             images_dir: None,
             history: Vec::new(),
             jobs: None,
+            grants: Default::default(),
         },
         &mut buf,
     )
@@ -228,6 +230,7 @@ async fn once_in_text_mode_prints_the_bare_reply() {
             images_dir: None,
             history: Vec::new(),
             jobs: None,
+            grants: Default::default(),
         },
         &mut buf,
     )
@@ -257,6 +260,7 @@ async fn once_in_text_mode_prints_the_bare_reply() {
             images_dir: None,
             history: Vec::new(),
             jobs: None,
+            grants: Default::default(),
         },
         &mut buf,
     )
@@ -281,6 +285,7 @@ async fn once_sends_the_harness_ahead_of_the_system_prompt_and_persists_neither(
         images_dir: None,
         history: Vec::new(),
         jobs: None,
+        grants: Default::default(),
     };
     let harness = "You run inside iota.\n\n<environment>\nproject root: /p\n</environment>";
 
@@ -448,6 +453,7 @@ async fn cancelled_run_reports_interrupted_in_json() {
             images_dir: None,
             history: Vec::new(),
             jobs: None,
+            grants: Default::default(),
         },
         &mut buf,
     )
@@ -578,6 +584,7 @@ fn save_image_names_and_modes() {
                 images_dir: Some(dir.path().to_path_buf()),
                 history: Vec::new(),
                 jobs: None,
+                grants: Default::default(),
             },
             &mut buf,
         )

@@ -1160,6 +1160,7 @@ mod tests {
             true,
             super::super::Outside::Refuse,
             None,
+            Default::default(),
         )
         .expect("set");
         let cx = RunCtx::default();
@@ -1267,6 +1268,7 @@ mod tests {
             false,
             super::super::Outside::Refuse,
             None,
+            Default::default(),
         )
         .expect("set");
 
@@ -1313,29 +1315,40 @@ mod tests {
             auto_write,
             super::super::Outside::Ask,
             None,
+            Default::default(),
         )
         .expect("set");
         (t, root, out, cs)
     }
 
-    /// What the walk carries for a call the gate allowed: "allow once" binds the subject's target, a session
-    /// grant its scope — both from ONE resolution of the call.
+    /// What the walk carries for a call the user allowed once: the subject's target, from ONE resolution of
+    /// the call.
     #[cfg(unix)]
-    fn allowed(
-        cs: &super::super::CodeSet,
-        a: &JsonObject,
-        session: bool,
-    ) -> crate::tool::context::RunCtx {
+    fn allowed(cs: &super::super::CodeSet, a: &JsonObject) -> crate::tool::context::RunCtx {
         use crate::tool::context::{Approved, RunCtx};
         let s = super::writer_subject(cs, a).expect("an outside write");
         RunCtx {
-            approved: Some(if session {
-                Approved::Dir(s.scope.expect("a directory grant"))
-            } else {
-                Approved::Once(s.target)
-            }),
+            approved: Some(Approved::Once(s.target)),
             ..RunCtx::default()
         }
+    }
+
+    /// What the walk does for a call whose directory the user made writable: the subject's offered directory
+    /// goes to the set's grant store, and the call carries nothing.
+    #[cfg(unix)]
+    fn grant(cs: &super::super::CodeSet, a: &JsonObject) {
+        let s = super::writer_subject(cs, a).expect("an outside write");
+        cs.grants.grant_dir(
+            crate::tool::grants::Level::Session,
+            s.scope.expect("a directory offered"),
+        );
+    }
+
+    /// Empties the set's session grants (`/new`).
+    #[cfg(unix)]
+    fn forget(cs: &super::super::CodeSet) {
+        cs.grants
+            .replace_session(crate::tool::grants::GrantSet::default());
     }
 
     #[cfg(unix)]
@@ -1385,21 +1398,20 @@ mod tests {
             "an unapproved call wrote outside"
         );
 
-        // An approval for another target, or a grant for another directory, does not carry over.
-        for other in [
-            Approved::Once(real_out.join("else.txt")),
-            Approved::Dir(real_out.join("deep")),
-        ] {
-            let cx = RunCtx {
-                approved: Some(other),
-                ..RunCtx::default()
-            };
-            assert!(write_file_call(&cs, &cx, &w).is_error);
-            assert!(!out.join("new.txt").exists());
-        }
+        // An approval for another target, or a grant for a directory under it, does not carry over.
+        let cx = RunCtx {
+            approved: Some(Approved::Once(real_out.join("else.txt"))),
+            ..RunCtx::default()
+        };
+        assert!(write_file_call(&cs, &cx, &w).is_error);
+        cs.grants
+            .grant_dir(crate::tool::grants::Level::Session, real_out.join("deep"));
+        assert!(write_file_call(&cs, &RunCtx::default(), &w).is_error);
+        assert!(!out.join("new.txt").exists());
+        forget(&cs);
 
         // Approved: the write lands where the prompt said — the real path behind the symlinked parent.
-        let got = write_file_call(&cs, &allowed(&cs, &w, false), &w);
+        let got = write_file_call(&cs, &allowed(&cs, &w), &w);
         assert_eq!(
             got,
             ToolOutput::ok(format!(
@@ -1411,12 +1423,15 @@ mod tests {
             std::fs::read_to_string(out.join("new.txt")).expect("landed"),
             "x"
         );
-        // A directory grant admits another file in that directory, and only directly in it.
+        // A directory grant makes the directory a root: another file in it, and one under it, is an inside
+        // write that carries no approval at all.
+        grant(&cs, &w);
         let w2 = args(json!({"path": "outdir/two.txt", "content": "2"}));
-        assert!(!write_file_call(&cs, &allowed(&cs, &w, true), &w2).is_error);
+        assert!(!write_file_call(&cs, &RunCtx::default(), &w2).is_error);
         let deeper = args(json!({"path": "outdir/deep/three.txt", "content": "3"}));
-        assert!(write_file_call(&cs, &allowed(&cs, &w, true), &deeper).is_error);
-        assert!(!out.join("deep/three.txt").exists());
+        assert!(!write_file_call(&cs, &RunCtx::default(), &deeper).is_error);
+        assert!(out.join("deep/three.txt").exists());
+        forget(&cs);
 
         // edit_file the same way: read through the link, then edit with the approval.
         assert!(!read_file_call(&cs, &args(json!({"path": "outdir/secret.txt"}))).is_error);
@@ -1426,7 +1441,7 @@ mod tests {
             std::fs::read_to_string(out.join("secret.txt")).expect("kept"),
             "s"
         );
-        assert!(!edit_file_call(&cs, &allowed(&cs, &e, false), &e).is_error);
+        assert!(!edit_file_call(&cs, &allowed(&cs, &e), &e).is_error);
         assert_eq!(
             std::fs::read_to_string(out.join("secret.txt")).expect("edited"),
             "t"
@@ -1438,24 +1453,30 @@ mod tests {
         std::fs::create_dir(&out2).expect("out2");
         let w = args(json!({"path": "outdir/swapped.txt", "content": "x"}));
         for session in [false, true] {
-            let cx = allowed(&cs, &w, session);
+            let cx = if session {
+                grant(&cs, &w);
+                RunCtx::default()
+            } else {
+                allowed(&cs, &w)
+            };
             relink(&root.join("outdir"), &out2);
             assert!(write_file_call(&cs, &cx, &w).is_error);
             assert!(!out2.join("swapped.txt").exists() && !out.join("swapped.txt").exists());
             relink(&root.join("outdir"), &out);
+            forget(&cs);
         }
     }
 
     /// Review B1, the reviewer's repro exactly: the link is swapped between the prompt's detail and the grant
-    /// scope, then back, and the call is attempted with what the gate would have carried. Before round 2 the
-    /// detail and the scope were two resolutions, and the call was admitted by the detail's text: with the
-    /// scope (`out2`) granted, `out/x.txt` was written though nobody approved `out`. Now the call carries the
-    /// GRANTED scope, which must be the directory of where it lands — nothing is written anywhere outside.
+    /// scope, then back, and the call is attempted after the gate's grant. Before round 2 the detail and the
+    /// scope were two resolutions, and the call was admitted by the detail's text: with the scope (`out2`)
+    /// granted, `out/x.txt` was written though nobody approved `out`. Now the granted scope is a root and the
+    /// call is re-resolved against the roots — `out` is none of them, so nothing is written anywhere outside.
     #[cfg(unix)]
     #[test]
     fn a_link_swapped_between_detail_and_scope_writes_nothing() {
         use super::{write_file_call, writer_subject, writer_summary};
-        use crate::tool::context::{Approved, RunCtx};
+        use crate::tool::context::RunCtx;
 
         let (t, root, out, cs) = asking_set(true);
         let out2 = t.path().join("out2");
@@ -1471,12 +1492,10 @@ mod tests {
         assert_eq!(scope, std::fs::canonicalize(&out2).expect("real out2"));
         // 3. Relink outdir -> out again.
         relink(&root.join("outdir"), &out);
-        // 4. The call, with the grant the gate keyed on.
-        let cx = RunCtx {
-            approved: Some(Approved::Dir(scope)),
-            ..RunCtx::default()
-        };
-        assert!(write_file_call(&cs, &cx, &w).is_error);
+        // 4. The call, after the gate granted that directory.
+        cs.grants
+            .grant_dir(crate::tool::grants::Level::Session, scope);
+        assert!(write_file_call(&cs, &RunCtx::default(), &w).is_error);
         assert!(
             !out.join("x.txt").exists() && !out2.join("x.txt").exists(),
             "a write landed in a directory nobody granted"
@@ -1488,14 +1507,14 @@ mod tests {
         assert_eq!(s.scope.as_deref(), s.target.parent());
     }
 
-    /// Review S1: a target with no parent (`/`) is granted as itself, never as the tool-wide key an inside
-    /// grant uses.
+    /// Review S1: a target with no parent (`/`) is still bound to its location — never the tool-wide question
+    /// an inside grant answers — and offers no directory: `/` is never made a root from the dialog.
     #[cfg(unix)]
     #[test]
-    fn a_target_without_a_parent_is_its_own_grant() {
+    fn a_target_without_a_parent_offers_no_root() {
         let (_t, _root, _out, cs) = asking_set(true);
         let s = super::writer_subject(&cs, &args(json!({"path": "/"}))).expect("subject");
-        assert_eq!(s.scope, Some(std::path::PathBuf::from("/")));
+        assert_eq!(s.scope, None);
         assert_eq!(s.target, std::path::PathBuf::from("/"));
     }
 
@@ -1576,6 +1595,7 @@ mod tests {
                         auto_write,
                         policy,
                         Some(user_home.clone()),
+                        Default::default(),
                     )
                     .expect("set");
                     let tool = super::WriteFile(std::sync::Arc::clone(&cs));
@@ -1598,12 +1618,14 @@ mod tests {
                             Some(ask),
                             "{at} {path}"
                         );
-                        for approved in [
-                            None,
-                            Some(Approved::Dir(root.clone())),
-                            Some(Approved::Dir(super::super::grant_dir(&real).to_path_buf())),
-                            Some(Approved::Once(root.join("a.txt"))),
-                        ] {
+                        // The protected table beats every root: a grant of the project root or of the
+                        // file's own directory admits nothing here.
+                        for dir in [root.clone(), super::super::grant_dir(&real).to_path_buf()] {
+                            let dir = crate::app::fs::physical(&dir).expect("real");
+                            cs.grants
+                                .grant_dir(crate::tool::grants::Level::Session, dir);
+                        }
+                        for approved in [None, Some(Approved::Once(root.join("a.txt")))] {
                             let cx = RunCtx {
                                 approved: approved.clone(),
                                 ..RunCtx::default()
@@ -1654,6 +1676,7 @@ mod tests {
             true,
             Outside::Ask,
             Some(user_home),
+            Default::default(),
         )
         .expect("set");
         let hook = root.join(".git/hooks/pre-commit");
@@ -1689,8 +1712,15 @@ mod tests {
         let looped = args(json!({"path": "la/x.txt"}));
         for auto_write in [false, true] {
             for policy in [Outside::Ask, Outside::Unattended, Outside::Refuse] {
-                let cs =
-                    CodeSet::new(root.clone(), Vec::new(), auto_write, policy, None).expect("set");
+                let cs = CodeSet::new(
+                    root.clone(),
+                    Vec::new(),
+                    auto_write,
+                    policy,
+                    None,
+                    Default::default(),
+                )
+                .expect("set");
                 let at = format!("auto_write={auto_write} {policy:?}");
                 for tool in [
                     std::sync::Arc::new(super::WriteFile(std::sync::Arc::clone(&cs)))
@@ -1742,6 +1772,7 @@ mod tests {
                 false,
                 policy,
                 None,
+                Default::default(),
             )
             .expect("set");
             for d in [

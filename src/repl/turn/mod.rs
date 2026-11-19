@@ -87,8 +87,10 @@ pub(crate) struct TurnCtx {
     pub(crate) tr: Arc<Transcript>,
     /// The tool dispatcher (LIVE — never cached across rounds).
     pub(crate) dispatch: Arc<dyn Dispatcher>,
-    /// The conversation's ONE approval gate.
+    /// The conversation's ONE approval dialog.
     pub(crate) gate: Arc<ApprovalGate>,
+    /// The run's grant store: the walk reads it through `tool::approval::gate` and writes what the user grants.
+    pub(crate) grants: Arc<crate::tool::grants::Grants>,
     /// The built-in harness prompt ahead of every send (`""` for an agent without tools).
     pub(crate) harness: String,
     /// The agent-mode overlay woven into every send.

@@ -79,6 +79,7 @@ impl Fixture {
             harness: iota::agents::harness::HarnessInputs::default(),
             imported_history: Vec::new(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
+            grants: Default::default(),
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: no_mcp(),
             session,
@@ -2750,6 +2751,7 @@ async fn persist_warns_and_retries_the_backlog() {
         harness: iota::agents::harness::HarnessInputs::default(),
         imported_history: Vec::new(),
         dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
+        grants: Default::default(),
         jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
         mcp: no_mcp(),
         session: SessionCtx {

@@ -19,6 +19,7 @@ use crate::provider::model::{Message, Role};
 use crate::provider::usage::Usage;
 use crate::session::{NewSession, SessionError, SessionWriter};
 use crate::sync::lock;
+use crate::tool::grants::GrantSet;
 
 use crate::repl::run::Repl;
 
@@ -104,7 +105,7 @@ pub(crate) async fn cmd_new(repl: &mut Repl, arg: &str) {
     let dropped = repl.conv.pending.len();
     repl.conv.pending.clear();
     // The session grants were this conversation's.
-    repl.handles.gate.reset();
+    repl.handles.grants.replace_session(GrantSet::default());
     repl.conv.ctxm.reset();
     repl.conv.budget.reseed(&repl.conv.history);
     repl.conv.ctxm.seed_totals(Usage::default());

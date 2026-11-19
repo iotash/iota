@@ -143,6 +143,7 @@ fn params(ui: &Arc<ScriptedUi>, store: &SessionStore) -> RunParams {
         harness: iota::agents::harness::HarnessInputs::default(),
         imported_history: Vec::new(),
         dispatch: Arc::new(Editor),
+        grants: Default::default(),
         jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
         mcp: McpHooks::default(),
         session: SessionCtx {

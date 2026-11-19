@@ -176,9 +176,10 @@ pub(crate) struct UiHandles {
     /// (`ui.set_slash_commands(table.active())`) happens under this lock, so two re-issues from two tasks
     /// cannot cross and leave the composer holding the older one.
     pub(crate) table: Arc<Mutex<CommandTable>>,
-    /// The conversation's ONE approval gate: the "allow for this session" grant is one grant
-    /// for one person (chat/run.go:172-186).
+    /// The conversation's ONE approval dialog (chat/run.go:172-186).
     pub(crate) gate: Arc<ApprovalGate>,
+    /// The run's ONE grant store, shared with the tools: `/new` and a `/session` switch empty its session level.
+    pub(crate) grants: Arc<crate::tool::grants::Grants>,
     /// MCP display hooks.
     pub(crate) mcp: McpHooks,
     /// Whether the terminal background is dark; a host that knows better re-answers it

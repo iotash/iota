@@ -100,6 +100,7 @@ impl Fixture {
             harness: iota::agents::harness::HarnessInputs::default(),
             imported_history: Vec::new(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
+            grants: Default::default(),
             jobs: iota::shell::jobs::Jobs::new(Path::new("")),
             mcp: McpHooks::default(),
             session,
@@ -620,11 +621,12 @@ async fn new_keeps_the_system_prompt_and_nothing_else() {
     );
 }
 
-/// The approval gate's session grants belong to the conversation: a grant given before `/new` is gone after
-/// it — the next gated call is asked again.
+/// The session level of the grant store belongs to the conversation: what was granted before `/new` — a tool in
+/// the dialog, a directory — is gone after it, and the next gated call is asked again.
 #[tokio::test]
 async fn new_forgets_the_session_grants() {
     use iota::provider::model::ToolCall;
+    use iota::tool::grants::{Grants, Level, ToolKey};
     let write = || {
         Round::calls(vec![ToolCall {
             id: "c".to_owned(),
@@ -655,10 +657,15 @@ async fn new_forgets_the_session_grants() {
         Reply::Queued(Vec::new()),
         Reply::Interrupted,
     ]);
+    let dir = std::fs::canonicalize(f._tmp.path()).expect("real tmp");
+    let grants = Arc::new(Grants::default());
+    grants.grant_dir(Level::Session, dir.clone());
+    assert_eq!(grants.live_dirs(), [dir]);
     let session = f.session(Some(f.writer()));
     let mut params = f.params(provider, session);
     params.dispatch =
         Arc::new(StaticDispatcher::new(&["write_file"]).with_approval(&["write_file"]));
+    params.grants = Arc::clone(&grants);
     iota::repl::run(params).await.expect("exit");
     let asked: Vec<String> = surfaces(&f.ui)
         .into_iter()
@@ -666,4 +673,6 @@ async fn new_forgets_the_session_grants() {
         .collect();
     assert_eq!(asked, ["write_file — allow?", "write_file — allow?"]);
     assert_eq!(dividers(&f.ui).len(), 1);
+    assert!(!grants.allows(&ToolKey::Builtin("write_file".to_owned())));
+    assert!(grants.live_dirs().is_empty());
 }

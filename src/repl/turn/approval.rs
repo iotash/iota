@@ -1,94 +1,75 @@
-//! The approval gate (chat/approval.go): the ONE place a state-changing call is put to
-//! the user. The "allow for this session" memory belongs to the conversation — `/new` and a
-//! `/session` resume start it empty ([`ApprovalGate::reset`]): the grant is "this session
-//! may edit files" — or, for a call bound to a location (a `code` write outside every
-//! root), "this session may write in that directory with that tool".
+//! The approval dialog (chat/approval.go): the ONE place a state-changing call is put to the user. It owns no
+//! memory — whether to ask is [`crate::tool::approval::gate`]'s, and what the user grants goes to the run's
+//! grant store ([`crate::tool::grants`]), which the walk writes before the call runs.
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::sync::Arc;
 
 use crate::host::{Event, Kind, Presenter, State};
-use crate::sync::lock;
 use crate::tool::fmt::display_tool_name;
+use crate::tool::grants::Level;
 use crate::ui::facade::{SelectSpec, Ui, UiError};
 use tokio_util::sync::CancellationToken;
 
 use crate::repl::render::transcript::Transcript;
 
-/// How the gate allowed a call (a denial is [`Answer::Denied`], not an error).
+/// How the user answered (a denial is [`Answer::Denied`], not an error).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Answer {
     /// "Deny", or the prompt was cancelled.
     Denied,
     /// "Allow once".
     Once,
-    /// "Allow for this session", now or by an earlier grant.
-    Session,
+    /// The offered grant ([`Offer`]), at this level: the call runs and the grant stays.
+    Granted(Level),
 }
 
-/// What "allow for this session" would grant for a call — the gate's key for it.
+/// What the dialog offers beyond "Allow once" for a call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Grant<'a> {
-    /// The tool (a call not bound to a location).
+pub(crate) enum Offer<'a> {
+    /// A tool grant — `Allow for this session` (a call bound to no location).
     Tool,
-    /// The tool in this directory (a `code` write outside every root).
+    /// A directory grant — `Allow, and make <dir> writable for this session` (a `code` write outside every
+    /// root, `<dir>` its real parent).
     Dir(&'a Path),
-    /// Nothing: the option is not offered and no earlier grant answers (a write to a protected path).
-    Never,
+    /// Nothing: a protected path, or a directory never offered as a root (`/`, the home directory or an
+    /// ancestor of it) — `Allow once` / `Deny`, asked every time.
+    Nothing,
 }
 
-/// One approval gate per conversation (approval.go:26-33). Session grants are keyed by
-/// wire tool name and the call's grant scope (`ApprovalSubject::scope`): a grant for one
-/// scope never covers another, nor the same scope through another tool, nor the tool's
-/// unscoped calls. The transcript's clock pauses while the user deliberates.
+/// One approval dialog per conversation. The transcript's clock pauses while the user deliberates.
 pub(crate) struct ApprovalGate {
     ui: Arc<dyn Ui>,
     tr: Arc<Transcript>,
     pres: Arc<Presenter>,
-    approved: Mutex<HashSet<(String, Option<PathBuf>)>>,
 }
 
 impl ApprovalGate {
-    /// A gate over the facade, the transcript and the host presenter with no session grants yet.
+    /// A dialog over the facade, the transcript and the host presenter.
     pub(crate) fn new(ui: Arc<dyn Ui>, tr: Arc<Transcript>, pres: Arc<Presenter>) -> Self {
-        Self {
-            ui,
-            tr,
-            pres,
-            approved: Mutex::new(HashSet::new()),
-        }
+        Self { ui, tr, pres }
     }
 
-    /// Resolves one gated call (approval.go:47-80). `detail` is what the call is about
-    /// (the path it writes, the command it runs); `grant` is what "allow for this session"
-    /// grants ([`Grant`]) — for a directory the option names it, and for [`Grant::Never`]
-    /// the prompt is "Allow once" / "Deny" and is asked every time. The error is reserved for the prompt itself failing; a refusal is
-    /// `Ok(Answer::Denied)`, and a turn that continues after a denial is the point of asking.
+    /// Asks about one gated call (approval.go:47-80). `detail` is what the call is about (the path it writes,
+    /// the command it runs); `offer` is the grant the second item gives ([`Offer`]). The error is reserved for
+    /// the prompt itself failing; a refusal is `Ok(Answer::Denied)`, and a turn that continues after a denial
+    /// is the point of asking.
     pub(crate) async fn ask(
         &self,
         cancel: &CancellationToken,
         name: &str,
-        grant: Grant<'_>,
+        offer: Offer<'_>,
         detail: &str,
     ) -> Result<Answer, UiError> {
-        let (key, session) = match grant {
-            Grant::Tool => (
-                Some((name.to_owned(), None)),
-                Some("Allow for this session".to_owned()),
-            ),
-            Grant::Dir(dir) => (
-                Some((name.to_owned(), Some(dir.to_path_buf()))),
-                Some(format!("Allow in {} for this session", dir.display())),
-            ),
-            Grant::Never => (None, None),
+        let grant = match offer {
+            Offer::Tool => Some("Allow for this session".to_owned()),
+            Offer::Dir(dir) => Some(format!(
+                "Allow, and make {} writable for this session",
+                dir.display()
+            )),
+            Offer::Nothing => None,
         };
-        if key
-            .as_ref()
-            .is_some_and(|k| lock(&self.approved).contains(k))
-        {
-            return Ok(Answer::Session);
-        }
+        let offered = grant.is_some();
         let mut label = display_tool_name(name);
         if !detail.is_empty() {
             label = format!("{label} {detail}");
@@ -108,7 +89,7 @@ impl ApprovalGate {
                 SelectSpec {
                     title: format!("{label} — allow?"),
                     items: std::iter::once("Allow once".to_owned())
-                        .chain(session)
+                        .chain(grant)
                         .chain(["Deny".to_owned()])
                         .collect(),
                     cursor: 0,
@@ -121,19 +102,10 @@ impl ApprovalGate {
         if choice.cancelled {
             return Ok(Answer::Denied);
         }
-        match (choice.index, key) {
-            (0, _) => Ok(Answer::Once),
-            (1, Some(key)) => {
-                lock(&self.approved).insert(key);
-                Ok(Answer::Session)
-            }
-            _ => Ok(Answer::Denied),
-        }
-    }
-
-    /// Forgets every session grant: the conversation they belonged to is over (`/new`, a `/session`
-    /// resume).
-    pub(crate) fn reset(&self) {
-        lock(&self.approved).clear();
+        Ok(match choice.index {
+            0 => Answer::Once,
+            1 if offered => Answer::Granted(Level::Session),
+            _ => Answer::Denied,
+        })
     }
 }

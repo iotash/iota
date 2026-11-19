@@ -811,6 +811,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
             .map(|(_, s, _)| s.messages.clone())
             .unwrap_or_default(),
         jobs: Some(jobs),
+        grants: Arc::clone(&tool_env.grants),
     };
     let outcome =
         crate::headless::once(cancel, &mut *provider, dispatch, opts, &mut *io.stdout).await;

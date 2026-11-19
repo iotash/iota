@@ -1,7 +1,7 @@
 //! Tool and dispatcher contracts: `ToolOutput`, `Presentation`, `DeferState`, the `Tool`
 //! and `Dispatcher` traits with their optional capabilities, the `PrefixOf` oracle and the toolset `ToolEnv` —
-//! plus, in the submodules, the run context every call takes (`context`), the answer to a gated call
-//! (`approval`), the tool framework (`dispatch`,
+//! plus, in the submodules, the run context every call takes (`context`), the answer to a gated call and the
+//! one decision whether to ask it (`approval`), the store of what the user allowed (`grants`), the tool framework (`dispatch`,
 //! `defer` with its `mode`, `yaml11`, `args`, `sets`) and, in `builtins`, the four built-in sets (`shell`,
 //! `code`, `agent`, and `ask`, which contributes tools only when the `ToolEnv` carries an interactor).
 
@@ -18,6 +18,7 @@ pub mod defer;
 pub(crate) mod dispatch;
 pub mod error;
 pub mod fmt;
+pub mod grants;
 pub mod sets;
 pub(crate) mod yaml11;
 
@@ -162,10 +163,11 @@ pub trait Tool: Send + Sync {
     fn header_summary(&self, _args: &JsonObject) -> Option<String> {
         None
     }
-    /// The location this call's approval is bound to, resolved ONCE: what the prompt shows, what "allow for
-    /// this session" grants and what the call must then hit all come from this one answer, so they cannot
-    /// disagree. `None` (the default) = the approval is about the tool: its detail is the header, a session
-    /// grant covers every call of it. A `code` write outside every root answers `Some`.
+    /// The location this call's approval is bound to, resolved ONCE: what the prompt shows, the directory it
+    /// offers to make writable and what the call must then hit all come from this one answer, so they cannot
+    /// disagree. `None` (the default) = the approval is about the tool: its detail is the header, a tool grant
+    /// covers every call of it. A `code` write outside every root, or to a protected path, answers `Some` — and
+    /// a tool grant never answers it ([`approval::gate`]).
     fn approval_subject(&self, _args: &JsonObject) -> Option<ApprovalSubject> {
         None
     }
@@ -372,13 +374,18 @@ pub struct ToolEnv {
     /// Some only for a bot's own session (docs/design/bot-mode.md §3.3): the `memory` set's `remember`
     /// writes into it, and the chat loop records the writes it announces.
     pub memory: Option<crate::agents::memory::BotMemory>,
-    /// The top-level `write_roots:`, absolute ([`ToolEnv::with_write_roots`]): the roots beyond the project
-    /// root that the `code` jail accepts and the `shell` sandbox lets writes into — one list for both. Empty
-    /// is the project root alone.
+    /// The top-level `write_roots:`, absolute ([`ToolEnv::with_write_roots`]): the STATIC roots beyond the
+    /// project root that the `code` jail accepts and the `shell` sandbox lets writes into — one list for both.
+    /// Empty is the project root alone. The jail also reads the live directory grants of
+    /// [`grants`](Self::grants) at every call.
     pub write_roots: Vec<PathBuf>,
     /// The top-level `outside_writes:`: whether a code-tool write outside every root is put to the user or
     /// refused outright.
     pub outside_writes: OutsideWrites,
+    /// The run's ONE grant store ([`grants::Grants`]): the `code` set reads its directory grants at every call,
+    /// beside the static [`write_roots`](Self::write_roots); the walks read and write it through
+    /// [`approval::gate`]. `Default` is an empty store.
+    pub grants: Arc<grants::Grants>,
 }
 
 /// What a call's approval is bound to ([`Tool::approval_subject`]), from one resolution of its location.
@@ -388,9 +395,10 @@ pub struct ApprovalSubject {
     pub detail: String,
     /// The exact location "allow once" admits.
     pub target: PathBuf,
-    /// The directory "allow for this session" grants (the target's directory); `None` when there is no
-    /// session grant to give — a protected path is approved one call at a time, and the gate offers only
-    /// "allow once".
+    /// The directory the dialog offers to make writable (the target's real parent, a directory grant —
+    /// [`grants`]); `None` when there is none to offer — a protected path is approved one call at a time, and a
+    /// write directly in `/`, the home directory or an ancestor of it is never offered as a root — and the
+    /// gate offers only "allow once".
     pub scope: Option<PathBuf>,
 }
 

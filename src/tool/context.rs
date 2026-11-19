@@ -30,14 +30,13 @@ pub struct RunCtx {
     pub approved: Option<Approved>,
 }
 
-/// How the gate allowed a call bound to a location — each checked against the location as the tool resolves
-/// it at call time, as a path, never as rendered text.
+/// How the gate allowed a call bound to a location — checked against the location as the tool resolves it at
+/// call time, as a path, never as rendered text. A directory the user made writable travels with no call: it
+/// is a root in the grant store ([`crate::tool::grants`]), and a write under it is inside.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Approved {
     /// "Allow once": the target the prompt named; the call must land exactly there.
     Once(PathBuf),
-    /// A session grant (given now or earlier): the directory it covers; the call's target must lie directly in it.
-    Dir(PathBuf),
 }
 
 impl RunCtx {

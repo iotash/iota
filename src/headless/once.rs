@@ -36,6 +36,8 @@ pub struct OnceOptions {
     /// The run's background-job registry. `None` (tests) means `shell` cannot start a job and the loop never
     /// waits for one; the binary always passes it, and `once` kills whatever is left before it returns.
     pub jobs: Option<Arc<crate::shell::jobs::Jobs>>,
+    /// The run's grant store, the one its tools were assembled with (`ToolEnv::grants`).
+    pub grants: Arc<crate::tool::grants::Grants>,
 }
 
 /// What one `once` produced beyond its output: the turn's message delta, for the caller to persist.
@@ -73,6 +75,7 @@ pub async fn once(
     install_tool_searcher(provider, &dispatch);
     let mut host = QuietHost::new();
     host.jobs = opts.jobs.clone();
+    host.grants = opts.grants;
     let req = RunRequest {
         message: opts.message,
         system: opts.system,

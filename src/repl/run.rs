@@ -173,6 +173,9 @@ pub struct RunParams {
     pub imported_history: Vec<crate::provider::model::Message>,
     /// The tool dispatcher.
     pub dispatch: Arc<dyn crate::tool::Dispatcher>,
+    /// The run's grant store — the one the dispatcher's tools were assembled with (`ToolEnv::grants`), so a
+    /// directory the user grants in the dialog is a root the writers read at their next call.
+    pub grants: Arc<crate::tool::grants::Grants>,
     /// The run's background-job registry: the loop installs the delivery sink on it and kills whatever is
     /// still running on the way out.
     pub jobs: Arc<crate::shell::jobs::Jobs>,
@@ -409,6 +412,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         harness,
         imported_history,
         dispatch,
+        grants,
         jobs,
         mcp,
         session,
@@ -674,6 +678,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             reqlog: Arc::clone(&reqlog),
             table,
             gate: Arc::clone(&gate),
+            grants,
             mcp,
             dark,
             cancel: root_cancel.clone(),
@@ -1302,6 +1307,7 @@ impl Repl {
             tr: Arc::clone(&self.handles.tr),
             dispatch,
             gate: Arc::clone(&self.handles.gate),
+            grants: Arc::clone(&self.handles.grants),
             harness: self.conv.harness.clone(),
             overlay,
             images_dir: Arc::clone(&self.session.images_dir),

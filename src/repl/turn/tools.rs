@@ -22,11 +22,12 @@ use crate::headless::batch::{BatchOutcome, parallel_run};
 use crate::host::{Event, Kind, State};
 use crate::provider::ToolProvider;
 use crate::provider::model::{AssistantBody, Message, ToolCall, ToolDef};
-use crate::repl::turn::approval::{Answer, Grant};
-use crate::tool::Presentation;
+use crate::repl::turn::approval::{Answer, Offer};
+use crate::tool::approval::{Gate, gate};
 use crate::tool::context::RunCtx;
 use crate::tool::context::{Approved, ArtifactSlot};
 use crate::tool::fmt::{display_tool_name, tool_call_detail, tool_label};
+use crate::tool::{ApprovalSubject, Presentation};
 use crate::ui::facade::UiError;
 
 use crate::repl::context::meter::CtxMeter;
@@ -243,40 +244,52 @@ async fn walk(
             t.cx.tr.open_call(&header);
         }
 
-        // What the user allowed this call under travels with it (`RunCtx::approved`). A call bound to a
-        // location is resolved ONCE (`approval_subject`): the prompt's detail, the session grant's key and
-        // what the call must hit all come from that one answer, so they cannot disagree.
+        // Whether to ask is `gate`'s, the one decision both walks make. A call bound to a location is resolved
+        // ONCE there (`approval_subject`): the prompt's detail, the directory it offers and what an "allow once"
+        // call must hit all come from that one answer, so they cannot disagree. A grant goes to the store
+        // before the call runs; only "allow once" travels with the call (`RunCtx::approved`).
         let mut approved = None;
-        if dispatch.requires_approval(&tc.name, Some(&tc.arguments)) {
-            let subject = dispatch.approval_subject(&tc.name, &tc.arguments);
+        if let Gate::Ask { subject, key } = gate(&*dispatch, &t.cx.grants, &tc.name, &tc.arguments)
+        {
             let detail = subject
                 .as_ref()
                 .map_or_else(|| tool_call_detail(&*dispatch, tc), |s| s.detail.clone());
-            let grant = match &subject {
-                None => Grant::Tool,
-                Some(s) => s.scope.as_deref().map_or(Grant::Never, Grant::Dir),
+            let offer = match &subject {
+                None => Offer::Tool,
+                Some(s) => s.scope.as_deref().map_or(Offer::Nothing, Offer::Dir),
             };
-            let answer = match t.cx.gate.ask(&t.cancel, &tc.name, grant, &detail).await {
+            let answer = match t.cx.gate.ask(&t.cancel, &tc.name, offer, &detail).await {
                 Ok(a) => a,
                 // A fired cancel scope resolves the blocking call as Interrupted (WP45);
                 // a closed facade ends the loop itself.
                 Err(UiError::Interrupted) => return Err(interrupted()),
                 Err(e) => return Err(TurnFailure::Ui(e)),
             };
-            if answer == Answer::Denied {
-                if expanded {
-                    t.cx.tr.settle_showcase(&header, None, DECLINED, true);
-                } else {
-                    t.cx.tr
-                        .finish_call(&header, DECLINED, true, Duration::ZERO, None);
+            match (answer, subject) {
+                (Answer::Denied, _) => {
+                    if expanded {
+                        t.cx.tr.settle_showcase(&header, None, DECLINED, true);
+                    } else {
+                        t.cx.tr
+                            .finish_call(&header, DECLINED, true, Duration::ZERO, None);
+                    }
+                    history.push(Message::tool_result(tc, DECLINED, true));
+                    continue;
                 }
-                history.push(Message::tool_result(tc, DECLINED, true));
-                continue;
+                (Answer::Granted(level), None) => {
+                    t.cx.grants.grant_tool(level, key);
+                }
+                // The directory becomes a root: the call, re-resolved when it runs, is an inside write.
+                (
+                    Answer::Granted(level),
+                    Some(ApprovalSubject {
+                        scope: Some(dir), ..
+                    }),
+                ) => {
+                    t.cx.grants.grant_dir(level, dir);
+                }
+                (_, s) => approved = s.map(|s| Approved::Once(s.target)),
             }
-            approved = subject.map(|s| match (answer, s.scope) {
-                (Answer::Session, Some(scope)) => Approved::Dir(scope),
-                _ => Approved::Once(s.target),
-            });
         }
         // Every call gets its own artifact slot — the user-facing payload (an expanded
         // call's diff) kept out of the result text so it is never billed to the model.

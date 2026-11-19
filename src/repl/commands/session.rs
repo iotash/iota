@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use crate::session::SessionInfo;
 use crate::sync::lock;
+use crate::tool::grants::GrantSet;
 use crate::ui::facade::{Panel, TabbedSpec};
 
 use crate::repl::render::replay::{echo_rounds, resume_echo};
@@ -232,8 +233,8 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     repl.conv.budget.reseed(&repl.conv.history);
     repl.conv.ctxm.seed_totals(usage); // the switched-to session brings its own totals
     repl.conv.pending.clear();
-    // The session grants were the left conversation's.
-    repl.handles.gate.reset();
+    // The session grants were the left conversation's: the switched-to one starts with none.
+    repl.handles.grants.replace_session(GrantSet::default());
     // The auto-compaction snooze was the session being left's answer, about ITS occupancy.
     repl.conv.compact_declined = 0;
     // A live switch takes the bundle's model and tuning whole: no flag is in play any more.

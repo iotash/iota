@@ -196,6 +196,7 @@ impl Fx {
                 tr,
                 dispatch,
                 gate,
+                grants: Arc::default(),
                 harness: String::new(),
                 overlay: String::new(),
                 images_dir,
@@ -242,6 +243,12 @@ impl Fx {
 
     fn events(&self) -> Vec<UiEvent> {
         self.ui.events()
+    }
+
+    /// The turn reading and writing `grants` — the store the dispatcher's tools were assembled with.
+    fn granting(mut self, grants: &Arc<crate::tool::grants::Grants>) -> Self {
+        self.cx.grants = Arc::clone(grants);
+        self
     }
 }
 
@@ -1817,6 +1824,7 @@ fn order_fixture(script: Vec<Reply>) -> OrderFx {
             Arc::clone(&tr),
             Arc::clone(&pres),
         )),
+        grants: Arc::default(),
         harness: String::new(),
         overlay: String::new(),
         images_dir: Arc::new(|| None),
@@ -2245,27 +2253,58 @@ async fn a_closed_facade_during_approval_ends_the_loop() {
 // code writes outside every root, through the real walk and gate
 // ---------------------------------------------------------------------------
 
-/// A project `<t>/proj` with the real `code` set (an interactor bound, as in a chat), and `<t>/out` beside
-/// it; the returned path is `out`'s real location (macOS: `/private/var/…`).
-fn code_chat(
-    policy: crate::tool::OutsideWrites,
-    auto_write: bool,
-) -> (tempfile::TempDir, PathBuf, PathBuf, Arc<dyn Dispatcher>) {
-    let t = tempfile::tempdir().expect("tempdir");
-    let root = t.path().join("proj");
-    std::fs::create_dir_all(&root).expect("root");
-    std::fs::create_dir_all(t.path().join("out")).expect("out");
-    let real_out = std::fs::canonicalize(t.path().join("out")).expect("real out");
-    let env = crate::tool::ToolEnv {
-        project_root: Some(root.clone()),
-        interactor: Some(crate::repl::Interactor::new() as Arc<dyn crate::tool::Interactor>),
-        outside_writes: policy,
-        ..crate::tool::ToolEnv::default()
-    };
-    let raw: crate::tool::sets::ToolsConfig =
-        serde_norway::from_str(&format!("code: {{auto_write: {auto_write}}}\n")).expect("tools");
-    let reg = crate::tool::Registry::build(&env, &raw, &mut |w| panic!("{w}"));
-    (t, root, real_out, Arc::new(reg))
+/// A chat over the real `code` set (an interactor bound, as in a chat): the project `<t>/proj` and `<t>/out`
+/// beside it, `out`'s real location (macOS: `/private/var/…`), and a turn wired to the set's grant store.
+struct CodeChat {
+    t: tempfile::TempDir,
+    root: PathBuf,
+    real_out: PathBuf,
+    dispatch: Arc<dyn Dispatcher>,
+    grants: Arc<crate::tool::grants::Grants>,
+}
+
+impl CodeChat {
+    /// The chat under `outside_writes: policy` and `auto_write`, with no home directory.
+    fn new(policy: crate::tool::OutsideWrites, auto_write: bool) -> Self {
+        Self::homed(policy, auto_write, None)
+    }
+
+    /// [`Self::new`] with `home` (relative to `<t>`) as the user's home directory.
+    fn homed(policy: crate::tool::OutsideWrites, auto_write: bool, home: Option<&str>) -> Self {
+        let t = tempfile::tempdir().expect("tempdir");
+        let root = t.path().join("proj");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(t.path().join("out")).expect("out");
+        let real_out = std::fs::canonicalize(t.path().join("out")).expect("real out");
+        let grants = Arc::new(crate::tool::grants::Grants::default());
+        let env = crate::tool::ToolEnv {
+            project_root: Some(root.clone()),
+            dirs: crate::app::HostDirs {
+                home: home.map(|h| t.path().join(h)),
+                ..crate::app::HostDirs::default()
+            },
+            interactor: Some(crate::repl::Interactor::new() as Arc<dyn crate::tool::Interactor>),
+            outside_writes: policy,
+            grants: Arc::clone(&grants),
+            ..crate::tool::ToolEnv::default()
+        };
+        let raw: crate::tool::sets::ToolsConfig =
+            serde_norway::from_str(&format!("code: {{auto_write: {auto_write}}}\n"))
+                .expect("tools");
+        let reg = crate::tool::Registry::build(&env, &raw, &mut |w| panic!("{w}"));
+        Self {
+            t,
+            root,
+            real_out,
+            dispatch: Arc::new(reg),
+            grants,
+        }
+    }
+
+    /// A turn over this chat's dispatcher and store, the user answering `script`.
+    fn fx(&self, script: Vec<Reply>) -> Fx {
+        Fx::new(Arc::clone(&self.dispatch), script).granting(&self.grants)
+    }
 }
 
 /// Every approval prompt the turn raised: (title, the session option).
@@ -2289,11 +2328,12 @@ async fn an_outside_write_is_asked_always_and_lands_where_the_prompt_said() {
     for policy in [Ask, Refuse] {
         for auto_write in [false, true] {
             let at = format!("{policy:?} auto_write={auto_write}");
-            let (_t, root, real_out, dispatch) = code_chat(policy, auto_write);
+            let c = CodeChat::new(policy, auto_write);
+            let (root, real_out) = (&c.root, &c.real_out);
             let asks = usize::from(!auto_write) + usize::from(policy == Ask);
             let mut script: Vec<Reply> = (0..asks).map(|_| choose(0)).collect();
             script.extend(quiet(1));
-            let fx = Fx::new(dispatch, script);
+            let fx = c.fx(script);
             let p = stream(vec![
                 Round::calls(vec![
                     call(
@@ -2325,7 +2365,10 @@ async fn an_outside_write_is_asked_always_and_lands_where_the_prompt_said() {
                         "write_file {} (outside the project root) — allow?",
                         real_out.join("a.txt").display()
                     ),
-                    format!("Allow in {} for this session", real_out.display()),
+                    format!(
+                        "Allow, and make {} writable for this session",
+                        real_out.display()
+                    ),
                 ));
             }
             assert_eq!(prompts(&fx.events()), want, "{at}");
@@ -2372,10 +2415,11 @@ async fn an_outside_write_is_asked_always_and_lands_where_the_prompt_said() {
 // second item is Deny), and it is asked again on the next call; only "Allow once" lands it.
 #[tokio::test]
 async fn a_protected_write_is_asked_every_time_and_never_granted_for_the_session() {
-    let (_t, root, _real_out, dispatch) = code_chat(crate::tool::OutsideWrites::Ask, false);
+    let c = CodeChat::new(crate::tool::OutsideWrites::Ask, false);
+    let root = &c.root;
     let mut script = vec![choose(1), choose(1), choose(0)];
     script.extend(quiet(1));
-    let fx = Fx::new(dispatch, script);
+    let fx = c.fx(script);
     let hook = |id: &str| {
         call(
             id,
@@ -2403,7 +2447,7 @@ async fn a_protected_write_is_asked_every_time_and_never_granted_for_the_session
     let mut history = vec![Message::user("write")];
     fx.turn(&p, &mut history).await.outcome.expect("turn");
 
-    let real_hook = std::fs::canonicalize(&root)
+    let real_hook = std::fs::canonicalize(root)
         .expect("real root")
         .join(".git/hooks/pre-commit");
     let protected = format!(
@@ -2453,15 +2497,17 @@ async fn a_protected_write_is_asked_every_time_and_never_granted_for_the_session
     );
 }
 
-// "Allow for this session" on an outside write remembers its REAL DIRECTORY and the tool: the next write
-// there is not asked, a write in another directory is, the same directory through `edit_file` is, and an
-// inside grant never covers an outside write. A denial writes nothing.
+// The dialog's directory item makes the write's real parent a ROOT, for both writers: the call it answered
+// runs, and every later write under that directory — in a subdirectory too, through `edit_file` too — is an
+// inside write, asked or not by `auto_write` alone. A directory beside it is still outside and asked; an
+// inside grant (the tool's) never covers an outside write.
 #[tokio::test]
-async fn an_outside_session_grant_is_one_directory_through_one_tool() {
-    let (_t, _root, real_out, dispatch) = code_chat(crate::tool::OutsideWrites::Ask, true);
-    let mut script = vec![choose(1), choose(0), choose(0), choose(2)];
+async fn a_directory_granted_in_the_dialog_is_a_root_for_both_writers() {
+    let c = CodeChat::new(crate::tool::OutsideWrites::Ask, true);
+    let real_out = &c.real_out;
+    let mut script = vec![choose(1), choose(2)];
     script.extend(quiet(1));
-    let fx = Fx::new(dispatch, script);
+    let fx = c.fx(script);
     let p = stream(vec![
         Round::calls(vec![
             call(
@@ -2477,7 +2523,7 @@ async fn an_outside_session_grant_is_one_directory_through_one_tool() {
             call(
                 "c3",
                 "write_file",
-                serde_json::json!({"path": "../out/b/z.txt", "content": "z"}),
+                serde_json::json!({"path": "../out/a/deep/z.txt", "content": "z"}),
             ),
             call(
                 "c4",
@@ -2487,78 +2533,161 @@ async fn an_outside_session_grant_is_one_directory_through_one_tool() {
             call(
                 "c5",
                 "write_file",
-                serde_json::json!({"path": "../out/c/w.txt", "content": "w"}),
+                serde_json::json!({"path": "../out/b/w.txt", "content": "w"}),
             ),
         ]),
         Round::text("done"),
     ]);
     let mut history = vec![Message::user("write")];
     fx.turn(&p, &mut history).await.outcome.expect("turn");
-    let titles: Vec<String> = prompts(&fx.events()).into_iter().map(|(t, _)| t).collect();
-    let title = |tool: &str, rel: &str| {
+    let title = |rel: &str| {
         format!(
-            "{tool} {} (outside the project root) — allow?",
+            "write_file {} (outside the project root) — allow?",
+            real_out.join(rel).display()
+        )
+    };
+    let item = |rel: &str| {
+        format!(
+            "Allow, and make {} writable for this session",
             real_out.join(rel).display()
         )
     };
     assert_eq!(
-        titles,
-        [
-            title("write_file", "a/x.txt"),
-            title("write_file", "b/z.txt"),
-            title("edit_file", "a/x.txt"),
-            title("write_file", "c/w.txt"),
-        ]
+        prompts(&fx.events()),
+        [(title("a/x.txt"), item("a")), (title("b/w.txt"), item("b"))]
     );
+    assert_eq!(c.grants.live_dirs(), [real_out.join("a")]);
     let read = |rel: &str| std::fs::read_to_string(real_out.join(rel)).ok();
     assert_eq!(read("a/x.txt").as_deref(), Some("e"));
     assert_eq!(read("a/y.txt").as_deref(), Some("y"));
-    assert_eq!(read("b/z.txt").as_deref(), Some("z"));
-    assert_eq!(read("c/w.txt"), None, "a denied write landed");
+    assert_eq!(read("a/deep/z.txt").as_deref(), Some("z"));
+    assert_eq!(read("b/w.txt"), None, "a denied write landed");
 
-    // An inside session grant does not cover an outside write.
-    let (_t, _root, real_out, dispatch) = code_chat(crate::tool::OutsideWrites::Ask, false);
-    let mut script = vec![choose(1), choose(0)];
+    // Without `auto_write`, a write under the granted directory is asked like any inside write — the tool's
+    // question, whose session item is the tool grant — and a tool grant then never covers an outside write.
+    let c = CodeChat::new(crate::tool::OutsideWrites::Ask, false);
+    let real_out = &c.real_out;
+    let mut script = vec![choose(1), choose(1), choose(0)];
     script.extend(quiet(1));
-    let fx = Fx::new(dispatch, script);
+    let fx = c.fx(script);
     let p = stream(vec![
         Round::calls(vec![
             call(
                 "c1",
                 "write_file",
-                serde_json::json!({"path": "in.txt", "content": "i"}),
+                serde_json::json!({"path": "../out/x.txt", "content": "x"}),
             ),
             call(
                 "c2",
                 "write_file",
-                serde_json::json!({"path": "in2.txt", "content": "i"}),
+                serde_json::json!({"path": "../out/y.txt", "content": "y"}),
             ),
             call(
                 "c3",
                 "write_file",
-                serde_json::json!({"path": "../out/q.txt", "content": "q"}),
+                serde_json::json!({"path": "../out/z.txt", "content": "z"}),
+            ),
+            call(
+                "c4",
+                "write_file",
+                serde_json::json!({"path": "../q.txt", "content": "q"}),
             ),
         ]),
         Round::text("done"),
     ]);
     let mut history = vec![Message::user("write")];
     fx.turn(&p, &mut history).await.outcome.expect("turn");
-    let titles: Vec<String> = prompts(&fx.events()).into_iter().map(|(t, _)| t).collect();
+    let items: Vec<String> = prompts(&fx.events()).into_iter().map(|(_, i)| i).collect();
+    let real_t = std::fs::canonicalize(c.t.path()).expect("real t");
     assert_eq!(
-        titles,
+        items,
         [
-            "write_file in.txt — allow?".to_owned(),
             format!(
-                "write_file {} (outside the project root) — allow?",
-                real_out.join("q.txt").display()
+                "Allow, and make {} writable for this session",
+                real_out.display()
+            ),
+            "Allow for this session".to_owned(),
+            format!(
+                "Allow, and make {} writable for this session",
+                real_t.display()
             ),
         ]
     );
-    assert!(real_out.join("q.txt").exists());
+    for f in ["x.txt", "y.txt", "z.txt"] {
+        assert!(real_out.join(f).exists(), "{f}");
+    }
+    assert!(real_t.join("q.txt").exists());
 }
 
-/// The real code set behind a wrapper that moves `link` to `swap` while the gate resolves the call's
-/// subject, and back before the call runs — a sandboxed shell flipping a link in a loop, at its best moment.
+// The dialog never offers to make the home directory, an ancestor of it or `/` writable — one keypress on a
+// write to `~/x.txt` would open `~/.ssh` and every rc file. Those writes offer "Allow once" and "Deny"
+// only; a directory under the home is offered as usual.
+#[tokio::test]
+async fn the_dialog_never_offers_the_home_directory() {
+    let c = CodeChat::homed(crate::tool::OutsideWrites::Ask, true, Some("home"));
+    std::fs::create_dir_all(c.t.path().join("home/sub")).expect("home");
+    let real_t = std::fs::canonicalize(c.t.path()).expect("real t");
+    let mut script = vec![choose(1), choose(1), choose(1), choose(1)];
+    script.extend(quiet(1));
+    let fx = c.fx(script);
+    let p = stream(vec![
+        Round::calls(vec![
+            call(
+                "c1",
+                "write_file",
+                serde_json::json!({"path": "../home/x.txt", "content": "h"}),
+            ),
+            call(
+                "c2",
+                "write_file",
+                serde_json::json!({"path": "../t.txt", "content": "t"}),
+            ),
+            call(
+                "c3",
+                "write_file",
+                serde_json::json!({"path": "/", "content": "r"}),
+            ),
+            call(
+                "c4",
+                "write_file",
+                serde_json::json!({"path": "../home/sub/y.txt", "content": "s"}),
+            ),
+        ]),
+        Round::text("done"),
+    ]);
+    let mut history = vec![Message::user("write")];
+    fx.turn(&p, &mut history).await.outcome.expect("turn");
+    let items: Vec<Vec<String>> = fx
+        .events()
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Tabbed(s) => Some(s.panels[0].items.clone()),
+            _ => None,
+        })
+        .collect();
+    let once = vec!["Allow once".to_owned(), "Deny".to_owned()];
+    assert_eq!(
+        items,
+        [
+            once.clone(),
+            once.clone(),
+            once,
+            vec![
+                "Allow once".to_owned(),
+                format!(
+                    "Allow, and make {} writable for this session",
+                    real_t.join("home/sub").display()
+                ),
+                "Deny".to_owned(),
+            ],
+        ]
+    );
+    assert_eq!(c.grants.live_dirs(), [real_t.join("home/sub")]);
+    assert!(!real_t.join("home/x.txt").exists() && !real_t.join("t.txt").exists());
+}
+
+/// The real code set behind a wrapper that points `link` at `swap` while the gate decides about the call, and
+/// at `home` when the call runs — a sandboxed shell flipping a link in a loop, at its best moment.
 #[cfg(unix)]
 struct Flipping {
     inner: Arc<dyn Dispatcher>,
@@ -2590,6 +2719,7 @@ impl Dispatcher for Flipping {
         self.inner.call_tool(cx, name, args)
     }
     fn requires_approval(&self, name: &str, args: Option<&JsonObject>) -> bool {
+        self.point(&self.swap);
         self.inner.requires_approval(name, args)
     }
     fn presentation(&self, name: &str) -> Presentation {
@@ -2604,35 +2734,32 @@ impl Dispatcher for Flipping {
         args: &JsonObject,
     ) -> Option<crate::tool::ApprovalSubject> {
         self.point(&self.swap);
-        let s = self.inner.approval_subject(name, args);
-        self.point(&self.home);
-        s
+        self.inner.approval_subject(name, args)
     }
 }
 
-// Review B1 through the real walk and gate: `out2` is granted for the session; then a write through
-// `proj/outdir -> out` is resolved while the link points at `out2` and run while it points at `out`
-// again. The gate finds the `out2` grant and asks nothing — but the call carries that GRANT, and `out`
-// is not its directory, so nothing lands in `out`, which nobody approved. (Before round 2 the call
-// carried the detail text, resolved separately while the link pointed at `out`, and the write landed.)
+// A granted directory is a root by its real location, re-checked at every call: `out2` is made writable in the
+// dialog; then `proj/outdir` points into `out2` while the gate decides (an inside write, `auto_write`: nobody
+// is asked) and at `out` when the call runs. The call resolves its target again, finds it outside every root
+// with no approval of its own, and writes nothing — not in `out`, which nobody granted, nor in `out2`.
 #[cfg(unix)]
 #[tokio::test]
-async fn a_grant_for_one_directory_never_admits_a_write_the_link_moved_into_another() {
-    let (t, root, real_out, inner) = code_chat(crate::tool::OutsideWrites::Ask, true);
-    let out2 = t.path().join("out2");
+async fn a_link_swapped_after_a_grant_writes_nothing() {
+    let c = CodeChat::new(crate::tool::OutsideWrites::Ask, true);
+    let out2 = c.t.path().join("out2");
     std::fs::create_dir(&out2).expect("out2");
     let real_out2 = std::fs::canonicalize(&out2).expect("real out2");
-    let link = root.join("outdir");
-    std::os::unix::fs::symlink(&real_out, &link).expect("link");
+    let link = c.root.join("outdir");
+    std::os::unix::fs::symlink(&real_out2, &link).expect("link");
     let dispatch = Arc::new(Flipping {
-        inner,
+        inner: Arc::clone(&c.dispatch),
         link,
-        home: real_out.clone(),
+        home: c.real_out.clone(),
         swap: real_out2.clone(),
     });
     let mut script = vec![choose(1)];
     script.extend(quiet(1));
-    let fx = Fx::new(dispatch, script);
+    let fx = Fx::new(dispatch, script).granting(&c.grants);
     let p = stream(vec![
         Round::calls(vec![
             call(
@@ -2650,34 +2777,44 @@ async fn a_grant_for_one_directory_never_admits_a_write_the_link_moved_into_anot
     ]);
     let mut history = vec![Message::user("write")];
     fx.turn(&p, &mut history).await.outcome.expect("turn");
-    assert_eq!(
-        prompts(&fx.events()).len(),
-        1,
-        "only the out2 grant was asked"
-    );
+    assert_eq!(prompts(&fx.events()).len(), 1, "only out2 was asked");
+    assert_eq!(c.grants.live_dirs(), [real_out2.clone()]);
     assert!(real_out2.join("a.txt").exists());
     assert!(
-        !real_out.join("x.txt").exists(),
+        !c.real_out.join("x.txt").exists(),
         "a write landed in a directory nobody granted"
     );
     assert!(!real_out2.join("x.txt").exists());
     let results: Vec<&Message> = history.iter().filter(|m| m.role() == Role::Tool).collect();
-    assert!(results[1].is_error(), "{}", results[1].content);
+    assert!(
+        results[1].is_error()
+            && results[1]
+                .content
+                .starts_with("path is outside the project root (")
+            && results[1].content.contains(&format!(
+                ") and the extra write roots ({}): outdir/x.txt",
+                real_out2.display()
+            )),
+        "{}",
+        results[1].content
+    );
 }
 
 // Review S1 through the gate: an inside session grant does not cover a write to `/`, whose real location
-// has no parent — it is asked about, keyed on that location itself (`/` on Unix; on Windows the root of the
-// project's drive, e.g. `\\?\D:\`). The tool joins `/` to the project root, and on Windows a rooted, prefixless
-// path keeps the root's drive, so the expectation is the project root's own topmost ancestor, never a fixed drive.
+// has no parent — it is asked about, bound to that location itself (`/` on Unix; on Windows the root of the
+// project's drive, e.g. `\\?\D:\`), and offers no directory: "Allow once" / "Deny". The tool joins `/` to the
+// project root, and on Windows a rooted, prefixless path keeps the root's drive, so the expectation is the
+// project root's own topmost ancestor, never a fixed drive.
 #[tokio::test]
 async fn an_inside_grant_does_not_cover_a_parentless_target() {
-    let (_t, root, _real_out, dispatch) = code_chat(crate::tool::OutsideWrites::Ask, false);
+    let c = CodeChat::new(crate::tool::OutsideWrites::Ask, false);
+    let root = &c.root;
     let top = root.ancestors().last().expect("a topmost ancestor");
     let top = std::fs::canonicalize(top).expect("real /");
     assert_eq!(top.parent(), None, "{}", top.display());
-    let mut script = vec![choose(1), choose(2)];
+    let mut script = vec![choose(1), choose(1)];
     script.extend(quiet(1));
-    let fx = Fx::new(dispatch, script);
+    let fx = c.fx(script);
     let p = stream(vec![
         Round::calls(vec![
             call(
@@ -2707,7 +2844,7 @@ async fn an_inside_grant_does_not_cover_a_parentless_target() {
                     "write_file {} (outside the project root) — allow?",
                     top.display()
                 ),
-                format!("Allow in {} for this session", top.display())
+                "Deny".to_owned()
             ),
         ]
     );

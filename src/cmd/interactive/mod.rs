@@ -386,6 +386,7 @@ pub(crate) async fn run_interactive(
         harness,
         imported_history: wiring.history,
         dispatch: Arc::clone(&wiring.dispatch),
+        grants: Arc::clone(&tool_env.grants),
         jobs,
         mcp,
         session,

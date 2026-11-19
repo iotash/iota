@@ -232,6 +232,7 @@ impl Bot {
             },
             imported_history: history.clone(),
             dispatch,
+            grants: Default::default(),
             jobs: iota::shell::jobs::Jobs::new(Path::new("")),
             mcp: McpHooks::default(),
             session: SessionCtx {

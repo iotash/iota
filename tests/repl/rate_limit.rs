@@ -148,6 +148,7 @@ impl Fixture {
             harness: iota::agents::harness::HarnessInputs::default(),
             imported_history: self.imported.clone(),
             dispatch: Arc::new(StaticDispatcher::new(self.tools)) as Arc<dyn Dispatcher>,
+            grants: Default::default(),
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: McpHooks::default(),
             session: SessionCtx {
