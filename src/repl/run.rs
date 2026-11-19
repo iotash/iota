@@ -935,13 +935,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 tools::cmd_tools(&repl).await;
                 continue;
             }
-            // /allow and /revoke: typed only — a socket message is a notice and never gets here (X-111).
+            // /allow: typed only — a socket message is a notice and never gets here (X-111).
             if let Some(arg) = match_cmd(&line, "/allow") {
-                allow::cmd_allow(&repl, arg);
-                continue;
-            }
-            if let Some(arg) = match_cmd(&line, "/revoke") {
-                allow::cmd_revoke(&repl, arg);
+                allow::cmd_allow(&repl, arg).await;
                 continue;
             }
             if let Some(arg) = match_cmd(&line, "/debug") {

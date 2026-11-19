@@ -267,7 +267,7 @@ async fn banner_order_and_completion_row() {
         completion_row(&f.ui),
         [
             "/file", "/new", "/session", "/model", "/export", "/status", "/tools", "/allow",
-            "/revoke", "/debug", "/exit"
+            "/debug", "/exit"
         ]
     );
 }
@@ -298,7 +298,7 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
         completion_row(&f.ui),
         [
             "/file", "/new", "/session", "/model", "/export", "/status", "/tools", "/allow",
-            "/revoke", "/debug", "/exit", "/save"
+            "/debug", "/exit", "/save"
         ]
     );
 }
@@ -3374,7 +3374,7 @@ async fn a_bots_memory_over_the_cap_is_announced_and_cut_short() {
 }
 
 // ---------------------------------------------------------------------------
-// /allow and /revoke (docs/design/grants.md §5.2, X-111)
+// /allow (docs/design/grants.md §5.2, X-111)
 // ---------------------------------------------------------------------------
 
 /// A temp dir holding `proj/` (the project root, real), `out/` beside it and `link → out`; the real `out`.
@@ -3390,6 +3390,53 @@ fn allow_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     (t, root, out)
 }
 
+/// A commit of the bare `/allow`'s `Add` tab, `dir` chosen.
+fn allow_add(dir: &Path) -> Reply {
+    Reply::Tabbed(TabbedResult {
+        cancelled: false,
+        focused: 0,
+        panels: vec![
+            PanelResult {
+                path: dir.display().to_string(),
+                ..PanelResult::default()
+            },
+            PanelResult::default(),
+        ],
+    })
+}
+
+/// A commit of the bare `/allow`'s `Grants` tab with the rows `checked` checked.
+fn allow_revoke(checked: &[usize]) -> Reply {
+    Reply::Tabbed(TabbedResult {
+        cancelled: false,
+        focused: 1,
+        panels: vec![
+            PanelResult::default(),
+            PanelResult {
+                checked: checked.to_vec(),
+                ..PanelResult::default()
+            },
+        ],
+    })
+}
+
+/// The bare `/allow` surface, cancelled.
+fn allow_cancel() -> Reply {
+    Reply::Tabbed(TabbedResult {
+        cancelled: true,
+        ..TabbedResult::default()
+    })
+}
+
+/// The `Grants` tab's rows of every bare `/allow` the chat opened, in order.
+fn grants_tabs(ui: &ScriptedUi) -> Vec<Vec<String>> {
+    surfaces(ui)
+        .into_iter()
+        .filter(|s| s.panels.first().is_some_and(|p| p.title == "Add"))
+        .map(|s| s.panels[1].items.clone())
+        .collect()
+}
+
 /// The chat runs at `root` and shares `grants` with the test.
 fn allow_params(f: &Fixture, root: &Path, grants: &Arc<iota::tool::grants::Grants>) -> RunParams {
     let mut params = f.params(provider("gpt-4o", Ok(vec![])), f.session(Some(f.writer())));
@@ -3400,7 +3447,8 @@ fn allow_params(f: &Fixture, root: &Path, grants: &Arc<iota::tool::grants::Grant
 
 /// `/allow <dir>` puts the directory's REAL location into the store the code jail and the shell sandbox read
 /// at their next call, and the notice says where that is when the typed path leads elsewhere. The bare
-/// `/allow` lists it.
+/// `/allow` opens two tabs — `Add`, a directory browser on the project root, and `Grants`, a multi-select
+/// whose rows name their level — and lists it there.
 #[cfg(unix)]
 #[tokio::test]
 async fn allow_makes_a_directory_writable_and_says_where_it_really_is() {
@@ -3408,6 +3456,7 @@ async fn allow_makes_a_directory_writable_and_says_where_it_really_is() {
     let f = Fixture::new(vec![
         input("/allow ../link"),
         input("/allow"),
+        allow_cancel(),
         Reply::Interrupted,
     ]);
     let grants = Arc::new(iota::tool::grants::Grants::default());
@@ -3422,10 +3471,19 @@ async fn allow_makes_a_directory_writable_and_says_where_it_really_is() {
         out.display()
     );
     assert!(printed.contains(&want), "{want:?} missing:\n{printed:#?}");
-    let listed = format!("  this session   {}", out.display());
-    assert!(
-        printed.contains(&listed),
-        "{listed:?} missing:\n{printed:#?}"
+    let shape = &surfaces(&f.ui)[0];
+    let tabs: Vec<(&str, PanelKind)> = shape
+        .panels
+        .iter()
+        .map(|p| (p.title.as_str(), p.kind))
+        .collect();
+    assert_eq!(
+        tabs,
+        [("Add", PanelKind::Browser), ("Grants", PanelKind::Multi)]
+    );
+    assert_eq!(
+        grants_tabs(&f.ui),
+        [vec![format!("this session  {}", out.display())]]
     );
     assert!(
         !f.ui
@@ -3479,10 +3537,10 @@ async fn allow_refuses_what_is_not_a_directory() {
 
 /// A `--mcp` server is named by its URL — `:` and all (F1 of the grants review): `/allow <url>:<tool>` and
 /// `/allow <url>:*` resolve the server by its WHOLE name among the connected ones before anything else, a tool it
-/// does not list is refused naming that whole name, and `/revoke <url>:*` takes the wildcard back by the stored
-/// key's name. The grant is keyed by the flag value.
+/// does not list is refused naming that whole name, and the `Grants` tab takes the wildcard back, named by the
+/// stored key's name. The grant is keyed by the flag value.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn allow_and_revoke_address_a_flag_server_by_its_url() {
+async fn allow_addresses_a_flag_server_by_its_url() {
     let mock = crate::common::oauth_mock::start_with(crate::common::oauth_mock::Options {
         open: true,
         ..crate::common::oauth_mock::Options::default()
@@ -3507,7 +3565,8 @@ async fn allow_and_revoke_address_a_flag_server_by_its_url() {
     let f = Fixture::new(vec![
         input(&format!("/allow {url}:echo")),
         input(&format!("/allow {url}:*")),
-        input(&format!("/revoke {url}:*")),
+        input("/allow"),
+        allow_revoke(&[1]),
         input(&format!("/allow {url}:nope")),
         Reply::Interrupted,
     ]);
@@ -3540,16 +3599,21 @@ async fn allow_and_revoke_address_a_flag_server_by_its_url() {
     manager.close().await;
 }
 
-/// `/revoke <dir>` takes the grant back from the store — the next call of either writer or the sandbox no
-/// longer has the root — and a second `/revoke` finds nothing to take.
+/// The `Add` tab grants the chosen directory for this session, as `/allow <dir>` does, refusals and all; the
+/// `Grants` tab takes a checked grant back from the store — the next call of either writer or the sandbox no
+/// longer has the root — and the next `/allow` lists nothing, saying so.
 #[tokio::test]
-async fn revoke_removes_a_grant() {
+async fn the_panel_grants_from_add_and_revokes_from_grants() {
     let (_t, root, out) = allow_fixture();
     let f = Fixture::new(vec![
-        input("/allow ../out"),
-        input("/revoke ../out"),
-        input("/revoke ../out"),
         input("/allow"),
+        allow_add(&root),
+        input("/allow"),
+        allow_add(&out),
+        input("/allow"),
+        allow_revoke(&[0]),
+        input("/allow"),
+        allow_cancel(),
         Reply::Interrupted,
     ]);
     let grants = Arc::new(iota::tool::grants::Grants::default());
@@ -3560,24 +3624,35 @@ async fn revoke_removes_a_grant() {
     assert!(grants.live_dirs().is_empty());
     let printed = printed(&f.ui);
     for want in [
+        format!(
+            "/allow: {} is already writable (the project root)",
+            root.display()
+        ),
         format!("✓ {} is writable for this session", out.display()),
         format!("✓ revoked {} (this session)", out.display()),
-        "/revoke: nothing granted matches ../out".to_owned(),
-        "No grants. /allow <dir> makes a directory writable for this session, /allow project <dir> for this project.".to_owned(),
     ] {
         assert!(printed.contains(&want), "{want:?} missing:\n{printed:#?}");
     }
+    let row = format!("this session  {}", out.display());
+    assert_eq!(
+        grants_tabs(&f.ui),
+        [vec![], vec![], vec![row], vec![]],
+        "the rows each /allow opened on"
+    );
+    let empty = &surfaces(&f.ui)[3].panels[1];
+    assert!(empty.prompt.starts_with("No grants."), "{:?}", empty.prompt);
 }
 
 /// `/allow project <dir>` writes the directory's real location into `grants.json` in the project's bucket,
-/// under the project's real root, before it takes effect; the session's meta does not get it; the listing and
-/// `/status` count it as the project's. `/revoke` then takes it out of the file.
+/// under the project's real root, before it takes effect; the session's meta does not get it; the `Grants` tab
+/// lists it as the project's. Revoking it there takes it out of the file.
 #[tokio::test]
 async fn allow_project_writes_the_bucket_file() {
     let (_t, root, out) = allow_fixture();
     let f = Fixture::new(vec![
         input("/allow project ../out"),
         input("/allow"),
+        allow_cancel(),
         input("/allow ../out/sub"),
         Reply::Interrupted,
     ]);
@@ -3624,7 +3699,6 @@ async fn allow_project_writes_the_bucket_file() {
             out.display(),
             root.display()
         ),
-        format!("  this project   {}", out.display()),
         format!(
             "/allow: {} is already writable (this project)",
             out.join("sub").display()
@@ -3632,9 +3706,18 @@ async fn allow_project_writes_the_bucket_file() {
     ] {
         assert!(shown.contains(&want), "{want:?} missing:\n{shown:#?}");
     }
+    assert_eq!(
+        grants_tabs(&f.ui),
+        [vec![format!("this project  {}", out.display())]]
+    );
 
-    // A second chat in the project: the grant is there from the start, and `/revoke` takes it from the file.
-    let f2 = Fixture::new(vec![input("/revoke ../out"), Reply::Interrupted]);
+    // A second chat in the project: the grant is there from the start, and the `Grants` tab takes it from the
+    // file.
+    let f2 = Fixture::new(vec![
+        input("/allow"),
+        allow_revoke(&[0]),
+        Reply::Interrupted,
+    ]);
     let grants = Arc::new(iota::tool::grants::Grants::default());
     grants.replace_project(f.store.project_grants(&root).expect("read"));
     let mut params = allow_params(&f2, &root, &grants);
@@ -3690,8 +3773,8 @@ fn sh_entry(name: &str, script: &str, auto_run: bool) -> iota::mcp::config::Serv
 
 /// `/allow gh:*` grants every tool of the server by its configured name — the tools it lists, and one it
 /// starts exposing later — so a call of any of them is no longer gated; a tool it covers is then refused as
-/// already allowed. `project` writes the wildcard to the project's file; the listing names both levels; and
-/// `/revoke gh:*` takes it back from both.
+/// already allowed. `project` writes the wildcard to the project's file; the `Grants` tab names both levels;
+/// and in the next chat it takes the wildcard back from the file.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn allow_server_star_covers_every_tool() {
@@ -3705,6 +3788,7 @@ async fn allow_server_star_covers_every_tool() {
         input("/allow gh:echo"),
         input("/allow project gh:*"),
         input("/allow"),
+        allow_cancel(),
         Reply::Interrupted,
     ]);
     let grants = Arc::new(iota::tool::grants::Grants::default());
@@ -3756,14 +3840,24 @@ async fn allow_server_star_covers_every_tool() {
             "✓ every tool of gh runs without asking in this project ({})",
             root.display()
         ),
-        "  this session   gh:*".to_owned(),
-        "  this project   gh:*".to_owned(),
     ] {
         assert!(shown.contains(&want), "{want:?} missing:\n{shown:#?}");
     }
+    assert_eq!(
+        grants_tabs(&f.ui),
+        [vec![
+            "this session  gh:*".to_owned(),
+            "this project  gh:*".to_owned()
+        ]]
+    );
 
-    // A second chat in the project, which loads the file as every start does: `/revoke` takes the wildcard back.
-    let g = Fixture::new(vec![input("/revoke gh:*"), Reply::Interrupted]);
+    // A second chat in the project, which loads the file as every start does: the `Grants` tab takes the
+    // wildcard back.
+    let g = Fixture::new(vec![
+        input("/allow"),
+        allow_revoke(&[0]),
+        Reply::Interrupted,
+    ]);
     let fresh = Arc::new(iota::tool::grants::Grants::default());
     fresh.replace_project(f.store.project_grants(&root).expect("read"));
     assert!(fresh.allows(&later));
@@ -3813,7 +3907,6 @@ async fn allow_refuses_a_server_that_is_not_connected() {
         input("/allow gh:nope"),
         input("/allow project auto:*"),
         input("/allow sh:echo"),
-        input("/revoke gh:echo"),
         Reply::Interrupted,
     ]);
     let grants = Arc::new(iota::tool::grants::Grants::default());
@@ -3824,7 +3917,7 @@ async fn allow_refuses_a_server_that_is_not_connected() {
     let connected = "(connected: gh, auto, sh)";
     let refusals: Vec<String> = printed(&f.ui)
         .into_iter()
-        .filter(|l| l.starts_with("/allow: ") || l.starts_with("/revoke: "))
+        .filter(|l| l.starts_with("/allow: "))
         .collect();
     assert_eq!(
         refusals,
@@ -3835,7 +3928,6 @@ async fn allow_refuses_a_server_that_is_not_connected() {
             "/allow: auto's tools already run without asking (auto_run)".to_owned(),
             "/allow: \"sh\" names 2 connected servers; add one to mcp_servers: under its own name to grant it"
                 .to_owned(),
-            "/revoke: nothing granted matches gh:echo".to_owned(),
         ]
     );
     assert!(
@@ -3851,9 +3943,10 @@ async fn allow_refuses_a_server_that_is_not_connected() {
     manager.close().await;
 }
 
-/// Both commands are rows of the table, after `/tools`, with their descriptions — in every mode, a bot's too.
+/// `/allow` is a row of the table, after `/tools`, with its description — in every mode, a bot's too — and
+/// `/debug` follows it: there is no `/revoke`.
 #[tokio::test]
-async fn allow_and_revoke_are_in_the_table() {
+async fn allow_is_in_the_table() {
     let f = Fixture::new(vec![Reply::Interrupted]);
     iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), f.session(Some(f.writer()))))
         .await
@@ -3879,9 +3972,9 @@ async fn allow_and_revoke_are_in_the_table() {
         [
             (
                 "/allow",
-                "Make a directory writable or stop asking for an MCP tool, or list the grants"
+                "Make a directory writable or stop asking for an MCP tool, or browse and revoke grants"
             ),
-            ("/revoke", "Take a grant back"),
+            ("/debug", "Browse API traffic; toggle request recording"),
         ]
     );
 }

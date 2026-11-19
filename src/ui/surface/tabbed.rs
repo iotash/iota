@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::ui::facade::{Panel, PanelBody, PanelKind, PanelResult, PreviewFn, TabbedResult};
+use crate::ui::facade::{Panel, PanelBody, PanelKind, PanelResult, Pick, PreviewFn, TabbedResult};
 
 use super::field::Field;
 use super::search::{SearchMode, SearchState};
@@ -15,11 +15,11 @@ use super::search::{SearchMode, SearchState};
 /// One row of the directory browser (tabbed.go:137-141).
 #[derive(Debug, Clone)]
 pub(crate) struct BrowseEntry {
-    /// Display name (`"../"`, `"dir/"`, `"file"`).
+    /// Display name (`"./"`, `"../"`, `"dir/"`, `"file"`).
     pub(crate) name: String,
     /// Full path.
     pub(crate) path: PathBuf,
-    /// Whether Enter descends instead of committing.
+    /// Whether Enter descends instead of choosing.
     pub(crate) is_dir: bool,
 }
 
@@ -49,7 +49,7 @@ pub(crate) struct PanelState {
     pub(crate) dir: PathBuf,
     /// Browser: current entries.
     pub(crate) entries: Vec<BrowseEntry>,
-    /// Browser: chosen file path (`""` = none).
+    /// Browser: chosen path (`""` = none) — a file, or under [`Pick::Dir`] a directory.
     pub(crate) chosen: String,
     /// Browser: last read error, rendered as an `ERR_PREFIX` row.
     pub(crate) error_text: String,
@@ -168,7 +168,7 @@ impl PanelState {
             PanelBody::Switch { on } => st.on = *on,
             PanelBody::Input(input) => st.input.set_value(&input.text),
             PanelBody::View(view) => st.items.clone_from(&view.lines),
-            PanelBody::Browser { dir } => {
+            PanelBody::Browser { dir, .. } => {
                 let dir = if dir.as_os_str().is_empty() {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 } else {
@@ -211,7 +211,8 @@ impl PanelState {
     /// Loads a browser panel's directory: `"../"` + dirs + files, name-sorted,
     /// dot-hidden entries skipped; a read error keeps the old directory and renders
     /// the message. Descending drops any filter: the query was aimed at the directory
-    /// being left (tabbed.go:259-289).
+    /// being left (tabbed.go:259-289). A [`Pick::Dir`] browser lists no file, and leads
+    /// with `"./"` — the directory shown, so it can be chosen too.
     pub(crate) fn set_dir(&mut self, p: &Panel, dir: &Path) {
         let rd = match std::fs::read_dir(dir) {
             Ok(rd) => rd,
@@ -223,6 +224,14 @@ impl PanelState {
         self.dir = dir.to_path_buf();
         self.error_text.clear();
         self.entries.clear();
+        let pick = p.pick();
+        if pick == Pick::Dir {
+            self.entries.push(BrowseEntry {
+                name: "./".to_owned(),
+                path: dir.to_path_buf(),
+                is_dir: true,
+            });
+        }
         if let Some(parent) = dir.parent().filter(|q| !q.as_os_str().is_empty()) {
             self.entries.push(BrowseEntry {
                 name: "../".to_owned(),
@@ -250,7 +259,7 @@ impl PanelState {
                     path,
                     is_dir: true,
                 });
-            } else {
+            } else if pick == Pick::File {
                 files.push(BrowseEntry {
                     name,
                     path,
@@ -656,9 +665,10 @@ pub(crate) fn base_hint(p: &Panel, ps: &PanelState) -> String {
                 "↑↓ scroll · ←→ page · h/l pan · g/G top/bottom · c copy · q/Esc close"
             }
         }
-        PanelKind::Browser => {
-            "↑↓ move · ←→ page · Enter open/choose · g/G top/bottom · q/Esc cancel"
-        }
+        PanelKind::Browser => match p.pick() {
+            Pick::File => "↑↓ move · ←→ page · Enter open/choose · g/G top/bottom · q/Esc cancel",
+            Pick::Dir => "↑↓ move · Enter open · Space choose · q/Esc cancel",
+        },
     };
     hint.to_owned()
 }

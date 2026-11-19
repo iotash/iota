@@ -21,7 +21,7 @@ pub(crate) mod tabbed;
 pub(crate) use crate::ui::render::theme;
 
 use crate::text::ansi::strip_sgr;
-use crate::ui::facade::{PanelKind, TabbedResult};
+use crate::ui::facade::{PanelKind, Pick, TabbedResult};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use search::SearchMode;
@@ -297,7 +297,7 @@ fn arrow(st: &mut SurfaceState, dir: i32) {
 }
 
 /// Space: switch toggle, Multi check toggle, the Custom editor's check-by-editing
-/// flow, View page-forward (model.go:761-788, 812-820 — the Code and Text arms are
+/// flow, View page-forward, a directory picker's choice (model.go:761-788, 812-820 — the Code and Text arms are
 /// identical; crossterm delivers one `Char(' ')`).
 fn space_key(st: &mut SurfaceState) -> Option<TabbedResult> {
     let (p, ps) = st.focused();
@@ -326,6 +326,13 @@ fn space_key(st: &mut SurfaceState) -> Option<TabbedResult> {
             }
         }
         PanelKind::View => ps.page(p, 1), // v1: Space pages a view forward
+        // A directory picker: Space chooses the highlighted directory, as Enter chooses a file.
+        PanelKind::Browser if p.pick() == Pick::Dir => {
+            if let Some(e) = ps.entries.get(ps.cursor) {
+                ps.chosen = e.path.to_string_lossy().into_owned();
+                return advance_or_commit(st);
+            }
+        }
         _ => {}
     }
     ps.copied = false;
@@ -406,15 +413,13 @@ fn char_key(st: &mut SurfaceState, c: char) -> Option<TabbedResult> {
 }
 
 /// The Enter commit path (model.go:711-734): Browser descends on a directory (no
-/// commit) / records the chosen file; an empty "Other…" opens the editor instead;
+/// commit) / records the chosen file (a [`Pick::Dir`] browser lists only directories,
+/// so Enter always descends there and Space chooses); an empty "Other…" opens the editor instead;
 /// then `enter_advances` moves to the next tab; else commit-all.
 ///
 /// A combo's `use "…" as typed` row needs no arm of its own: it commits like any row, and the
 /// result says which one the cursor was on (`PanelResult`).
 fn enter_commit(st: &mut SurfaceState) -> Option<TabbedResult> {
-    let focus = st.focus;
-    let enter_advances = st.enter_advances;
-    let n = st.slots.len();
     let (p, ps) = st.focused();
     if p.kind() == PanelKind::Browser {
         let entry = ps.entries.get(ps.cursor).cloned();
@@ -436,8 +441,13 @@ fn enter_commit(st: &mut SurfaceState) -> Option<TabbedResult> {
         ps.editing = true;
         return None;
     }
-    if enter_advances && focus + 1 < n {
-        st.set_focus(focus + 1);
+    advance_or_commit(st)
+}
+
+/// What a choice does once made: `enter_advances` moves to the next tab, else commit-all.
+fn advance_or_commit(st: &mut SurfaceState) -> Option<TabbedResult> {
+    if st.enter_advances && st.focus + 1 < st.slots.len() {
+        st.set_focus(st.focus + 1);
         return None;
     }
     Some(st.result())

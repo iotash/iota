@@ -17,7 +17,7 @@
 //!
 //! **What is registered** (completion.go:10-37, all twelve, plus `/new`): the base rows — `/file`,
 //! `/new`, `/session`, `/model`, `/compact` (only while token accounting is live), `/export`, `/status`,
-//! `/tools`, `/allow`, `/revoke` (X-111), `/debug` — then the image pair `/edit`/`/redo` (dedicated image providers), `/save`
+//! `/tools`, `/allow` (X-111), `/debug` — then the image pair `/edit`/`/redo` (dedicated image providers), `/save`
 //! (chats that started ephemeral) and `/skills` plus one `/skills <name>` row per discovered skill
 //! (agent mode). Inactive conditional commands are fully invisible: no completion, no dispatch.
 //!
@@ -32,7 +32,7 @@
 //! an unregistered `/clear` would go to the model as a message. And in a bot `/new` (with `/clear`) is
 //! dispatched but not listed: it is refused with the reason rather than sent to the model.
 //!
-//! No management command joins the table — `/allow` and `/revoke` (X-111) are not one: a grant answers a
+//! No management command joins the table — `/allow` (X-111) is not one: a grant answers a
 //! question only the chat asks, the one door a sandboxed shell has since it cannot be prompted mid-run, and
 //! no config file holds it. Otherwise: `/mcp` (with `/mcp login|logout`) was here from 2026-09-18 to
 //! 2026-09-20 and left again — `/tools` lists every server's state and reconnects one from its page
@@ -108,11 +108,7 @@ const BASE: &[CmdSpec] = &[
     },
     CmdSpec {
         value: "/allow",
-        desc: "Make a directory writable or stop asking for an MCP tool, or list the grants",
-    },
-    CmdSpec {
-        value: "/revoke",
-        desc: "Take a grant back",
+        desc: "Make a directory writable or stop asking for an MCP tool, or browse and revoke grants",
     },
     CmdSpec {
         value: "/debug",
@@ -395,7 +391,7 @@ mod tests {
             names(&t),
             [
                 "/file", "/new", "/session", "/model", "/compact", "/export", "/status", "/tools",
-                "/allow", "/revoke", "/debug", "/exit", "/edit", "/redo", "/save", "/skills"
+                "/allow", "/debug", "/exit", "/edit", "/redo", "/save", "/skills"
             ]
         );
         assert!(t.save_enabled() && t.image_enabled() && t.agent_enabled());
@@ -424,8 +420,7 @@ mod tests {
             names(&t),
             [
                 "/file", "/new", "/session", "/model", "/compact", "/export", "/status", "/tools",
-                "/allow", "/revoke", "/debug", "/exit", "/jobs", "/edit", "/redo", "/save",
-                "/skills"
+                "/allow", "/debug", "/exit", "/jobs", "/edit", "/redo", "/save", "/skills"
             ]
         );
         let row = t

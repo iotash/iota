@@ -1,4 +1,4 @@
-//! `/allow` and `/revoke` — the chat's door to the grant store (docs/design/grants.md §5.2, DIVERGENCES X-111).
+//! `/allow` — the chat's door to the grant store (docs/design/grants.md §5.2, DIVERGENCES X-111).
 //!
 //! The only door the shell has: a sandboxed command cannot be prompted mid-run, so a directory it must write
 //! is made writable here, typed by the user. `/allow <dir>` grants the directory's REAL location and its
@@ -9,10 +9,14 @@
 //! the CONNECTED servers' names before the argument is read as a directory (a `--mcp` server is named by its
 //! URL or `argv[0]`: [`named_server`]), and `<tool>` against its current tool list, so a typo is refused instead
 //! of stored, and the grant is keyed by the server's identity (its configured name, or a `--mcp` server's whole flag value),
-//! never the wire segment. `/revoke <dir | server:tool | server:*>` takes it back from every level that holds
-//! it; a bare `/allow` lists what is in effect, by level, then the static roots by where they were declared
-//! (`write_roots:`, `--add-dir`). This file parses and words; every change is kept by the grants service,
-//! [`Door::apply`] (`repl::grants`), as the dialog's and `/save`'s are.
+//! never the wire segment.
+//!
+//! The BARE `/allow` opens a two-tab surface, the `/file` way — the focused tab IS the verb. `Add` is a
+//! directory browser ([`crate::ui::facade::Pick::Dir`]: Enter descends, Space chooses, `./` is the directory shown) whose choice
+//! is granted for this session exactly as `/allow <dir>` grants it; `Grants` is a multi-select of every grant
+//! in effect, by level, and committing it takes each checked grant back from every level that holds it. This
+//! file parses and words; every change is kept by the grants service, [`Door::apply`] (`repl::grants`), as the
+//! dialog's and `/save`'s are.
 //!
 //! A message from the socket never reaches here: the loop's notice path runs no slash command
 //! (`repl::inbound`), and the model has no way to type one.
@@ -22,14 +26,17 @@ use std::path::{Path, PathBuf};
 
 use crate::app::{fs, paths, protected};
 use crate::mcp::Manager;
-use crate::repl::grants::{Door, Footing, Unsaved, label, server_name, unsaved_session};
-use crate::repl::render::styles::dim;
+use crate::repl::grants::{Door, Footing, Unsaved, label, unsaved_session};
 use crate::repl::run::Repl;
 use crate::session::SessionError;
 use crate::tool::grants::{self, Grants, Level, McpTool, ServerId, ToolKey};
+use crate::ui::facade::{Panel, TabbedSpec};
 
 /// What the user is told when the argument is not something `/allow` takes.
 const EXPECTED: &str = "expected a directory (starting with /, ~ or .) or <server>:<tool>";
+
+/// The `Grants` tab's prompt when nothing is granted.
+const NONE: &str = "No grants. Add makes a directory writable for this session; /allow project <dir> for this project.";
 
 /// A change made: the notice line, and — the session level changed but its bundle's meta could not be written —
 /// why, said after it.
@@ -48,26 +55,76 @@ fn kept(r: Result<(), Unsaved>, failed: &str) -> Result<Option<SessionError>, St
     }
 }
 
-/// `/allow` with `arg`, the trimmed text after it.
-pub(crate) fn cmd_allow(repl: &Repl, arg: &str) {
-    let tr = &repl.handles.tr;
-    let footing = &repl.handles.footing;
+/// `/allow` with `arg`, the trimmed text after it (`""` opens the surface).
+pub(crate) async fn cmd_allow(repl: &Repl, arg: &str) {
     if arg.is_empty() {
-        tr.notice_lines(&listing(&repl.handles.grants, footing));
+        panel(repl).await;
         return;
     }
     let servers = repl.handles.mcp.manager.as_deref();
-    match allow(&repl.door(), footing, home(repl), servers, arg) {
+    match allow(
+        &repl.door(),
+        &repl.handles.footing,
+        home(repl),
+        servers,
+        arg,
+    ) {
         Ok(done) => say(repl, done),
-        Err(why) => tr.error(&format!("/allow: {why}")),
+        Err(why) => repl.handles.tr.error(&format!("/allow: {why}")),
     }
 }
 
-/// `/revoke` with `arg`, the trimmed text after it.
-pub(crate) fn cmd_revoke(repl: &Repl, arg: &str) {
-    match revoke(&repl.door(), &repl.handles.footing, home(repl), arg) {
-        Ok(done) => say(repl, done),
-        Err(why) => repl.handles.tr.error(&format!("/revoke: {why}")),
+/// The bare `/allow`: `Add` (a directory browser opened on the project root) and `Grants` (every grant in
+/// effect, checked rows meaning "take back"). A cancel, or a commit with nothing chosen or checked, changes
+/// nothing.
+async fn panel(repl: &Repl) {
+    let door = repl.door();
+    let footing = &repl.handles.footing;
+    let held = granted(&door.grants);
+    let rows = held.iter().map(Granted::row).collect();
+    let mut grants_tab = Panel::multi("Grants", rows).with_search(true);
+    if held.is_empty() {
+        grants_tab = grants_tab.with_prompt(NONE);
+    }
+    let spec = TabbedSpec {
+        panels: vec![
+            Panel::dir_browser("Add", footing.project.root.clone()).with_search(true),
+            grants_tab,
+        ],
+        ..TabbedSpec::default()
+    };
+    // A facade failure is a cancel, as everywhere: a closed facade ends the loop at the next read.
+    let Ok(r) = repl.handles.ui.tabbed(&repl.handles.cancel, spec).await else {
+        return;
+    };
+    if r.cancelled {
+        return;
+    }
+    match r.focused {
+        0 => {
+            let path = r.panels.first().map(|p| p.path.clone()).unwrap_or_default();
+            if path.is_empty() {
+                return;
+            }
+            match allow_dir(&door, footing, home(repl), Level::Session, &path) {
+                Ok(done) => say(repl, done),
+                Err(why) => repl.handles.tr.error(&format!("/allow: {why}")),
+            }
+        }
+        1 => {
+            let checked = r
+                .panels
+                .get(1)
+                .map(|p| p.checked.clone())
+                .unwrap_or_default();
+            for done in revoke_checked(&door, &held, &checked) {
+                match done {
+                    Ok(done) => say(repl, done),
+                    Err(why) => repl.handles.tr.error(&format!("/allow: {why}")),
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -111,9 +168,23 @@ fn allow(
     if let Some((server, tool)) = named_server(arg, &names) {
         return allow_tool(door, servers, level, server, tool);
     }
-    let Some(typed) = typed_path(footing, home, arg) else {
+    if typed_path(footing, home, arg).is_none() {
         let (server, tool) = server_tool(arg).ok_or_else(|| EXPECTED.to_owned())?;
         return allow_tool(door, servers, level, server, tool);
+    }
+    allow_dir(door, footing, home, level, arg)
+}
+
+/// Grants the directory `arg` (spelled as one: [`typed_path`]) at `level`: the notice line, or why not.
+fn allow_dir(
+    door: &Door,
+    footing: &Footing,
+    home: Option<&Path>,
+    level: Level,
+    arg: &str,
+) -> Result<Done, String> {
+    let Some(typed) = typed_path(footing, home, arg) else {
+        return Err(EXPECTED.to_owned());
     };
     if !typed.is_dir() {
         return Err(format!("{arg} is not a directory"));
@@ -307,65 +378,6 @@ fn writable_by(
     (level == Level::Session && covers(Level::Session)).then_some("this session")
 }
 
-/// Takes the directory or the MCP tool `arg` back from every level that holds it: the notice line, or why not.
-/// A directory grant is matched on the path as typed (made absolute) and on its real location now, so a grant
-/// gone stale can still be named. The project level goes through its file first; one that cannot be written keeps the grant.
-fn revoke(door: &Door, footing: &Footing, home: Option<&Path>, arg: &str) -> Result<Done, String> {
-    // The stored grants' server names, resolved first as `/allow` resolves the connected ones ([`named_server`]):
-    // a grant is taken back with no server connected.
-    let names: Vec<String> = [Level::Session, Level::Project]
-        .into_iter()
-        .flat_map(|l| door.grants.snapshot(l).tools)
-        .filter_map(|k| match k {
-            ToolKey::Mcp { server, .. } => Some(server_name(&server)),
-            ToolKey::Builtin(_) => None,
-        })
-        .collect();
-    if let Some((server, tool)) = named_server(arg, &names) {
-        return revoke_tool(door, server, tool, arg);
-    }
-    let Some(typed) = typed_path(footing, home, arg) else {
-        let (server, tool) = server_tool(arg).ok_or_else(|| EXPECTED.to_owned())?;
-        return revoke_tool(door, server, tool, arg);
-    };
-    let real = fs::physical(&typed);
-    for dir in [Some(typed), real].into_iter().flatten() {
-        let from = revoke_where(
-            door,
-            |s| s.dirs.contains(&dir),
-            |s| {
-                s.dirs.retain(|d| *d != dir);
-            },
-        )?;
-        if let Some(done) = from.said(&dir.display().to_string()) {
-            return Ok(done);
-        }
-    }
-    Err(format!("nothing granted matches {arg}"))
-}
-
-/// Takes back every grant of `server`'s `tool` (`*` as itself, never as a pattern) from every level that holds
-/// it: the server need not be connected, and is matched by the name it is typed as ([`server_name`]) — so one
-/// `--mcp` name revokes the grants of every flag value it starts. The project level goes through its file first.
-fn revoke_tool(door: &Door, server: &str, tool: &str, arg: &str) -> Result<Done, String> {
-    let matches = |k: &ToolKey| match k {
-        ToolKey::Mcp {
-            server: id,
-            tool: t,
-        } => t.as_str() == tool && server_name(id) == server,
-        ToolKey::Builtin(_) => false,
-    };
-    revoke_where(
-        door,
-        |s| s.tools.iter().any(matches),
-        |s| {
-            s.tools.retain(|k| !matches(k));
-        },
-    )?
-    .said(&format!("{server}:{tool}"))
-    .ok_or_else(|| format!("nothing granted matches {arg}"))
-}
-
 /// The levels a revocation took a grant from, and what keeping the session level's left unsaved.
 struct Revoked {
     from: Vec<&'static str>,
@@ -410,47 +422,87 @@ fn revoke_where(
     Ok(out)
 }
 
-/// The bare `/allow`: every grant in effect, by level, then the static roots — each saying where it was
-/// declared — or, with none, how to make one.
-fn listing(grants: &Grants, footing: &Footing) -> Vec<String> {
-    let session = grants.snapshot(Level::Session);
-    let project = grants.snapshot(Level::Project);
-    if session.is_empty()
-        && project.is_empty()
-        && footing.write_roots.is_empty()
-        && footing.added_dirs.is_empty()
-    {
-        return vec![dim(
-            "No grants. /allow <dir> makes a directory writable for this session, /allow project <dir> for this project.",
-        )];
+/// One grant in effect, as the `Grants` tab lists it.
+struct Granted {
+    /// The level that holds it.
+    level: Level,
+    /// The directory, or the tool.
+    what: Grant,
+}
+
+/// What a [`Granted`] row grants.
+#[derive(PartialEq)]
+enum Grant {
+    Dir(PathBuf),
+    Tool(ToolKey),
+}
+
+impl Granted {
+    /// The row: its level, then the directory (`(stale)` when it no longer leads anywhere) or the tool, a
+    /// `--mcp` server's also naming the whole flag value it is keyed by.
+    fn row(&self) -> String {
+        let level = match self.level {
+            Level::Session => "this session",
+            Level::Project => "this project",
+        };
+        let what = match &self.what {
+            Grant::Dir(d) => {
+                let stale = if grants::is_live(d) { "" } else { " (stale)" };
+                format!("{}{stale}", d.display())
+            }
+            Grant::Tool(key) => listed(key),
+        };
+        format!("{level}  {what}")
     }
-    let mut rows: Vec<(&str, String)> = Vec::new();
-    for (label, set) in [("this session", &session), ("this project", &project)] {
-        for d in &set.dirs {
-            let stale = if grants::is_live(d) { "" } else { " (stale)" };
-            rows.push((label, format!("{}{stale}", d.display())));
-        }
-        for key in &set.tools {
-            rows.push((label, listed(key)));
+
+    /// What a revocation's notice names.
+    fn shown(&self) -> String {
+        match &self.what {
+            Grant::Dir(d) => d.display().to_string(),
+            Grant::Tool(key) => label(key),
         }
     }
-    for (roots, by) in [
-        (&footing.write_roots, "write_roots:"),
-        (&footing.added_dirs, "--add-dir"),
-    ] {
-        for r in roots {
-            rows.push(("static", format!("{} ({by})", r.display())));
-        }
-    }
-    let width = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
-    let mut out = vec!["Grants".to_owned()];
-    let mut last = "";
-    for (level, value) in rows {
-        let label = if level == last { "" } else { level };
-        last = level;
-        out.push(dim(&format!("  {label:<width$}   {value}")));
+}
+
+/// Every grant in effect: this session's, then this project's, each level's directories before its tools.
+fn granted(grants: &Grants) -> Vec<Granted> {
+    let mut out = Vec::new();
+    for level in [Level::Session, Level::Project] {
+        let set = grants.snapshot(level);
+        let dirs = set.dirs.into_iter().map(Grant::Dir);
+        let tools = set.tools.into_iter().map(Grant::Tool);
+        out.extend(dirs.chain(tools).map(|what| Granted { level, what }));
     }
     out
+}
+
+/// Takes back the grants of the `checked` rows of `held`, each from every level that holds it — a directory
+/// checked once at either level is gone at both — with one notice line, or why not, per grant.
+fn revoke_checked(door: &Door, held: &[Granted], checked: &[usize]) -> Vec<Result<Done, String>> {
+    let mut picked: Vec<&Granted> = Vec::new();
+    for g in checked.iter().filter_map(|&i| held.get(i)) {
+        if !picked.iter().any(|p| p.what == g.what) {
+            picked.push(g);
+        }
+    }
+    picked
+        .into_iter()
+        .filter_map(|g| {
+            let r = match &g.what {
+                Grant::Dir(dir) => revoke_where(
+                    door,
+                    |s| s.dirs.contains(dir),
+                    |s| s.dirs.retain(|d| d != dir),
+                ),
+                Grant::Tool(key) => revoke_where(
+                    door,
+                    |s| s.tools.contains(key),
+                    |s| s.tools.retain(|k| k != key),
+                ),
+            };
+            r.map(|from| from.said(&g.shown())).transpose()
+        })
+        .collect()
 }
 
 #[cfg(all(test, unix))]
@@ -459,10 +511,11 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use super::{Footing, Grants, Level, ToolKey, listing, named_server, server_tool};
+    use super::{
+        Footing, Grants, Level, ToolKey, granted, named_server, revoke_checked, server_tool,
+    };
     use crate::repl::grants::{Door, ProjectFile};
     use crate::session::SessionStore;
-    use crate::text::ansi::strip_sgr;
     use crate::tool::grants::{McpTool, ServerId};
 
     /// A temp dir holding `proj/` (the project, a repository) and `out/` beside it; their real locations.
@@ -520,8 +573,18 @@ mod tests {
             super::allow(&self.door, &self.footing, None, None, arg).map(|d| d.line)
         }
 
-        fn revoke(&self, arg: &str) -> Result<String, String> {
-            super::revoke(&self.door, &self.footing, None, arg).map(|d| d.line)
+        /// The `Grants` tab's rows now.
+        fn rows(&self) -> Vec<String> {
+            granted(self.g()).iter().map(super::Granted::row).collect()
+        }
+
+        /// Commits the `Grants` tab with the rows `checked` (indices into [`Self::rows`]) checked.
+        fn revoke(&self, checked: &[usize]) -> Vec<Result<String, String>> {
+            let held = granted(self.g());
+            revoke_checked(&self.door, &held, checked)
+                .into_iter()
+                .map(|r| r.map(|d| d.line))
+                .collect()
         }
     }
 
@@ -564,15 +627,15 @@ mod tests {
         );
         assert_eq!(c.g().live_dirs(), std::slice::from_ref(&out));
         assert_eq!(
-            c.revoke("../out/").unwrap(),
-            format!("✓ revoked {} (this session)", out.display())
+            c.revoke(&[0]),
+            [Ok(format!("✓ revoked {} (this session)", out.display()))]
         );
         assert!(c.g().live_dirs().is_empty());
     }
 
     /// `project` is a keyword: the grant goes to the project's file first, then memory. A project grant covers a
-    /// session one asked for later, but a session grant does not stop a project one; a revoke takes the
-    /// directory from every level that holds it, and the file with it.
+    /// session one asked for later, but a session grant does not stop a project one; committing the `Grants` tab
+    /// takes a checked directory from every level that holds it, and the file with it.
     #[test]
     fn allow_project_reaches_the_file_and_revoke_every_level() {
         let (t, root, out) = fixture();
@@ -610,15 +673,22 @@ mod tests {
             )
         );
         assert_eq!(
-            c.revoke("../out").unwrap(),
-            format!("✓ revoked {} (this session, this project)", out.display())
+            c.rows(),
+            [
+                format!("this session  {}", out.display()),
+                format!("this project  {}", out.display()),
+            ]
+        );
+        assert_eq!(
+            c.revoke(&[1]),
+            [Ok(format!(
+                "✓ revoked {} (this session, this project)",
+                out.display()
+            ))]
         );
         assert!(g.live_dirs().is_empty());
         assert!(pf.store.project_grants(&root).unwrap().is_empty());
-        assert_eq!(
-            c.revoke("../out").unwrap_err(),
-            "nothing granted matches ../out"
-        );
+        assert!(c.rows().is_empty());
 
         // A file that cannot be read is never replaced: the grant is refused, saying why.
         let path = pf.store.grants_path(&root);
@@ -664,61 +734,70 @@ mod tests {
         assert_eq!(server_tool("github"), None);
     }
 
-    /// The listing: each level once in the label column, a stale grant marked, the static roots last.
+    /// The `Grants` tab: every grant at both levels, each row naming its level, a stale directory marked and a
+    /// `--mcp` grant naming its flag value; committing revokes exactly the checked rows — each at every level
+    /// that holds it, a grant checked twice said once — and leaves the unchecked ones.
     #[test]
-    fn the_listing_names_each_level_once() {
+    fn the_grants_tab_revokes_exactly_the_checked_rows_at_both_levels() {
         let (t, root, out) = fixture();
         let c = Chat::new(&t, &root, &[], &[]);
-        let g = c.g();
-        assert_eq!(
-            listing(g, &c.footing)
-                .iter()
-                .map(|l| strip_sgr(l))
-                .collect::<Vec<_>>(),
-            [
-                "No grants. /allow <dir> makes a directory writable for this session, /allow project <dir> for this project."
-            ]
-        );
+        let (g, pf) = (c.g(), c.pf());
+        assert!(c.rows().is_empty());
         let gone = t.path().join("gone");
+        let star = ToolKey::Mcp {
+            server: ServerId::Config("github".to_owned()),
+            tool: McpTool::Any,
+        };
+        let flag = ToolKey::Mcp {
+            server: ServerId::Flag("npx -y @acme/mcp".to_owned()),
+            tool: McpTool::Named("push".to_owned()),
+        };
         g.update(Level::Session, |s| {
             s.add_dir(out.clone());
             s.add_dir(gone.clone());
-            s.add_tool(ToolKey::Builtin("edit_file".to_owned()));
+            s.add_tool(star.clone());
         });
-        g.update(Level::Project, |s| {
-            s.add_dir(out.join("sub"));
-            s.add_tool(ToolKey::Mcp {
-                server: ServerId::Config("github".to_owned()),
-                tool: McpTool::Any,
-            });
-            s.add_tool(ToolKey::Mcp {
-                server: ServerId::Flag("npx -y @acme/mcp".to_owned()),
-                tool: McpTool::Named("push".to_owned()),
-            });
-        });
-        let c = Chat::new(
-            &t,
-            &root,
-            &[PathBuf::from("/data/a")],
-            &[PathBuf::from("/data/b")],
-        );
-        let lines: Vec<String> = listing(g, &c.footing)
-            .iter()
-            .map(|l| strip_sgr(l))
-            .collect();
+        c.allow("project ../out/sub").unwrap();
+        c.door
+            .apply(Level::Project, |s| {
+                s.add_tool(star.clone());
+                s.add_tool(flag.clone());
+            })
+            .unwrap();
         assert_eq!(
-            lines,
+            c.rows(),
             [
-                "Grants".to_owned(),
-                format!("  this session   {}", out.display()),
-                format!("                 {} (stale)", gone.display()),
-                "                 edit_file".to_owned(),
-                format!("  this project   {}", out.join("sub").display()),
-                "                 github:*".to_owned(),
-                "                 npx:push (--mcp npx -y @acme/mcp)".to_owned(),
-                "  static         /data/a (write_roots:)".to_owned(),
-                "                 /data/b (--add-dir)".to_owned(),
+                format!("this session  {}", out.display()),
+                format!("this session  {} (stale)", gone.display()),
+                "this session  github:*".to_owned(),
+                format!("this project  {}", out.join("sub").display()),
+                "this project  github:*".to_owned(),
+                "this project  npx:push (--mcp npx -y @acme/mcp)".to_owned(),
             ]
         );
+        // The stale directory, `github:*` (checked at both of its rows) and the project's directory.
+        assert_eq!(
+            c.revoke(&[1, 2, 3, 4]),
+            [
+                Ok(format!("✓ revoked {} (this session)", gone.display())),
+                Ok("✓ revoked github:* (this session, this project)".to_owned()),
+                Ok(format!(
+                    "✓ revoked {} (this project)",
+                    out.join("sub").display()
+                )),
+            ]
+        );
+        assert_eq!(
+            c.rows(),
+            [
+                format!("this session  {}", out.display()),
+                "this project  npx:push (--mcp npx -y @acme/mcp)".to_owned(),
+            ]
+        );
+        assert_eq!(
+            pf.store.project_grants(&root).unwrap().tools,
+            std::slice::from_ref(&flag)
+        );
+        assert!(c.revoke(&[]).is_empty(), "nothing checked revokes nothing");
     }
 }

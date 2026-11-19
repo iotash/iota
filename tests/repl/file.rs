@@ -413,7 +413,7 @@ async fn file_is_advertised_and_dispatched() {
         row,
         [
             "/file", "/new", "/session", "/model", "/export", "/status", "/tools", "/allow",
-            "/revoke", "/debug", "/exit"
+            "/debug", "/exit"
         ]
     );
     // A longer name is NOT the command: "/filex" falls through as a plain message.

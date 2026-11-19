@@ -1,5 +1,5 @@
 //! The grants' door-side service (docs/design/grants.md §5, §9 Q10): what every door of the chat — the
-//! approval dialog, `/allow` and `/revoke`, `/save`, `/new` and `/session` — and the start of every mode do to
+//! approval dialog, `/allow`, `/save`, `/new` and `/session` — and the start of every mode do to
 //! the ONE store (`tool::grants::Grants`) and to where its two levels are kept.
 //!
 //! A change goes through `Door::apply`: the session level changes in memory and is then written into the

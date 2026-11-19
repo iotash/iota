@@ -348,7 +348,7 @@ async fn compact_is_registered_only_with_token_accounting() {
         commands(&f.ui),
         [
             "/file", "/new", "/session", "/model", "/compact", "/export", "/status", "/tools",
-            "/allow", "/revoke", "/debug", "/exit"
+            "/allow", "/debug", "/exit"
         ],
         "/compact keeps Go's position, between /model and /export"
     );
@@ -361,7 +361,7 @@ async fn compact_is_registered_only_with_token_accounting() {
         commands(&f.ui),
         [
             "/file", "/new", "/session", "/model", "/export", "/status", "/tools", "/allow",
-            "/revoke", "/debug", "/exit"
+            "/debug", "/exit"
         ]
     );
     assert!(

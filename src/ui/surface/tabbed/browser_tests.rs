@@ -60,6 +60,52 @@ fn enter_descends_into_a_directory_and_commits_a_file() {
     );
 }
 
+/// A directory picker (`Pick::Dir`, `/allow`'s `Add` tab) lists `./` (the directory shown), `../` and the
+/// directories — no file. Enter only ever descends (`./` stays put); Space chooses the highlighted directory
+/// and commits, `./` choosing the one shown. The hint names both keys. The file mode is untouched by this
+/// (`enter_descends_into_a_directory_and_commits_a_file`).
+#[test]
+fn a_directory_picker_descends_on_enter_and_chooses_on_space() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let sub = root.path().join("sub");
+    std::fs::create_dir_all(sub.join("deep")).expect("mkdir");
+    write(&root.path().join("a.txt"), "");
+    let picker = |dir: &Path| Panel::dir_browser("Add", dir.to_path_buf());
+
+    let mut s = Surf::open(vec![picker(root.path())]);
+    assert_eq!(s.names(), ["./", "../", "sub/"]);
+    assert_eq!(
+        s.hint(),
+        "↑↓ move · Enter open · Space choose · q/Esc cancel"
+    );
+
+    // Enter on `./` reloads where it is; Enter on `sub/` descends — neither commits.
+    s.tap(key(KeyCode::Enter));
+    assert_eq!(s.names(), ["./", "../", "sub/"]);
+    s.tap(key(KeyCode::Down));
+    s.tap(key(KeyCode::Down));
+    s.tap(key(KeyCode::Enter));
+    assert_eq!(s.names(), ["./", "../", "deep/"]);
+    assert_eq!(s.ps(0).dir, sub);
+
+    // Space on `deep/` chooses it without entering it.
+    s.tap(key(KeyCode::Down));
+    s.tap(key(KeyCode::Down));
+    let r = closed(s.press(ch(' ')));
+    assert!(!r.cancelled);
+    assert_eq!(PathBuf::from(&r.panels[0].path), sub.join("deep"));
+
+    // Space on `./` chooses the directory shown.
+    let mut s = Surf::open(vec![picker(&sub)]);
+    let r = closed(s.press(ch(' ')));
+    assert_eq!(PathBuf::from(&r.panels[0].path), sub);
+
+    // Space in the file browser chooses nothing and keeps the surface open.
+    let mut s = Surf::open(vec![browser(root.path(), false)]);
+    s.tap(ch(' '));
+    assert!(s.ps(0).chosen.is_empty());
+}
+
 /// The listing rule: `"../"` first, then name-sorted directories, then name-sorted files;
 /// dot-hidden entries never appear (tabbed.go:259-289).
 #[test]

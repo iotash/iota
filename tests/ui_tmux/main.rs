@@ -82,7 +82,8 @@
 //! | `49-fullscreen-grow.sh` | tui-plan S7b | — (a code block and a table streamed with holds mid-block: the arrived lines on screen and no metered counter, the code re-laid-out under its gutter at 50 columns mid-stream, the table's rows boxed as they arrive, each line once in the history) |
 //! | `50-list-overlay.sh` | sel-float, sel-top | — (a fresh session: the banner on the first rows, unchanged byte for byte while `/` opens the list under it, `d` narrows it and it closes; over a full screen, `/` opens the list and `d` narrows it: the rows above the area unchanged byte for byte through both, the top edge coming down with the narrowed list onto it and the rows it gave back showing the conversation, the list one blank row over the composer, the gap row blank in raw bytes; closing gives the screen back) |
 //! | `51-xml-tab.sh` | xml-tab | — (a pasted `<hc>` snippet on a plain terminal — no host claims an element — is the user block byte for byte, with no tab, on screen and in the exit's write-out) |
-//! | `53-mcp-grant.sh` | grants-refactor, X-112 | — (a stdio MCP server's tool called by the model: the dialog's four items, Esc denying it, `/allow srv:echo` saying and listing the grant, the same call then running without a dialog) |
+//! | `53-mcp-grant.sh` | grants-refactor, X-112 | — (a stdio MCP server's tool called by the model: the dialog's four items, Esc denying it, `/allow srv:echo` saying the grant and the bare `/allow`'s Grants tab listing it, the same call then running without a dialog) |
+//! | `54-allow-panel.sh` | allow-panel, X-111 | — (the bare `/allow`: the `Add` tab a directory browser listing `./`, `../` and no file, its hint naming Enter and Space; Enter on `../` descends, Space chooses a sibling directory and the transcript says it is writable, `/status` counting it; the `Grants` tab lists it, Space and Enter revoke it, `/status`'s Grants row gone) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -755,6 +756,13 @@ fn tmux_theme_live() {
 #[test]
 fn tmux_mcp_grant() {
     run_scenario("53-mcp-grant.sh");
+}
+
+/// allow-panel (X-111): the bare `/allow`'s two tabs — a directory granted from `Add` by Space after Enter
+/// descended, then revoked from `Grants`, `/status` following both.
+#[test]
+fn tmux_allow_panel() {
+    run_scenario("54-allow-panel.sh");
 }
 
 /// M2 (tui-plan §7) — a measurement, not a check: the bytes the tmux iota runs in sends to its own

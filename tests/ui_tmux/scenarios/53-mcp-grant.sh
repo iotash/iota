@@ -8,7 +8,7 @@
 #   53.1 the model calls the server's tool — the approval dialog opens with its FOUR items: allow once, always
 #        allow `srv:echo` in this session, in this project, deny;
 #   53.2 Esc denies it: the call does not run, and the round closes on the refusal;
-#   53.3 `/allow srv:echo` grants it for this session, saying so; the bare `/allow` lists it;
+#   53.3 `/allow srv:echo` grants it for this session, saying so; the bare `/allow`'s Grants tab lists it;
 #   53.4 the same call again runs without a dialog and its output closes the round.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
@@ -58,7 +58,11 @@ key Enter
 wait_all '✓ srv:echo runs without asking in this session' || miss "/allow never said the grant"
 type_ '/allow'
 key Enter
-wait_all 'this session   srv:echo' || miss "the bare /allow never listed the grant"
+wait_vis 'Space choose' || miss "the bare /allow never opened its surface"
+key Tab
+wait_vis 'this session  srv:echo' || miss "the Grants tab never listed the grant"
+key Escape
+wait_gone 'this session  srv:echo' || miss "the surface never closed on Esc"
 settle || miss "frame never settled after /allow"
 
 # ------------------------------------------------------------------ 53.4: the call runs, unasked
