@@ -98,14 +98,15 @@ A protected write is its own class (`Write::Protected`):
 
 - **Never silent.** `auto_write` does not waive it; `write_roots:` cannot
   admit it (listing `<root>/.git` or `<root>/.git/hooks` there is accepted
-  and opens the rest of `.git`, but not the table's paths); no session grant
-  covers it — neither the tool-wide inside grant nor an outside-write grant
-  for its directory.
+  and opens the rest of `.git`, but not the table's paths); no grant
+  covers it — neither the writer's tool grant nor a directory grant over it
+  (the table is classified before inside/outside, and a granted repository
+  gets the git rows a `write_roots:` entry gets).
 - **Asked one file at a time** under `outside_writes: ask` with a user: the
   prompt names the real path, `(protected)` and why, e.g. `write_file
   /p/.git/hooks/pre-commit (protected): git executes the files in .git/hooks
   on the user's next git command — allow?`, and offers only `Allow once` /
-  `Deny` (`ApprovalSubject::scope` is `None`, the gate's `Grant::Never`). The
+  `Deny` (`ApprovalSubject::scope` is `None`, the dialog's `Offer::Nothing`). The
   call lands only with `Approved::Once` naming exactly that real path.
 - **Refused otherwise**: `<path> is protected: <why> — …`, ending, under
   `refuse`, ``outside_writes: refuse` refuses every write that needs
@@ -169,9 +170,10 @@ file's sniff to its read budget too.
 
 ## Approval
 
-Approval is asked before a call runs (`requires_approval`, per call); the
-jail is checked inside it. For the writers the two are tied by the path's
-class:
+Approval is asked before a call runs (`requires_approval`, per call, read
+by `tool::approval::gate` in both walks); the jail is checked inside it. For
+the writers the two are tied by the path's class — INSIDE being under the
+project root, a `write_roots:` entry or a live directory grant:
 
 | class | chat (a user to ask) | `-m`, the SDK path (nobody to ask) |
 |---|---|---|
@@ -189,37 +191,42 @@ class:
 - **One resolution per call.** `Tool::approval_subject` resolves an
   outside write's real location ONCE and answers `ApprovalSubject { detail,
   target, scope }`: the prompt's text, the exact path "allow once" admits,
-  and the directory "allow for this session" grants (the target's parent,
-  or the target itself when it has none — `/` — so it never collapses into
-  the tool-wide key). The walk takes the prompt's detail and the grant's key
-  from that one answer, so what is shown and what is keyed cannot disagree
-  (review B1: two resolutions let a link flipped between them pair one
-  directory's prompt with another's grant).
-- **"Allow for this session"** for an outside write grants that real
-  DIRECTORY through that tool only, and the option says so (`Allow in
-  <dir> for this session`). The gate keys its grants by wire tool name and
-  scope (`None` = the whole tool, as for an inside write or a shell call): a
-  grant for one directory does not cover another, nor the same directory
-  through the other writer, and an inside grant never covers an outside
-  write. Only the exact directory is granted, not its subtree. The grants
-  belong to the conversation: `/new` and a `/session` resume clear them
-  (`ApprovalGate::reset`).
-- **The decision travels with the call, bound to what was approved.** The
-  interactive walk sets `RunCtx::approved` from the gate's answer and the
-  subject: `Approved::Once(target)` for "allow once",
-  `Approved::Dir(scope)` for a session grant (given now or earlier).
+  and the directory the dialog offers to make writable (the target's real
+  parent). Both walks decide through `tool::approval::gate`, which takes the
+  subject from that one answer, so what is shown and what is granted cannot
+  disagree (review B1: two resolutions let a link flipped between them pair
+  one directory's prompt with another's grant).
+- **"Allow, and make `<dir>` writable for this session"** for an outside
+  write adds that real DIRECTORY to the run's grant store
+  (`tool::grants::Grants`, docs/design/grants.md) and lets this call run.
+  A directory grant is a write root added at run time: the directory and
+  its subtree, for both writers, read by the jail at every call beside the
+  static `write_roots:` (`admits_real`, the protected table's extra roots,
+  the refusal's roots clause). A write there is thereafter INSIDE — asked
+  or not by `auto_write`, like one in the project root. The grant is the
+  real path resolved when it was made, and LIVE only while that path is
+  still its own real location: a granted directory replaced by a symlink
+  admits nothing until it comes back. The item is not offered when `<dir>`
+  is `/`, the home directory or an ancestor of it (one keypress on a write
+  to `~/x.txt` would open `~/.ssh` and every rc file): such a write offers
+  `Allow once` / `Deny` only. The tool's own `Allow for this session` (an
+  inside write, a shell call) is a tool grant, and a tool grant never
+  answers a call bound to a location — an inside grant never covers an
+  outside write. The session level belongs to the conversation: `/new` and
+  a `/session` switch empty it.
+- **"Allow once" travels with the call, bound to what was approved.** The
+  interactive walk sets `RunCtx::approved` to `Approved::Once(target)`.
   `write_target` re-resolves the real location at call time and admits an
-  outside path only if "allow once" names exactly it, or the grant's
-  directory is its directory — compared as paths, never as rendered text. A
-  caller that skips the gate — the parallel batches, the headless loop, any
-  future one — hands over `None`, and the call refuses; a link swapped after
-  the gate moves the real location away from what was approved, and the call
+  outside path only if "allow once" names exactly it — compared as paths,
+  never as rendered text. A caller that skips the gate — the parallel
+  batches, the headless loop, any future one — hands over `None`, and the
+  call refuses; a link swapped after the gate moves the real location away
+  from what was approved (or out of a granted directory), and the call
   refuses too. The alternative, "`*_call` admits OUTSIDE because every
   caller gates", would hang the guarantee on a property of the callers;
   `an_outside_write_needs_this_calls_approval` fails under it, and
   `a_link_swapped_between_detail_and_scope_writes_nothing` /
-  `a_grant_for_one_directory_never_admits_a_write_the_link_moved_into_another`
-  replay B1.
+  `a_link_swapped_after_a_grant_writes_nothing` replay B1.
 - **The read ledger** stays keyed on the path as given (what `read_file`
   recorded); the bytes go to the real location, checked to be the same file
   at call time.
@@ -228,8 +235,8 @@ class:
 - **`outside_writes: refuse`** restores the jail as it was before writes
   could be approved: the existing refusal text, no prompt, `auto_write`
   unchanged. The other way to admit a directory — silently, in every mode — is
-  to list it in `write_roots:`, read when the tools are assembled, so a
-  running session cannot gain a root.
+  to list it in `write_roots:`, read when the tools are assembled; a running
+  chat gains a root only through the dialog's directory grant.
 - **The hold** (`waives_approval`, docs/design/agent-messaging.md §4) still
   reads `auto_write`: it waives writes inside the roots, which then run
   unasked; an outside write is asked or refused, never waived.
@@ -299,9 +306,12 @@ and Merge routing; outside writes: the three classes
 refused under `ask` in `write_path_refuses_what_it_cannot_resolve`), who
 asks (`the_writers_ask_matrix`), the approval invariant and the link swap
 (`an_outside_write_needs_this_calls_approval`, `a_batch_never_writes_outside`),
-the chat matrix and the per-directory grant
+the chat matrix and the directory grant
 (`repl::turn::tools::tests::an_outside_write_is_asked_always_and_lands_where_the_prompt_said`,
-`an_outside_session_grant_is_one_directory_through_one_tool`), the headless
+`a_directory_granted_in_the_dialog_is_a_root_for_both_writers`,
+`the_dialog_never_offers_the_home_directory`,
+`a_link_swapped_after_a_grant_writes_nothing`; the store itself in
+`tool::grants::tests`, the gate in `tool::approval::tests`), the headless
 matrix (`tests/headless/approval.rs::the_quiet_loop_never_writes_outside_the_roots`),
 the key (`outside_writes_is_a_top_level_key_only`,
 `tests/cmd/config.rs::outside_writes_defaults_to_ask_and_only_tightens_across_the_stack`)

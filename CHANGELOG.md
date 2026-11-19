@@ -19,6 +19,14 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   typed while iota is waiting for the answer (a few milliseconds on a terminal
   that answers, 1 s once on one that never does) is dropped, with the keys right after it that
   could be part of an answer. `Alt+]` does nothing in iota.
+- **Allowing a write outside the project makes its directory writable.** The
+  approval prompt for an `edit_file`/`write_file` call outside the project now
+  offers `Allow, and make <dir> writable for this session`: the directory and
+  everything under it become writable by both tools until `/new` or a
+  `/session` switch, with `tools.code.auto_write` deciding whether those writes
+  are asked, as in the project. Before, the grant covered one tool in that exact
+  directory. The prompt never offers `/`, your home directory or a directory
+  above it.
 
 ### Fixed
 
