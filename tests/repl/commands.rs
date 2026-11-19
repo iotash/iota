@@ -3278,7 +3278,7 @@ async fn allow_makes_a_directory_writable_and_says_where_it_really_is() {
         .await
         .expect("clean exit");
 
-    assert_eq!(grants.live_dirs(), [out.clone()]);
+    assert_eq!(grants.live_dirs(), std::slice::from_ref(&out));
     let printed = printed(&f.ui);
     let want = format!(
         "✓ {} is writable for this session (../link leads there)",

@@ -9,6 +9,7 @@
 //! A message from the socket never reaches here: the loop's notice path runs no slash command
 //! (`repl::inbound`), and the model has no way to type one.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::app::{fs, paths, protected};
@@ -102,7 +103,7 @@ fn allow(grants: &Grants, b: &Boundary<'_>, arg: &str) -> Result<String, String>
     grants.grant_dir(Level::Session, real.clone());
     let mut line = format!("✓ {shown} is writable for this session");
     if real != typed {
-        line.push_str(&format!(" ({arg} leads there)"));
+        let _ = write!(line, " ({arg} leads there)");
     }
     Ok(line)
 }
@@ -226,7 +227,7 @@ mod tests {
             allow(&g, &b, "../out").unwrap_err(),
             format!("{} is already writable (this session)", out.display())
         );
-        assert_eq!(g.live_dirs(), [out.clone()]);
+        assert_eq!(g.live_dirs(), std::slice::from_ref(&out));
         assert_eq!(
             revoke(&g, &b, "../out/").unwrap(),
             format!("✓ revoked {} (this session)", out.display())
