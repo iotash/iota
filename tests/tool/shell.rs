@@ -688,7 +688,8 @@ fn the_shell_description_states_the_shell_state_contract() {
         let protected = " Inside the root, .iota.yaml, .git/config, .git/config.worktree and .git/hooks \
                          (a submodule's under .git/modules too) stay read-only and .git itself cannot be moved \
                          or replaced, so `git config`, `git remote add`, hook installers and the iota commands that write a config or the trust record (`iota config trust|untrust|init`, `iota mcp add|remove`) fail there: ask the \
-                         user to make such a change.\n\n";
+                         user to make such a change. The user can make another directory writable with /allow <dir>: \
+                         when a command must write outside these, ask for that instead of working around it.\n\n";
         assert!(
             sandboxed_blocked.contains(&format!("network access is BLOCKED.{protected}")),
             "the sandbox suffix still precedes the background paragraph"
