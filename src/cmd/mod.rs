@@ -451,13 +451,6 @@ fn assemble_tools(
     io: &mut io::Streams,
 ) -> Result<ToolAssembly, CliError> {
     let dirs = &ctx.env.dirs;
-    // The sessions tree is protected (`app::protected`, X-95), and bubblewrap cannot pin a path that does not
-    // exist: created now, before any tool runs, so a sandboxed command can never create it first.
-    if let Some(sessions) = dirs.sessions_dir()
-        && let Err(e) = std::fs::create_dir_all(&sessions)
-    {
-        io.warning(&format!("cannot create {}: {e}", sessions.display()));
-    }
     // root.go:187-194
     let (mcp_configs, mcp_defers) =
         assemble::build_mcp_configs(cfg, &settings.resolved.agent, &inv.args.mcp, &mut |w| {

@@ -1202,6 +1202,25 @@ async fn the_sandbox_never_writes_the_sessions_tree() {
     assert!(home.join("home.txt").exists() && app_home.join("other.txt").exists());
 }
 
+/// The sandboxed shell set creates `~/.iota/sessions` when it is built (bubblewrap cannot pin a missing path);
+/// with `sandbox: off` nothing is created under the home (D-41: a run writes there only what it must).
+#[test]
+fn a_sandboxed_shell_set_creates_the_sessions_tree() {
+    for (cfg, want) in [
+        ("sandbox: off", false),
+        ("sandbox: auto", exec::available()),
+    ] {
+        let (_dir, mut env, _root) = shell_env();
+        let home = TempDir::new().expect("home");
+        env.dirs.home = Some(home.path().to_path_buf());
+        new_shell_set(&env, node(cfg).as_ref()).expect("shell set");
+        assert_eq!(home.path().join(".iota/sessions").is_dir(), want, "{cfg}");
+        if !want {
+            assert!(!home.path().join(".iota").exists(), "{cfg}");
+        }
+    }
+}
+
 /// A linked worktree (`git worktree add`): `<root>/.git` is a `gitdir:` file, and the hooks git runs and the
 /// config it reads are the main repository's (`<main>/.git/hooks`, `<main>/.git/config`) and the worktree's
 /// `config.worktree` — outside the root. With the main `.git` listed in `write_roots:` (which a sandboxed

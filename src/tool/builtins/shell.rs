@@ -157,6 +157,13 @@ pub fn new_shell_set(
     let jobs = env.jobs.clone().ok_or(SetError::NoJobs)?;
     // A sandbox binary appearing or disappearing later has no effect on this run.
     let sandboxed = shell_cfg.sandbox == "auto" && exec::available();
+    // `~/.iota/sessions` is a protected tree (`crate::app::protected`, X-95), and bubblewrap cannot pin a path
+    // that does not exist: a sandboxed set creates it before its first command, so no command creates it first.
+    // Only here — a run with no sandboxed shell writes nothing under the home for it (D-41). Not checked:
+    // whatever stops iota creating it stops a sandboxed command too.
+    if sandboxed && let Some(sessions) = env.dirs.sessions_dir() {
+        let _ = std::fs::create_dir_all(sessions);
+    }
     Ok(vec![Arc::new(ShellTool {
         shell_cfg,
         shell,

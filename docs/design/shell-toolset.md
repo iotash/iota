@@ -71,7 +71,7 @@ code-toolset.md, Protected paths): `<root>/.iota.yaml|yml`, `<root>/.git/hooks`,
 common dir's `hooks` and `config` and the gitdir's `config.worktree`; the
 same rows for every `write_roots:` entry that is itself a repository), `~/.iota.yaml|yml`,
 `~/.iota/trusted.json`, `~/.iota/sessions` and everything under it (created
-when a run starts, since bubblewrap cannot pin a missing path), and the
+when a sandboxed set is built, since bubblewrap cannot pin a missing path), and the
 `<root>/.git` (and common dir) and
 `~/.iota` entries themselves (not their contents), so neither can be renamed
 or replaced to move the others out from under the rule; and every
