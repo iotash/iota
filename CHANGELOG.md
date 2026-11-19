@@ -22,6 +22,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **An `iota` the model runs with `-c`, `--config` or `--mcp` stays in the
+  sandbox.** Such a line chose its own config or started its own server, and
+  was let out of the shell sandbox like any other `iota` call: a config the
+  model wrote could turn the sandbox off. It now runs sandboxed.
 - **A copy reaches the clipboard of the machine you are sitting at.** Outside
   tmux, a mouse selection now goes both to the local clipboard tool (`pbcopy`,
   `xclip`, …) and to the terminal (OSC 52). Before, iota picked one: in a

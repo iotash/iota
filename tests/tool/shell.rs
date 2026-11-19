@@ -1365,6 +1365,83 @@ async fn the_sandbox_keeps_the_trust_and_config_writers_in() {
     }
 }
 
+/// A line that chooses what the child loads or starts is not the exception either (DIVERGENCES X-44, amended):
+/// `-c`/`--config` names a config — one the model could have written inside the project with `sandbox: off`
+/// and `auto_run: true` — and `--mcp` a command to start as a server. Even with `auto_run: true`, where
+/// nothing is asked, each spelling runs sandboxed: no mark on the header, and the stand-in binary's write
+/// outside the project is refused. Its write's own exit status reports the refusal, whatever the platform's
+/// sandbox calls it.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_sandbox_keeps_an_iota_that_names_its_own_config_in() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let (dir, root, outside, sb) = sandbox_fixture();
+    if skip_unless_sandboxed(
+        "the_sandbox_keeps_an_iota_that_names_its_own_config_in",
+        &sb,
+        &root,
+    )
+    .await
+    {
+        return;
+    }
+    let mark = outside.join("mark");
+    let bin = dir.path().join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let fake = bin.join("iota");
+    fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\necho ran > '{}' && echo wrote || echo refused\n",
+            shell_path(&mark)
+        ),
+    )
+    .expect("fake iota");
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).expect("chmod");
+    fs::write(root.join("scratch.yaml"), "sandbox: off\n").expect("scratch config");
+    let exe = fs::canonicalize(&fake).expect("canonical");
+    let env = ToolEnv {
+        project_root: Some(root.clone()),
+        dirs: iota::app::HostDirs {
+            home: Some(dir.path().join("home")),
+            cwd: Some(root.clone()),
+            temp: sb.temp_dir.clone(),
+            cache: sb.cache_dir.clone(),
+            exe: Some(exe.clone()),
+        },
+        jobs: Some(Jobs::new(dir.path())),
+        ..ToolEnv::default()
+    };
+    let tool =
+        Arc::clone(&new_shell_set(&env, node("auto_run: true\n").as_ref()).expect("shell set")[0]);
+    let exe = shell_path(&exe);
+    for command in [
+        format!("{exe} -c scratch.yaml run a -m hi"),
+        format!("{exe} -cscratch.yaml run a -m hi"),
+        format!("{exe} run a --config=scratch.yaml -m hi"),
+        format!("{exe} run a --mcp 'sh -c \"touch x\"' -m hi"),
+        format!("{exe} run a --mcp='sh -c x' -m hi"),
+    ] {
+        let header = tool
+            .header_summary(match &json!({"command": command}) {
+                serde_json::Value::Object(m) => m,
+                _ => unreachable!(),
+            })
+            .expect("a header");
+        assert!(
+            !header.contains(iota::tool::builtins::shell::OUTSIDE_SANDBOX_MARK),
+            "{header:?}"
+        );
+        let (out, _) = call(&tool, json!({"command": command})).await;
+        assert!(
+            out.contains("refused") && !out.contains("wrote"),
+            "{command:?} ran outside the sandbox: {out:?}"
+        );
+        assert!(!mark.exists(), "{command:?} wrote outside the project");
+    }
+}
+
 /// The iota exception (DIVERGENCES X-44), end to end through the tool: a sandboxed set spawns a call whose
 /// first word is the running binary WITHOUT the sandbox, and only that call — the same binary in a pipe stays
 /// in. The binary is a stand-in script (`HostDirs::exe` is injected, never probed here) that writes a marker

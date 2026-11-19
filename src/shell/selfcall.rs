@@ -10,6 +10,11 @@
 //! protected-path table exists to refuse — `~/.iota/trusted.json`, `~/.iota.yaml`, `<root>/.iota.yaml` — and the
 //! next run would start the config the model wrote. Kept in, the write fails and the model asks the user.
 //!
+//! And the lines that CHOOSE what the child loads or starts: a line carrying `-c`/`--config` or `--mcp` is never
+//! a self-call either (DIVERGENCES X-44, amended). Let out, `iota -c scratch.yaml run a -m …` would start a
+//! config the model wrote inside the project — `sandbox: off`, `auto_run: true`, any `write_roots` — and
+//! `iota run a --mcp 'sh -c "…"' -m …` an arbitrary command as a server, both outside the sandbox.
+//!
 //! The answer is conservative by construction:
 //!
 //! - the line is read with POSIX quoting (`'…'`, `"…"`, `\`) and the first word must resolve — an absolute or
@@ -21,7 +26,10 @@
 //!   targets: they change where iota's output goes, not what runs;
 //! - the writers are recognised by their verb words in order — `config` then `trust`/`untrust`/`init`, `mcp`
 //!   then `add`/`remove` — anywhere among the arguments, so no spelling of the global flags (`-c f`, `--config=f`, before or
-//!   after the verb) hides one. A line that merely mentions both words outside those commands stays in too.
+//!   after the verb) hides one. A line that merely mentions both words outside those commands stays in too;
+//! - the choosing flags are recognised as whole words anywhere among the arguments: `--config`/`--mcp` alone
+//!   or with `=value`, and `-c` alone, attached (`-cf.yaml`) or with `=` (`-c=f.yaml`) — clap takes all three
+//!   for a short flag with a value. A `-c` inside a quoted `-m` message is inside that word and is not one.
 //!
 //! The lexer is POSIX because the sandbox is: it exists on macOS and Linux only, where the interpreter is
 //! `bash` (or another POSIX shell named by `IOTA_SHELL`). A PowerShell or `cmd.exe` line never reaches a
@@ -52,7 +60,28 @@ pub fn self_invocation_with(
     let Some(program) = look_path(first) else {
         return false;
     };
-    crate::app::canonical(&program).is_some_and(|p| p == exe) && !writes_trust_or_config(args)
+    crate::app::canonical(&program).is_some_and(|p| p == exe)
+        && !writes_trust_or_config(args)
+        && !chooses_what_runs(args)
+}
+
+/// The long flags that choose what the child loads or starts: the config it reads, a server it starts.
+const CHOOSING_LONG: &[&str] = &["--config", "--mcp"];
+
+/// The short flags among them, each one taking a value.
+const CHOOSING_SHORT: &[&str] = &["-c"];
+
+/// Whether iota's arguments carry a flag of [`CHOOSING_LONG`] (the word, or `--flag=value`) or of
+/// [`CHOOSING_SHORT`] (the word, `-c=value`, or the attached `-cvalue`). A cluster that puts a short flag
+/// after another (`-Vc f`) is not looked for: iota's only valueless short flags are `-h` and `-V`, which
+/// print and exit before anything is loaded.
+fn chooses_what_runs(args: &[String]) -> bool {
+    args.iter().any(|a| {
+        CHOOSING_LONG.iter().any(|f| {
+            a.strip_prefix(f)
+                .is_some_and(|r| r.is_empty() || r.starts_with('='))
+        }) || CHOOSING_SHORT.iter().any(|f| a.starts_with(f))
+    })
 }
 
 /// Whether iota's arguments name `config trust|untrust|init` or `mcp add|remove` — every command that writes
@@ -372,6 +401,49 @@ mod tests {
             std::os::unix::fs::symlink(&iota, &link).expect("symlink");
             assert!(is("iota-link mcp list"));
         }
+    }
+
+    /// A line that chooses the child's config or starts a server of its own is never a self-call (X-44,
+    /// amended): `-c`, `--config` and `--mcp`, as a word, an `=` form or — for `-c` — attached, before or
+    /// after the verb. A `-c` or `--mcp` inside a quoted message is part of that word and changes nothing,
+    /// and a flag that merely begins with the same letters is another flag.
+    #[test]
+    fn a_line_that_chooses_a_config_or_a_server_stays_in() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let iota = dir.path().join("iota");
+        std::fs::write(&iota, b"#!/bin/sh\n").expect("fake iota");
+        let exe = crate::app::canonical(&iota).expect("canonical");
+        let look_path = |name: &str| -> Option<PathBuf> { (name == "iota").then(|| iota.clone()) };
+        let is = |cmd: &str| self_invocation_with(cmd, &exe, &look_path);
+
+        for line in [
+            "iota -c scratch.yaml run a -m hi",
+            "iota run a -c scratch.yaml -m hi",
+            "iota run a -m hi -c scratch.yaml",
+            "iota -cscratch.yaml run a -m hi",
+            "iota -c=scratch.yaml run a -m hi",
+            "iota --config scratch.yaml run a -m hi",
+            "iota --config=scratch.yaml run a -m hi",
+            "iota -c scratch.yaml",
+            "iota -c scratch.yaml list",
+            "iota 'list' \"-c\" scratch.yaml",
+            "iota run a --mcp 'sh -c \"touch x\"' -m hi",
+            "iota run a --mcp='sh -c x' -m hi",
+            "iota --mcp 'npx srv' -m hi",
+            "iota resume --mcp 'npx srv' -m hi",
+            "iota run a -m hi --mcp https://x/mcp 2>&1",
+        ] {
+            assert!(!is(line), "{line:?} must stay in the sandbox");
+        }
+
+        // The words are read with POSIX quoting: a flag inside the message is message text.
+        assert!(is("iota run a -m 'call it with -c f.yaml'"));
+        assert!(is("iota run a -m \"pass --mcp=x and --config f\""));
+        assert!(is("iota run a -m hi"));
+        assert!(is("iota -M sonnet run a -m hi"));
+        // Another flag that shares a prefix is not one of them.
+        assert!(is("iota run a --mcpx -m hi"));
+        assert!(is("iota run a --configure -m hi"));
     }
 
     /// Without a known executable nothing is ever let out.
