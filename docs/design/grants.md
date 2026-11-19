@@ -211,6 +211,14 @@ open `~/.ssh` and every shell rc file; `/allow ~`, typed out, still works.
 
 ### 5.2 `/allow` and `/revoke`
 
+> **Amended 2026-11-20 (allow-panel, DIVERGENCES X-111).** `/revoke` is gone, folded into
+> the BARE `/allow`, which no longer prints a listing: it opens two tabs, `Add` (a
+> directory browser — Enter descends, Space chooses, `./` is the directory shown — whose
+> choice is granted for this session as `/allow <dir>` grants it) and `Grants` (a
+> multi-select of every grant, each row naming its level; committing revokes the checked
+> ones from every level that holds them). The typed forms below are unchanged. What
+> follows about `/revoke`, the text listing and the `/revoke: ` prefix is the history.
+
 The only door for the shell, since a sandboxed command cannot be prompted mid-run.
 
 ```

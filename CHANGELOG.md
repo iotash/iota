@@ -12,7 +12,7 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   so a `-m` run, CI or a script can write outside the project without a config
   file. A relative path is taken from the directory you run iota in. A resumed
   session does not remember it: pass it again. `/allow` names it: such a
-  directory is listed, and refused as already writable, with `(--add-dir)`.
+  directory is refused as already writable, with `(--add-dir)`.
 - **iota follows a dark/light switch without a restart.** When the system
   changes its appearance while iota runs, the highlighted row of a list, a
   panel's input field, code blocks and diffs take the new shades: iota asks the
@@ -42,12 +42,18 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   later replaced by a symlink opens nothing.
 - **`/allow <dir>` makes a directory writable for this session.** Sandboxed
   `shell` commands, `edit_file` and `write_file` can write under it from their
-  next call, without a config edit or a restart; `/revoke <dir>` takes it back
-  and a bare `/allow` lists what is granted. A symlink is followed and the
+  next call, without a config edit or a restart. A symlink is followed and the
   directory it leads to is the one granted, and iota says so. Protected paths
   (`.git/hooks`, `.git/config`, `.iota.yaml`, …) stay read-only, and `/status`
   shows how many grants the session holds. A message sent to the chat from
   another process cannot run it.
+- **A bare `/allow` opens two tabs: `Add` and `Grants`.** `Add` browses
+  directories from the project root — Enter opens one, Space chooses it, `./`
+  is the one you are in — and makes the chosen directory writable for this
+  session, as `/allow <dir>` does. `Grants` lists every grant in effect, each
+  saying whether it is this session's or this project's; check some with
+  Space and press Enter to take them back, from the session and the project
+  at once. This replaces `/revoke`, which is gone, and the old text listing.
 - **A resumed session keeps what you allowed in it.** The directories and
   tools you allow for a session — in the approval prompt or with `/allow` —
   are saved with it, so `iota resume` and a `/session` switch bring them back
@@ -60,14 +66,13 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   writable for this project`, and `/allow project <dir>` does the same: the
   directory stays writable in every later chat in this project, after `/new`,
   in `--no-save` chats, and in `iota run -m` runs, which cannot ask. It is kept
-  in `~/.iota/sessions/projects/<project>/grants.json`; `/revoke <dir>` takes a
-  directory back from the session and the project at once, and `/status` and
-  a bare `/allow` show both.
+  in `~/.iota/sessions/projects/<project>/grants.json`, and `/status` and a
+  bare `/allow` show both levels.
 - **An MCP tool can be allowed for a session or a project, one tool or a
   whole server.** Its approval prompt now offers `Always allow <server>:<tool>
   in this session` and `… in this project`, and `/allow [project]
   <server>:<tool>` or `<server>:*` (every tool of the server, including ones
-  it adds later) does the same; `/revoke` takes it back. A project grant also
+  it adds later) does the same. A project grant also
   lets `iota run -m` call the tool. Servers given with `--mcp`, which have no
   config entry to set `auto_run` in, can now be allowed this way too — the
   grant is tied to the whole `--mcp` value, not just the command name. Such a
