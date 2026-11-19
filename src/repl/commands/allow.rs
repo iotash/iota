@@ -444,8 +444,11 @@ mod tests {
                 root.display()
             )
         );
-        assert_eq!(pf.store.project_grants(&root).unwrap().dirs, [out.clone()]);
-        assert_eq!(g.snapshot(Level::Project).dirs, [out.clone()]);
+        assert_eq!(
+            pf.store.project_grants(&root).unwrap().dirs,
+            std::slice::from_ref(&out)
+        );
+        assert_eq!(g.snapshot(Level::Project).dirs, std::slice::from_ref(&out));
         assert_eq!(
             allow(&g, &pf, &b, "project ../out/sub").unwrap_err(),
             format!(

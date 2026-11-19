@@ -3529,7 +3529,7 @@ async fn allow_project_writes_the_bucket_file() {
     assert_eq!(grants.live_dirs(), std::slice::from_ref(&out));
     assert_eq!(
         grants.snapshot(iota::tool::grants::Level::Project).dirs,
-        [out.clone()]
+        std::slice::from_ref(&out)
     );
     let path = f.store.grants_path(&root);
     assert_eq!(
@@ -3547,10 +3547,7 @@ async fn allow_project_writes_the_bucket_file() {
         serde_json::json!({"v": 1, "roots": {root.to_str().expect("utf-8"): {"dirs": [out.to_str().expect("utf-8")]}}})
     );
     assert!(
-        f.store
-            .meta(&id)
-            .map(|m| m.grants.is_empty())
-            .unwrap_or(true),
+        f.store.meta(&id).map_or(true, |m| m.grants.is_empty()),
         "a project grant is not the session's"
     );
     let shown = printed(&f.ui);

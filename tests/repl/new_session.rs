@@ -692,11 +692,7 @@ async fn new_keeps_the_project_grants() {
     let provider = FakeProvider::new()
         .with_model("gpt-4o")
         .rounds([Round::reply("hi")]);
-    let f = Fixture::new(vec![
-        input("hello"),
-        input("/new"),
-        Reply::Interrupted,
-    ]);
+    let f = Fixture::new(vec![input("hello"), input("/new"), Reply::Interrupted]);
     f.store
         .update_project_grants(&root, |s| s.dirs.push(lib.clone()))
         .expect("a project grant");

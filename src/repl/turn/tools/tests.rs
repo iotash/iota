@@ -2675,7 +2675,7 @@ async fn a_directory_granted_for_the_project_is_kept_in_its_file() {
     let mut history = vec![Message::user("write")];
     fx.turn(&p, &mut history).await.outcome.expect("turn");
     let dir = real_out.join("a");
-    assert_eq!(c.grants.live_dirs(), [dir.clone()]);
+    assert_eq!(c.grants.live_dirs(), std::slice::from_ref(&dir));
     assert!(
         c.grants
             .snapshot(crate::tool::grants::Level::Session)
@@ -2684,7 +2684,7 @@ async fn a_directory_granted_for_the_project_is_kept_in_its_file() {
     let project = c.project();
     assert_eq!(
         project.store.project_grants(&c.root).expect("file").dirs,
-        [dir.clone()]
+        std::slice::from_ref(&dir)
     );
     for f in ["x.txt", "y.txt"] {
         assert!(dir.join(f).exists(), "{f}");
