@@ -217,62 +217,69 @@ dialog never offers the wildcard `server:*` (that is `/allow`'s), and never offe
 make the home directory writable — one keypress on a write to `~/x.txt` would otherwise
 open `~/.ssh` and every shell rc file; `/allow ~`, typed out, still works.
 
-### 5.2 `/allow` and `/revoke`
+### 5.2 `/allow`
 
-> **Amended 2026-11-20 (allow-panel, DIVERGENCES X-111).** `/revoke` is gone, folded into
-> the BARE `/allow`, which no longer prints a listing: it opens two tabs, `Add` (a
-> directory browser — Enter descends, Space chooses, `./` is the directory shown — whose
-> choice is granted for this session as `/allow <dir>` grants it) and `Grants` (a
-> multi-select of every grant, each row naming its level; committing revokes the checked
-> ones from every level that holds them), then — only when there is one — `Static`, a
-> read-only view of the `write_roots:` and `--add-dir` roots, `write_roots:  /path` and
-> `--add-dir     /path`, which replaces the listing's `static …` lines. The typed forms below are unchanged. What
-> follows about `/revoke`, the text listing and the `/revoke: ` prefix is the history.
->
-> **Amended 2026-11-20 (grants-builtin-project, DIVERGENCES X-111).** `/allow [project] <tool>`
-> grants a built-in tool. The argument order is: a connected server's whole name, a
-> directory (a leading `/`, `~` or `.`), `<server>:<tool>` (any other `:`), then a bare word,
-> a built-in tool by its wire name. It must be one the run has and whose calls ask about no
-> location (its argument-less `requires_approval` probe: `shell` without `auto_run`, the
-> writers without `auto_write`); otherwise it is refused, nothing stored, naming the tools
-> that do ask: `no built-in tool named "<t>" (tools that ask: shell, write_file)`, `<t> never
-> asks (tools that ask: …)`, or `(no built-in tool of this run asks)`. Granted:
-> `✓ shell runs without asking in this project (<root>)`; the `Grants` tab lists it as
-> `this project  shell`.
+> **Rewritten 2026-11-20 (docs-readme)** to say what shipped (DIVERGENCES X-111). The plan
+> had a second command, `/revoke`, and a bare `/allow` that printed a text listing; the
+> allow-panel task folded both into the bare `/allow`'s surface, and grants-builtin-project
+> added the bare-word form for a built-in tool. There is no `/revoke`: typed, it is an
+> unregistered `/xyz`.
 
-The only door for the shell, since a sandboxed command cannot be prompted mid-run.
+The only door for the shell, since a sandboxed command cannot be prompted mid-run, and the
+only one for `server:*`.
 
 ```
-/allow                              list every grant in effect, by level
+/allow                              open the surface: Add · Grants (· Static)
 /allow <dir>                        make <dir> writable for this session
-/allow project <dir>                …for this project, in every session
 /allow <server>:<tool>              stop asking for one MCP tool (session)
-/allow <server>:*                   …for every tool of the server
-/allow project <server>:<tool|*>    …for this project
-/revoke <dir | server:tool | server:*>   remove it from every level that holds it
+/allow <server>:*                   …for every tool of the server, those it exposes later included
+/allow <tool>                       stop asking for a built-in tool (session)
+/allow project <…>                  any of the four above, for this project, in every session
 ```
 
-- **Arguments.** `<server>:<tool>` is tried FIRST: `<server>` is a CONNECTED server's
-  whole name (`/revoke`: a stored grant's), the longest that matches, then `:` and the
-  tool — a `--mcp` server is named by its URL or `argv[0]`, which may hold a `:` and
-  start with `/` or `.` (`/allow https://h/mcp:push`, `/allow ./srv.py:*`), and a
-  server's name wins over the directory spelling. Otherwise a directory starts with
-  `/`, `~` or `.` (relative = against the project root, as the tools read a path); it
-  must exist and be a directory. Anything else must be `<server>:<tool>`, split at its
-  last `:`, and is refused naming that server. `<tool>` is resolved against the
-  server's current tool list (`*` excepted), so a typo is refused instead of stored.
-  `project` is a keyword, not a path.
+- **Arguments**, read in this order. (1) A CONNECTED server's whole name, the longest that
+  matches, then `:` and the tool — a `--mcp` server is named by its URL or `argv[0]`, which
+  may hold a `:` and start with `/` or `.` (`/allow https://h/mcp:push`, `/allow
+  ./srv.py:*`), so a server's name wins over the directory spelling. (2) A directory: it
+  starts with `/`, `~` or `.` (`~` is home, a relative one hangs off the project root, as
+  the tools read a path); it must exist and be a directory, and its REAL location is what
+  is stored and shown. (3) Holding a `:`: `<server>:<tool>`, split at its last `:`; an
+  empty half is refused. (4) Otherwise a bare word: a built-in tool by its wire name, one
+  the run has and whose argument-less `requires_approval` probe asks (`shell` without
+  `auto_run`, `edit_file`/`write_file` without `auto_write`) — a tool grant never answers
+  a call bound to a location (§3.4). `<tool>` of a server is resolved against its current
+  tool list (`*` excepted), so a typo is refused instead of stored. `project` is a
+  keyword, not a path.
+- **The bare `/allow`** opens a tabbed surface, the `/file` way — the focused tab is the
+  verb, Enter commits it:
+  - `Add` — a directory browser on the project root: `./` (the directory shown), then
+    `../` and the directories, no file; Enter descends, Space chooses (hint `↑↓ move ·
+    Enter open · Space choose · q/Esc cancel`). The choice is granted for this session
+    exactly as `/allow <dir>` grants it, notice and refusals alike.
+  - `Grants` — a multi-select of every grant in effect, one row each, the level then the
+    key: `this session  /path`, `this project  /path (stale)`, `this session  srv:tool`,
+    `this project  shell`, a `--mcp` grant followed by `(--mcp <spec>)`. With nothing
+    granted its prompt is `No grants. Add makes a directory writable for this session;
+    /allow project <dir> for this project.` Committing takes each checked grant back from
+    every level that holds it (the project's file first).
+  - `Static` — only when there is a static root: a read-only view, prompt `Writable from
+    the config and the command line: not grants, so none can be revoked here.`, one row
+    each, `write_roots:` first — `write_roots:  /path`, `--add-dir     /path`. Enter there
+    closes the surface and does nothing.
+
+  A cancel, or a commit with nothing chosen or checked, changes nothing.
 - **Who may type it.** The user, at the prompt. A message from the socket never runs a
-  slash command (`src/repl/inbound.rs:14`), and the model has no way to type one.
-- **Table.** Two rows after `/tools`: `/allow` — `Allow a directory or an MCP tool`,
-  `/revoke` — `Take a grant back`. X-42 kept configuration out of the chat; a grant is
-  not configuration — it is the answer to a question only the chat asks.
+  slash command (`src/repl/inbound.rs`), and the model has no way to type one.
+- **Table.** One row after `/tools`: `/allow` — `Make a directory writable or stop asking
+  for a tool, or browse and revoke grants`. X-42 kept configuration out of the chat; a
+  grant is not configuration — it is the answer to a question only the chat asks.
 - **`/status`** gains one row, present only when something is granted:
   `Grants   2 for this session, 3 for this project (/allow lists them)`.
 - **The model is told through `<environment>`**: its `write roots:` line lists the
-  static roots and every live directory grant, and the harness is recomposed when the
-  set changes (as it already is when the date does, `src/repl/run.rs:1455-1463`). Tool
-  descriptions keep naming the static roots only; they do not change mid-session.
+  static roots and every live directory grant, re-composed at the next turn. The
+  sandboxed `shell` description says once: `The user can make another directory writable
+  with /allow <dir>: when a command must write outside these, ask for that instead of
+  working around it.` Tool descriptions otherwise name the static roots only.
 
 Output (each one transcript notice line):
 
@@ -283,30 +290,33 @@ Output (each one transcript notice line):
 /allow github:*             ✓ every tool of github runs without asking in this session
 /allow project github:search_issues
                             ✓ github:search_issues runs without asking in this project (/Users/x/proj)
-/revoke ~/scratch           ✓ revoked /Users/x/scratch (this session)
-/allow                      Grants
-                              this session   /Users/x/scratch
-                                             edit_file
-                              this project   /Users/x/lib
-                                             github:*
-                              static         /Users/x/.cargo/registry (write_roots:)
-                                             /tmp/out (--add-dir)
+/allow project shell        ✓ shell runs without asking in this project (/Users/x/proj)
+Grants tab, two checked     ✓ revoked /Users/x/scratch (this session)
+                            ✓ revoked github:* (this session, this project)
 ```
 
-Refusals (prefixed `/allow: ` or `/revoke: `):
+Refusals (prefixed `/allow: `):
 
 ```
 expected a directory (starting with /, ~ or .) or <server>:<tool>
 <arg> is not a directory
-<dir> is already writable (the project root | write_roots: | --add-dir | this project)
 <dir> is protected: <why>
+<dir> is already writable (the project root | write_roots: | --add-dir | this project | this session)
 no MCP server named "<s>" is connected (connected: a, b)
 server "<s>" has no tool "<t>"
 "<s>" names <n> connected servers; add one to mcp_servers: under its own name to grant it
 <s>'s tools already run without asking (auto_run)
-nothing granted matches <arg>
-could not save the grant (<error>); it holds until this chat ends
+<what> already runs without asking (this session | this project)
+no built-in tool named "<t>" (tools that ask: shell, write_file)
+<t> never asks (tools that ask: …)          — or (no built-in tool of this run asks)
+could not save the grant (<error>)
+could not save the revocation (<error>)
 ```
+
+A project-level change whose file cannot be read or written is not made: the grant (or
+the revocation) is refused with `could not save …`, and nothing changes. A session-level
+change that cannot be written into the bundle's meta is made in memory, and its notice is
+followed by `Warning: failed to save session: <error>`, as every failed meta write is said.
 
 ### 5.3 `--add-dir`
 
