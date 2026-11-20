@@ -1387,6 +1387,48 @@ async fn resume_m_loads_the_session_grants_and_keeps_them() {
     );
 }
 
+/// Only a run with a project loads the project's grants (docs/design/grants.md §4.2): the same `grants.json`
+/// is nothing to a `mode: chat` agent's `-m` — the mode has no project — and is loaded, and said, by a
+/// `mode: agent` one in the same directory. An agent whose root is an ancestor of the home directory has no
+/// project either: a bucket keyed there would be every run's under it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_a_run_with_a_project_loads_the_project_grants() {
+    let server = MockServer::start().await;
+    google_stub(&server, false).await;
+    let cwd = TempDir::new().expect("temp cwd");
+    let home = TempDir::new().expect("temp home");
+    let granted = TempDir::new().expect("granted dir");
+    let granted = fs::canonicalize(granted.path()).expect("real");
+    let grant = |home: &Path| {
+        SessionStore::new(sessions_root(home))
+            .update_project_grants(cwd.path(), |s| s.dirs.push(granted.clone()))
+            .expect("grant");
+    };
+    grant(home.path());
+    for (mode, said) in [
+        ("", ""),
+        ("chat", ""),
+        ("agent", "grants: 1 for this project\n"),
+    ] {
+        write_config(cwd.path(), &server.uri(), "gemini-2.5-pro", mode);
+        let mut cmd = iota(cwd.path(), home.path());
+        cmd.args(["-m", "hi"]);
+        let o = output(cmd).await;
+        assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+        assert_eq!(err(&o), said, "mode: {mode:?}");
+    }
+
+    // The same agent, its home now UNDER its root.
+    let under = cwd.path().join("home");
+    fs::create_dir_all(&under).expect("home under the root");
+    grant(&under);
+    let mut cmd = iota(cwd.path(), &under);
+    cmd.args(["-m", "hi"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert_eq!(err(&o), "");
+}
+
 /// A run that FAILS persists nothing (DIVERGENCES D-43): the log and the meta are byte-identical afterwards.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_resumed_turn_persists_nothing() {

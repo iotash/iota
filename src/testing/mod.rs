@@ -24,16 +24,19 @@ pub use provider::{Call, Failure, FakeProvider, Interrupt, Log, Path, Round};
 pub use scripted::{PanelSummary, RecordingHost, Reply, ScriptedUi, TabbedSummary, UiEvent};
 
 /// A chat's grant footing over `store` with the project root `root` and no static write root — what a test's
-/// `RunParams::footing` is when the test does not care where the project is (`root` empty).
+/// `RunParams::footing` is when the test does not care where the project is (`root` empty). It HAS a project
+/// (an agent with a workspace); a run without one is this with `project: None`.
 pub fn footing(
     store: &crate::session::SessionStore,
     root: impl Into<std::path::PathBuf>,
 ) -> crate::repl::Footing {
+    let root = root.into();
     crate::repl::Footing {
-        project: crate::repl::ProjectFile {
+        root: root.clone(),
+        project: Some(crate::repl::ProjectFile {
             store: store.clone(),
-            root: root.into(),
-        },
+            root,
+        }),
         write_roots: Vec::new(),
         added_dirs: Vec::new(),
     }

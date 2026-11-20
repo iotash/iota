@@ -284,10 +284,11 @@ pub(crate) async fn run_interactive(
     // root.go:292-334 (the picker half): the store is listed BEFORE anything is spawned, so an empty bucket or
     // an unreadable store fails with nothing to clean up, and the spec the picker will show is ready.
     let store = SessionStore::from_dirs(&ctx.env.dirs)?;
-    // The project's grants file the chat's doors write through: with a home, missing only without a working
-    // directory, whose project root it is keyed by.
-    let project =
-        project.ok_or_else(|| crate::cmd::error::SetupError::Cwd(crate::cmd::cwd_err()))?;
+    // The root the chat's grant doors read a typed directory against — the tools' own, missing only without a
+    // working directory.
+    let root = tool_env
+        .root()
+        .map_err(|_| crate::cmd::error::SetupError::Cwd(crate::cmd::cwd_err()))?;
     let scope: Option<PathBuf> = settings.mode.has_workspace().then(|| agent.root.clone());
     let resume_given = inv.resume.is_some();
     // `iota resume` with no id IS the picker; `iota resume <id>` resolves the fragment instead.
@@ -337,7 +338,7 @@ pub(crate) async fn run_interactive(
             mcp_count,
             ctx: &ctx,
             tool_env: &tool_env,
-            project: &project,
+            project: project.as_ref(),
             io,
             store: &store,
             scope: scope.as_deref(),
@@ -396,6 +397,7 @@ pub(crate) async fn run_interactive(
         footing: crate::repl::Footing {
             write_roots: tool_env.write_roots.clone(),
             added_dirs: tool_env.added_dirs.clone(),
+            root,
             project,
         },
         jobs,
@@ -451,8 +453,8 @@ struct Wire<'a> {
     ctx: &'a RunContext,
     /// The tool environment the dispatcher is built over.
     tool_env: &'a ToolEnv,
-    /// The project's grants file a resumed session is entered beside.
-    project: &'a crate::repl::ProjectFile,
+    /// The project's grants file a resumed session is entered beside; `None` in a run with no project.
+    project: Option<&'a crate::repl::ProjectFile>,
     /// The process streams: the resume announcement and the warnings.
     io: &'a mut crate::cmd::io::Streams,
     /// The session store.
@@ -471,18 +473,20 @@ struct Wire<'a> {
     mcp_defers: Vec<DeferredGroup>,
 }
 
-/// Enters a resumed bundle ([`ProjectFile::enter`](crate::repl::ProjectFile)): its session grants REPLACE the
+/// Enters a resumed bundle (`repl::grants::enter`): its session grants REPLACE the
 /// store's (docs/design/grants.md §7) before anything reads them — the dispatcher's tools and the harness's
 /// `write roots:` line are assembled after this — beside the project's, read again (a file that cannot be read
 /// was said at assembly). Says so on stdout when either level holds any, then the blank line Go prints after
 /// the resume line.
 fn restore_grants(
-    project: &crate::repl::ProjectFile,
+    project: Option<&crate::repl::ProjectFile>,
     grants: &crate::tool::grants::Grants,
     meta: &crate::session::SessionMeta,
     io: &mut crate::cmd::io::Streams,
 ) {
-    if let Some(line) = project.enter(grants, meta.grants.clone()).line_in_chat() {
+    if let Some(line) =
+        crate::repl::grants::enter(project, grants, meta.grants.clone()).line_in_chat()
+    {
         let _ = writeln!(io.stdout, "{line}");
     }
     let _ = writeln!(io.stdout);

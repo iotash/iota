@@ -706,7 +706,7 @@ async fn new_keeps_the_project_grants() {
         .expect("another grant");
     let session = f.session(Some(f.writer()));
     let mut params = f.params(provider, session);
-    params.footing.project.root = root.clone();
+    params.footing = iota::testing::footing(&params.session.store, root.clone());
     params.grants = Arc::clone(&grants);
     iota::repl::run(params).await.expect("exit");
 

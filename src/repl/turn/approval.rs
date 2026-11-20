@@ -24,7 +24,8 @@ pub(crate) enum Answer {
     Granted(Level),
 }
 
-/// What the dialog offers beyond "Allow once" for a call.
+/// What the dialog offers beyond "Allow once" for a call. Each grant is offered for this session and — in a run
+/// that has a project ([`ApprovalGate::ask`]'s `project`) — for this project.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Offer<'a> {
     /// A built-in tool grant — `Allow for this session`, then `…for this project` (a call bound to no location).
@@ -54,7 +55,8 @@ impl ApprovalGate {
     }
 
     /// Asks about one gated call (approval.go:47-80). `detail` is what the call is about (the path it writes,
-    /// the command it runs); `offer` is the grants the items after the first give ([`Offer`]). The error is reserved for
+    /// the command it runs); `offer` is the grants the items after the first give ([`Offer`]), the project-level
+    /// one only when the run has a `project` (docs/design/grants.md §4.2). The error is reserved for
     /// the prompt itself failing; a refusal is `Ok(Answer::Denied)`, and a turn that continues after a denial
     /// is the point of asking.
     pub(crate) async fn ask(
@@ -62,20 +64,21 @@ impl ApprovalGate {
         cancel: &CancellationToken,
         name: &str,
         offer: Offer<'_>,
+        project: bool,
         detail: &str,
     ) -> Result<Answer, UiError> {
         // The grant items, in the order their answers are: session, then project.
+        let levels = [(Level::Session, "session"), (Level::Project, "project")]
+            .into_iter()
+            .filter(|(level, _)| project || *level == Level::Session);
         let grants: Vec<(String, Level)> = match offer {
-            Offer::Tool => [(Level::Session, "session"), (Level::Project, "project")]
-                .into_iter()
+            Offer::Tool => levels
                 .map(|(level, word)| (format!("Allow for this {word}"), level))
                 .collect(),
-            Offer::Mcp(key) => [(Level::Session, "session"), (Level::Project, "project")]
-                .into_iter()
+            Offer::Mcp(key) => levels
                 .map(|(level, word)| (format!("Always allow {key} in this {word}"), level))
                 .collect(),
-            Offer::Dir(dir) => [(Level::Session, "session"), (Level::Project, "project")]
-                .into_iter()
+            Offer::Dir(dir) => levels
                 .map(|(level, word)| {
                     (
                         format!("Allow, and make {} writable for this {word}", dir.display()),

@@ -1304,7 +1304,7 @@ async fn admit_held_message(repl: &Repl, headline: &str) -> bool {
 }
 
 impl Repl {
-    /// The grants' door-side service over this chat's store, bundle slot and project file.
+    /// The grants' door-side service over this chat's store, bundle slot and project file (if it has one).
     pub(crate) fn door(&self) -> crate::repl::grants::Door {
         crate::repl::grants::Door {
             grants: Arc::clone(&self.handles.grants),

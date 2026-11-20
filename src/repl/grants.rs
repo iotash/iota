@@ -6,9 +6,11 @@
 //! bundle's meta (`SessionWriter::update_meta`; an ephemeral chat keeps it in memory until `/save` stamps it);
 //! the project level is written to the project's `grants.json` FIRST ([`ProjectFile`]) and only then takes
 //! effect — `--no-save` included: it is not conversation. Entering a conversation — a start, a resume, `/new`,
-//! a `/session` switch — is `ProjectFile::enter`: its session grants replace the store's, the project's are
-//! read afresh. The project file is built ONCE, at assembly, keyed by the root the tools read paths against
-//! (`ToolEnv::root`), and handed to the chat with the static write roots ([`Footing`]).
+//! a `/session` switch — is [`enter`]: its session grants replace the store's, the project's are read afresh.
+//! The project file is built ONCE, at assembly, keyed by the root the tools read paths against
+//! (`ToolEnv::root`), and handed to the chat with the static write roots ([`Footing`]) — only for a run that
+//! HAS a project (§4.2): an agent with a workspace, whose root is not the home directory or an ancestor of it.
+//! Without one there is no project level at any door: nothing is loaded, offered or written.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,7 +22,7 @@ use crate::sync::lock;
 use crate::tool::grants::{GrantSet, Grants, Level, ServerId, ToolKey};
 
 /// Where the project level is kept: the store's `grants.json` for the project root the tools read paths
-/// against (`ToolEnv::root`), in every mode.
+/// against (`ToolEnv::root`). A run has one only with a project (the module's head).
 #[derive(Clone, Debug)]
 pub struct ProjectFile {
     /// The sessions root the project's bucket is in.
@@ -45,18 +47,6 @@ impl ProjectFile {
         }
     }
 
-    /// Enters a conversation: its `session` grants REPLACE the store's — a merge would carry one conversation's
-    /// approvals into another — and the project's are read afresh: they follow the project, and another
-    /// process may have changed them.
-    pub(crate) fn enter(&self, grants: &Grants, session: GrantSet) -> Entered {
-        grants.replace_session(session);
-        let warning = self.load(grants);
-        Entered {
-            warning,
-            count: summary(grants),
-        }
-    }
-
     /// Changes the project level, the file FIRST (read–modify–write) and then memory, which takes what the file
     /// now holds — a grant another process made meanwhile included. Nothing changes when the file cannot be
     /// read or written.
@@ -71,7 +61,19 @@ impl ProjectFile {
     }
 }
 
-/// What entering a conversation found ([`ProjectFile::enter`]).
+/// Enters a conversation: its `session` grants REPLACE the store's — a merge would carry one conversation's
+/// approvals into another — and the project's are read afresh: they follow the project, and another process
+/// may have changed them. A run with no `project` has no project level to read.
+pub(crate) fn enter(project: Option<&ProjectFile>, grants: &Grants, session: GrantSet) -> Entered {
+    grants.replace_session(session);
+    let warning = project.and_then(|p| p.load(grants));
+    Entered {
+        warning,
+        count: summary(grants),
+    }
+}
+
+/// What entering a conversation found ([`enter`]).
 pub(crate) struct Entered {
     /// The project file could not be read: why, without its `⚠`.
     pub(crate) warning: Option<String>,
@@ -91,13 +93,15 @@ impl Entered {
     }
 }
 
-/// What a chat's grant doors stand on, resolved ONCE at assembly beside the project load (`cmd`): the project's
-/// file and the static write roots, kept apart by where they were declared so `/allow` can say which one already
-/// covers a directory.
+/// What a chat's grant doors stand on, resolved ONCE at assembly beside the project load (`cmd`): the root, the
+/// project's file and the static write roots, kept apart by where they were declared so `/allow` can say which
+/// one already covers a directory.
 #[derive(Clone, Debug)]
 pub struct Footing {
-    /// The project's grants file; its root is what a typed relative directory hangs off.
-    pub project: ProjectFile,
+    /// The root the tools read paths against (`ToolEnv::root`): what a typed relative directory hangs off.
+    pub root: PathBuf,
+    /// The project's grants file; `None` in a run with no project — no project level at any door.
+    pub project: Option<ProjectFile>,
     /// The top-level `write_roots:`, resolved (`ToolEnv::write_roots`).
     pub write_roots: Vec<PathBuf>,
     /// The `--add-dir` values, resolved (`ToolEnv::added_dirs`).
@@ -119,8 +123,8 @@ pub(crate) struct Door {
     pub(crate) grants: Arc<Grants>,
     /// The session's bundle (`None` inside while ephemeral): the session level is written into its meta.
     pub(crate) writer: WriterSlot,
-    /// The project's grants file.
-    pub(crate) project: ProjectFile,
+    /// The project's grants file; `None` in a run with no project.
+    pub(crate) project: Option<ProjectFile>,
 }
 
 /// What [`Door::apply`] could not keep.
@@ -130,6 +134,9 @@ pub(crate) enum Unsaved {
     Session(SessionError),
     /// The project's file could not be read or written: nothing changed.
     Project(SessionError),
+    /// The run has no project: nothing changed. No door asks for it — the dialog does not offer the level and
+    /// `/allow project` refuses first.
+    NoProject,
 }
 
 impl Door {
@@ -152,6 +159,8 @@ impl Door {
             }
             Level::Project => self
                 .project
+                .as_ref()
+                .ok_or(Unsaved::NoProject)?
                 .update(&self.grants, change)
                 .map_err(Unsaved::Project),
         }

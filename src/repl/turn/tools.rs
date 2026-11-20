@@ -263,7 +263,13 @@ async fn walk(
                 (None, ToolKey::Builtin(_)) => Offer::Tool,
                 (Some(s), _) => s.scope.as_deref().map_or(Offer::Nothing, Offer::Dir),
             };
-            let answer = match t.cx.gate.ask(&t.cancel, &tc.name, offer, &detail).await {
+            let project = t.cx.door.project.is_some();
+            let answer = match t
+                .cx
+                .gate
+                .ask(&t.cancel, &tc.name, offer, project, &detail)
+                .await
+            {
                 Ok(a) => a,
                 // A fired cancel scope resolves the blocking call as Interrupted (WP45);
                 // a closed facade ends the loop itself.
@@ -461,6 +467,8 @@ fn grant(cx: &TurnCtx, level: Level, add: impl FnOnce(&mut GrantSet)) -> bool {
             ));
             false
         }
+        // Never offered (`ApprovalGate::ask`): nothing was granted.
+        Err(Unsaved::NoProject) => false,
     }
 }
 

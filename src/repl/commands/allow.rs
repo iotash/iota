@@ -4,7 +4,8 @@
 //! is made writable here, typed by the user. `/allow <dir>` grants the directory's REAL location and its
 //! subtree for this session — the code jail and the shell sandbox read it at their next call, the harness's
 //! `write roots:` line at the next turn (`refresh_harness`). `/allow project <dir>` grants it for the project,
-//! in every session and every mode. `/allow [project] <server>:<tool>` stops the question for one MCP tool,
+//! in every session of it — in a run that HAS a project (§4.2); one without is refused, saying why
+//! ([`no_project`]). `/allow [project] <server>:<tool>` stops the question for one MCP tool,
 //! `<server>:*` for every tool of the server, those it exposes later included: `<server>` is resolved against
 //! the CONNECTED servers' names before the argument is read as a directory (a `--mcp` server is named by its
 //! URL or `argv[0]`: [`named_server`]), and `<tool>` against its current tool list, so a typo is refused instead
@@ -33,6 +34,7 @@ use crate::repl::grants::{Door, Footing, Unsaved, label, unsaved_session};
 use crate::repl::run::Repl;
 use crate::session::SessionError;
 use crate::tool::Dispatcher;
+use crate::tool::builtins::code::offers_root;
 use crate::tool::grants::{self, Grants, Level, McpTool, ServerId, ToolKey};
 use crate::ui::facade::{Panel, TabbedSpec};
 use crate::ui::render::label::sgr_if;
@@ -40,8 +42,11 @@ use crate::ui::render::label::sgr_if;
 /// What the user is told when the argument is not something `/allow` takes.
 const EXPECTED: &str = "expected a directory (starting with /, ~ or .) or <server>:<tool>";
 
-/// The `Grants` tab's prompt when nothing is granted.
+/// The `Grants` tab's prompt when nothing is granted, in a run with a project.
 const NONE: &str = "No grants. Add makes a directory writable for this session; /allow project <dir> for this project.";
+
+/// [`NONE`] in a run with no project: there is no project level to point at.
+const NONE_NO_PROJECT: &str = "No grants. Add makes a directory writable for this session.";
 
 /// The `Grants` tab's level column: `this session` and `this project` are both this wide, so every key starts at
 /// the same column.
@@ -65,6 +70,8 @@ fn kept(r: Result<(), Unsaved>, failed: &str) -> Result<Option<SessionError>, St
         Ok(()) => Ok(None),
         Err(Unsaved::Session(e)) => Ok(Some(e)),
         Err(Unsaved::Project(e)) => Err(format!("{failed} ({e})")),
+        // `allow` refuses the level first, saying why ([`no_project`]).
+        Err(Unsaved::NoProject) => Err(format!("{failed} (this run has no project)")),
     }
 }
 
@@ -79,6 +86,7 @@ pub(crate) async fn cmd_allow(repl: &Repl, arg: &str) {
         &repl.door(),
         &repl.handles.footing,
         home(repl),
+        repl.conv.agent.enabled,
         servers,
         &*repl.conv.dispatch,
         arg,
@@ -99,10 +107,14 @@ async fn panel(repl: &Repl) {
     let rows = held.iter().map(|g| g.row(color)).collect();
     let mut grants_tab = Panel::multi("Grants", rows).with_search(true);
     if held.is_empty() {
-        grants_tab = grants_tab.with_prompt(NONE);
+        grants_tab = grants_tab.with_prompt(if footing.project.is_some() {
+            NONE
+        } else {
+            NONE_NO_PROJECT
+        });
     }
     let mut panels = vec![
-        Panel::dir_browser("Add", footing.project.root.clone()).with_search(true),
+        Panel::dir_browser("Add", footing.root.clone()).with_search(true),
         grants_tab,
     ];
     panels.extend(static_tab(footing));
@@ -179,17 +191,20 @@ fn typed_path(footing: &Footing, home: Option<&Path>, arg: &str) -> Option<PathB
         return None;
     }
     let p = crate::tool::expand_home(arg, home);
-    Some(paths::clean(&footing.project.root.join(p)))
+    Some(paths::clean(&footing.root.join(p)))
 }
 
 /// Grants the directory, the MCP tool or the built-in tool `arg` for this session — or, after the keyword
-/// `project`, for this project: the notice line, or why not. `servers` is the run's MCP manager, `None` in a run
+/// `project`, for this project: the notice line, or why not. `workspace` is whether the run's agent has one
+/// (`mode: agent` or `bot`); a run with no project refuses the keyword whatever follows it ([`no_project`]).
+/// `servers` is the run's MCP manager, `None` in a run
 /// with no server; `tools` the run's dispatcher. The order: a connected server's name, a directory (a leading
 /// `/`, `~` or `.`), `<server>:<tool>` (any other `:`), then a bare word, a built-in tool.
 fn allow(
     door: &Door,
     footing: &Footing,
     home: Option<&Path>,
+    workspace: bool,
     servers: Option<&Manager>,
     tools: &dyn Dispatcher,
     arg: &str,
@@ -198,6 +213,9 @@ fn allow(
         Some(rest) if rest.starts_with(char::is_whitespace) => (Level::Project, rest.trim_start()),
         _ => (Level::Session, arg),
     };
+    if level == Level::Project && footing.project.is_none() {
+        return Err(no_project(footing, home, workspace));
+    }
     let names = servers.map(Manager::connected_names).unwrap_or_default();
     if let Some((server, tool)) = named_server(arg, &names) {
         return allow_tool(door, servers, level, server, tool);
@@ -210,6 +228,25 @@ fn allow(
     }
     let (server, tool) = server_tool(arg).ok_or_else(|| EXPECTED.to_owned())?;
     allow_tool(door, servers, level, server, tool)
+}
+
+/// Why a run with no project file has none (docs/design/grants.md §4.2), as `/allow project …` refuses: the
+/// agent has no workspace; or its root is one no project stands on — the dialog's own rule for a directory
+/// ([`offers_root`]); or there is no home to keep the file in.
+fn no_project(footing: &Footing, home: Option<&Path>, workspace: bool) -> String {
+    if !workspace {
+        return "this run has no project (mode: chat); an agent with mode: agent has one"
+            .to_owned();
+    }
+    let real = fs::physical(&footing.root).unwrap_or_else(|| footing.root.clone());
+    if offers_root(home, &real) {
+        "this run has no project (no home directory to keep its grants in)".to_owned()
+    } else {
+        format!(
+            "this run has no project: {} is /, the home directory or an ancestor of it, which is never a project",
+            real.display()
+        )
+    }
 }
 
 /// The built-in tools of `tools` a tool grant can answer, by wire name, in its order: those whose argument-less
@@ -270,7 +307,7 @@ fn allow_dir(
     let shown = real.display();
 
     // The table beats every root: a protected directory is refused before "already writable" is asked.
-    let root = &footing.project.root;
+    let root = &footing.root;
     let table = protected::table(root, &door.grants.roots(&footing.static_roots()), home);
     if let Some(why) = protected::why_protected(&table, &real) {
         return Err(format!("{shown} is protected: {}", why.reason()));
@@ -298,13 +335,15 @@ fn allow_dir(
     Ok(Done { line, unsaved })
 }
 
-/// The project root as a project grant's notice names it: its real location.
+/// The project root as a project grant's notice names it: its real location (`""` in a run with no project,
+/// where no project grant is made).
 fn shown_root(door: &Door) -> String {
-    let root = &door.project.root;
-    fs::physical(root)
-        .unwrap_or_else(|| root.clone())
-        .display()
-        .to_string()
+    door.project.as_ref().map_or_else(String::new, |p| {
+        fs::physical(&p.root)
+            .unwrap_or_else(|| p.root.clone())
+            .display()
+            .to_string()
+    })
 }
 
 /// `arg` as `<server>:<tool>` for a server of `names`, the longest one `arg` starts with, then `:` and a
@@ -428,7 +467,7 @@ fn writable_by(
     real: &Path,
 ) -> Option<&'static str> {
     let under = |root: &Path| fs::physical(root).is_some_and(|r| paths::within(&r, real));
-    if under(&footing.project.root) {
+    if under(&footing.root) {
         return Some("the project root");
     }
     if footing.write_roots.iter().any(|r| under(r)) {
@@ -623,6 +662,10 @@ mod tests {
         door: Door,
         footing: Footing,
         tools: crate::tool::Registry,
+        /// The user's home, `None` unless a test gives one.
+        home: Option<PathBuf>,
+        /// Whether the agent has a workspace (`mode: agent`): [`Self::new`]'s does.
+        workspace: bool,
     }
 
     impl Chat {
@@ -640,15 +683,28 @@ mod tests {
                 door: Door {
                     grants: Arc::default(),
                     writer: Arc::default(),
-                    project: project.clone(),
+                    project: Some(project.clone()),
                 },
                 footing: Footing {
-                    project,
+                    root: root.to_path_buf(),
+                    project: Some(project),
                     write_roots: write_roots.to_vec(),
                     added_dirs: added_dirs.to_vec(),
                 },
                 tools: tools(),
+                home: None,
+                workspace: true,
             }
+        }
+
+        /// The same chat with no project, as assembly leaves a run that has none: `workspace` false is a
+        /// `mode: chat` agent, true an agent whose root (under the home `home`) no project stands on.
+        fn without_project(mut self, workspace: bool, home: Option<PathBuf>) -> Self {
+            self.door.project = None;
+            self.footing.project = None;
+            self.workspace = workspace;
+            self.home = home;
+            self
         }
 
         fn g(&self) -> &Grants {
@@ -656,12 +712,21 @@ mod tests {
         }
 
         fn pf(&self) -> &ProjectFile {
-            &self.door.project
+            self.door.project.as_ref().expect("a project")
         }
 
         /// `/allow` in a run with no MCP server and the built-ins of [`tools`].
         fn allow(&self, arg: &str) -> Result<String, String> {
-            super::allow(&self.door, &self.footing, None, None, &self.tools, arg).map(|d| d.line)
+            super::allow(
+                &self.door,
+                &self.footing,
+                self.home.as_deref(),
+                self.workspace,
+                None,
+                &self.tools,
+                arg,
+            )
+            .map(|d| d.line)
         }
 
         /// The `Static` tab's title, prompt and rows; `None` when it is not shown.
@@ -766,6 +831,78 @@ mod tests {
             [Ok(format!("✓ revoked {} (this session)", out.display()))]
         );
         assert!(c.g().live_dirs().is_empty());
+    }
+
+    /// `/allow project …` needs a project (docs/design/grants.md §4.2). A `mode: chat` run has none: the keyword
+    /// is refused whatever follows it — a directory, a built-in tool, an MCP tool — saying why and what has one,
+    /// nothing is written under the sessions root, and the session level works as ever. The same line in a
+    /// `mode: agent` run is granted.
+    #[test]
+    fn allow_project_is_refused_in_chat_mode_and_granted_in_agent_mode() {
+        const WHY: &str = "this run has no project (mode: chat); an agent with mode: agent has one";
+        let (t, root, out) = fixture();
+        let chat = Chat::new(&t, &root, &[], &[]).without_project(false, None);
+        for arg in ["project ../out", "project shell", "project srv:push"] {
+            assert_eq!(chat.allow(arg).unwrap_err(), WHY, "{arg}");
+        }
+        assert!(chat.g().snapshot(Level::Project).is_empty());
+        assert!(!t.path().join("sessions").exists());
+        assert_eq!(
+            chat.allow("../out").unwrap(),
+            format!("✓ {} is writable for this session", out.display())
+        );
+        assert_eq!(chat.rows(), [format!("this session  {}", out.display())]);
+        assert_eq!(
+            chat.revoke(&[0]),
+            [Ok(format!("✓ revoked {} (this session)", out.display()))]
+        );
+
+        let agent = Chat::new(&t, &root, &[], &[]);
+        assert_eq!(
+            agent.allow("project ../out").unwrap(),
+            format!(
+                "✓ {} is writable for this project ({})",
+                out.display(),
+                root.display()
+            )
+        );
+        assert_eq!(
+            agent.pf().store.project_grants(&root).unwrap().dirs,
+            std::slice::from_ref(&out)
+        );
+    }
+
+    /// An agent whose root is the home directory, or an ancestor of it, has no project either — the rule the
+    /// dialog keeps for a directory (`repl::turn::tools::tests::the_dialog_never_offers_the_home_directory`),
+    /// by the same predicate: `/allow project …` is refused naming the root, and nothing is written. Without a
+    /// home there is nowhere to keep a project's grants, and the refusal says that instead.
+    #[test]
+    fn allow_project_is_refused_at_the_home_directory_or_above() {
+        let (t, root, out) = fixture();
+        for home in [root.clone(), root.join("users/me")] {
+            let c = Chat::new(&t, &root, &[], &[]).without_project(true, Some(home.clone()));
+            for arg in ["project ../out", "project shell"] {
+                assert_eq!(
+                    c.allow(arg).unwrap_err(),
+                    format!(
+                        "this run has no project: {} is /, the home directory or an ancestor of it, which is never a project",
+                        root.display()
+                    ),
+                    "{arg} with the home at {}",
+                    home.display()
+                );
+            }
+            assert!(!t.path().join("sessions").exists());
+            assert_eq!(
+                c.allow("../out").unwrap(),
+                format!("✓ {} is writable for this session", out.display())
+            );
+        }
+        let c = Chat::new(&t, &root, &[], &[]).without_project(true, None);
+        assert_eq!(
+            c.allow("project ../out").unwrap_err(),
+            "this run has no project (no home directory to keep its grants in)"
+        );
     }
 
     /// `project` is a keyword: the grant goes to the project's file first, then memory. A project grant covers a

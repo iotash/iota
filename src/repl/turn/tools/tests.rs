@@ -199,7 +199,7 @@ impl Fx {
                 door: crate::repl::grants::Door {
                     grants: Arc::default(),
                     writer: Arc::default(),
-                    project: no_project(),
+                    project: Some(unwritable_project()),
                 },
                 harness: String::new(),
                 overlay: String::new(),
@@ -257,13 +257,19 @@ impl Fx {
 
     /// The same turn, keeping project grants in `project`.
     fn with_project(mut self, project: crate::repl::ProjectFile) -> Self {
-        self.cx.door.project = project;
+        self.cx.door.project = Some(project);
+        self
+    }
+
+    /// The same turn in a run with no project — a `mode: chat` agent's (docs/design/grants.md §4.2).
+    fn without_project(mut self) -> Self {
+        self.cx.door.project = None;
         self
     }
 }
 
 /// A project file no write can reach (its store is under `/dev/null`): a project grant is refused.
-fn no_project() -> crate::repl::ProjectFile {
+fn unwritable_project() -> crate::repl::ProjectFile {
     crate::repl::ProjectFile {
         store: crate::session::SessionStore::new("/dev/null/sessions"),
         root: PathBuf::from("/"),
@@ -1846,7 +1852,7 @@ fn order_fixture(script: Vec<Reply>) -> OrderFx {
         door: crate::repl::grants::Door {
             grants: Arc::default(),
             writer: Arc::default(),
-            project: no_project(),
+            project: Some(unwritable_project()),
         },
         harness: String::new(),
         overlay: String::new(),
@@ -2855,6 +2861,104 @@ async fn the_dialog_never_offers_the_home_directory() {
     );
     assert_eq!(c.grants.live_dirs(), [real_t.join("home/sub")]);
     assert!(!real_t.join("home/x.txt").exists() && !real_t.join("t.txt").exists());
+}
+
+// The project level is offered only in a run that HAS a project (docs/design/grants.md §4.2): a `mode: chat`
+// agent's dialog has THREE items — `Allow once`, the session grant, `Deny` — for a built-in tool, an MCP tool and
+// a directory alike, where a `mode: agent` run's has FOUR. The third item of a chat's dialog is `Deny`: nothing
+// runs, and nothing is granted at the project level or written under the sessions root.
+#[tokio::test]
+async fn the_dialog_offers_the_project_level_only_with_a_project() {
+    use crate::tool::grants::Level;
+    /// The items of the one dialog a turn calling `tc` raises, the user committing its third row.
+    async fn items(fx: &Fx, tc: ToolCall) -> Vec<String> {
+        let p = stream(vec![Round::calls(vec![tc]), Round::text("done")]);
+        let mut history = vec![Message::user("go")];
+        fx.turn(&p, &mut history).await.outcome.expect("turn");
+        let asks: Vec<Vec<String>> = fx
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                UiEvent::Tabbed(s) => Some(s.panels[0].items.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(asks.len(), 1, "one dialog");
+        asks.into_iter().next().expect("a dialog")
+    }
+    let script = || {
+        let mut script = vec![choose(2)];
+        script.extend(quiet(1));
+        script
+    };
+    let with = |fx: Fx, project: bool| {
+        if project { fx } else { fx.without_project() }
+    };
+
+    for project in [false, true] {
+        // A built-in tool.
+        let t = tempfile::tempdir().expect("tempdir");
+        let file = crate::repl::ProjectFile {
+            store: crate::session::SessionStore::new(t.path().join("sessions")),
+            root: t.path().join("proj"),
+        };
+        let grants = Arc::new(crate::tool::grants::Grants::default());
+        let dispatch = Arc::new(StaticDispatcher::new(&["shell"]).with_approval(&["shell"]));
+        let fx = with(
+            Fx::new(dispatch, script())
+                .granting(&grants)
+                .with_project(file.clone()),
+            project,
+        );
+        let shown = items(
+            &fx,
+            call("c1", "shell", serde_json::json!({"command": "ls"})),
+        )
+        .await;
+        let mut want = vec!["Allow once", "Allow for this session"];
+        want.extend(project.then_some("Allow for this project"));
+        want.push("Deny");
+        assert_eq!(shown, want, "a built-in tool, project={project}");
+        assert_eq!(grants.snapshot(Level::Project).is_empty(), !project);
+        assert_eq!(t.path().join("sessions").exists(), project);
+
+        // An MCP tool.
+        let (m, _server) = crate::mcp::testutil::approval_manager(false);
+        let grants = Arc::new(crate::tool::grants::Grants::default());
+        let fx = with(
+            Fx::new(mcp_dispatch(&m, false), script())
+                .granting(&grants)
+                .with_project(file),
+            project,
+        );
+        let shown = items(&fx, call("c1", PUSH, serde_json::json!({}))).await;
+        let mut want = vec!["Allow once", "Always allow srv:push in this session"];
+        want.extend(project.then_some("Always allow srv:push in this project"));
+        want.push("Deny");
+        assert_eq!(shown, want, "an MCP tool, project={project}");
+        assert_eq!(grants.snapshot(Level::Project).is_empty(), !project);
+
+        // A directory: a `code` write outside every root.
+        let c = CodeChat::new(crate::tool::OutsideWrites::Ask, true);
+        let fx = with(c.fx(script()), project);
+        let write = call(
+            "c1",
+            "write_file",
+            serde_json::json!({"path": "../out/x.txt", "content": "x"}),
+        );
+        let shown = items(&fx, write).await;
+        let out = c.real_out.display();
+        let mut want = vec![
+            "Allow once".to_owned(),
+            format!("Allow, and make {out} writable for this session"),
+        ];
+        want.extend(project.then(|| format!("Allow, and make {out} writable for this project")));
+        want.push("Deny".to_owned());
+        assert_eq!(shown, want, "a directory, project={project}");
+        assert_eq!(c.grants.snapshot(Level::Project).is_empty(), !project);
+        assert_eq!(c.t.path().join("sessions").exists(), project);
+        assert_eq!(c.real_out.join("x.txt").exists(), project);
+    }
 }
 
 /// The real code set behind a wrapper that points `link` at `swap` while the gate decides about the call, and

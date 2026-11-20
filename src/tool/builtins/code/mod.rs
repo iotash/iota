@@ -336,7 +336,7 @@ impl CodeSet {
     /// What a write the user would be asked about is bound to, from one resolution of its real location:
     /// `Some` only under `outside_writes: ask` with a user to ask, for a path outside every root whose location
     /// is known (named [`OUTSIDE_ROOT_MARK`]; its real directory offered as a directory grant unless that is
-    /// `/`, the home directory or an ancestor of it — [`Self::offers_root`]) or a protected path that is
+    /// `/`, the home directory or an ancestor of it — [`offers_root`]) or a protected path that is
     /// [`Why::approvable`] (named [`PROTECTED_MARK`] and why, "allow once" only).
     pub(crate) fn approvable(&self, arg: &str) -> Option<ApprovalSubject> {
         if self.outside != Outside::Ask {
@@ -346,7 +346,7 @@ impl CodeSet {
             Ok(Write::Outside { real, .. }) => Some(ApprovalSubject {
                 detail: outside_summary(&real),
                 scope: Some(grant_dir(&real))
-                    .filter(|d| self.offers_root(d))
+                    .filter(|d| offers_root(self.home.as_deref(), d))
                     .map(Path::to_path_buf),
                 target: real,
             }),
@@ -357,23 +357,6 @@ impl CodeSet {
             }),
             _ => None,
         }
-    }
-
-    /// Whether the dialog may offer to make the real directory `dir` writable: never `/` (no parent), and never
-    /// the home directory or an ancestor of it — one keypress on a write to `~/x.txt` would otherwise open
-    /// `~/.ssh` and every shell rc file. The home is compared as configured and by its real location.
-    fn offers_root(&self, dir: &Path) -> bool {
-        if dir.parent().is_none() {
-            return false;
-        }
-        let Some(home) = &self.home else {
-            return true;
-        };
-        let real_home = fs::physical(home);
-        ![Some(home.clone()), real_home]
-            .into_iter()
-            .flatten()
-            .any(|h| paths::within(dir, &h))
     }
 
     /// Whether the writers' calls are put to the user: inside the roots unless `auto_write`, outside
@@ -528,8 +511,27 @@ fn extra_list(roots: &[PathBuf]) -> Option<String> {
     (!extra.is_empty()).then(|| extra.join(", "))
 }
 
+/// Whether the real directory `dir` may be a root a keypress or a project stands on — the dialog's directory
+/// grant, and the root a project's grants are keyed by (docs/design/grants.md §4.2): never `/` (no parent), and
+/// never the home directory or an ancestor of it — one keypress on a write to `~/x.txt` would otherwise open
+/// `~/.ssh` and every shell rc file, and a project at `~` would be every later run's under it. The home is
+/// compared as configured and by its real location.
+pub(crate) fn offers_root(home: Option<&Path>, dir: &Path) -> bool {
+    if dir.parent().is_none() {
+        return false;
+    }
+    let Some(home) = home else {
+        return true;
+    };
+    let real_home = fs::physical(home);
+    ![Some(home.to_path_buf()), real_home]
+        .into_iter()
+        .flatten()
+        .any(|h| paths::within(dir, &h))
+}
+
 /// The directory a write to `real` would be granted under: its parent, or `real` itself when it has none
-/// (`/`, which [`CodeSet::offers_root`] never offers).
+/// (`/`, which [`offers_root`] never offers).
 pub(crate) fn grant_dir(real: &Path) -> &Path {
     real.parent().unwrap_or(real)
 }

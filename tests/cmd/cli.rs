@@ -1731,14 +1731,18 @@ impl Drop for Pane {
 /// `--no-save` keeps the CONVERSATION off the disk, not what the user granted for the project (grants.md §9 Q4):
 /// a real ephemeral chat's `/allow project <dir>` writes the project's `grants.json` — and nothing else under
 /// the sessions root — and the next run in the project, an unattended `-m` with no door of its own, writes
-/// into that directory unasked and says that it loaded the grant.
+/// into that directory unasked and says that it loaded the grant. The agent is `mode: agent`: only a run with
+/// a workspace has a project (§4.2).
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_ephemeral_chat_still_writes_a_project_grant() {
     let Some(tmux) = tmux_or_skip("an_ephemeral_chat_still_writes_a_project_grant") else {
         return;
     };
-    let (dir, home) = project();
+    // The fixture's home is INSIDE its working directory, and a root that is an ancestor of the home is never a
+    // project (grants.md §4.2): the project is a directory of its own.
+    let (_fixture, home) = project();
+    let dir = tempfile::tempdir().expect("project");
     let outside = tempfile::tempdir().expect("outside");
     let lib = fs::canonicalize(outside.path())
         .expect("real outside")
@@ -1758,7 +1762,7 @@ async fn an_ephemeral_chat_still_writes_a_project_grant() {
     write_config(
         &home,
         &format!(
-            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: {{auto_write: true}}}}}}\n",
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{mode: agent, model: m, tools: {{code: {{auto_write: true}}}}}}\n",
             server.uri()
         ),
     );

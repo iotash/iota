@@ -112,7 +112,7 @@ pub(crate) struct ToolAssembly {
     pub(crate) agent: AgentOptions,
     /// The project's grants file, keyed by the root the tools read paths against (`ToolEnv::root`), built once
     /// beside the project load: the chat's doors write through it, and both branches enter a resumed session
-    /// with it. `None` without a home or a working directory: no project grants then.
+    /// with it. `None` in a run with no project ([`project_file`]): no project level then.
     pub(crate) project: Option<crate::repl::ProjectFile>,
     /// The built-in harness prompt's inputs (`agents::harness`), read once here for both branches and
     /// composed by each once its `Presenter` exists — the hosts add their facts to `<environment>`.
@@ -532,16 +532,10 @@ fn assemble_tools(
     }
     .with_write_roots(&cfg.write_roots, &inv.args.add_dir);
     tool_env.outside_writes = cfg.outside_writes;
-    // The project's grants (docs/design/grants.md §4.2), in every mode and before any tool or the harness reads
-    // the store: what the user granted for this project holds from the first call — in `-m` too, which has no
-    // door of its own, and so in a child `iota run … -m` started from a chat in the same project.
-    let project = match (
-        crate::session::SessionStore::from_dirs(dirs),
-        tool_env.root(),
-    ) {
-        (Ok(store), Ok(root)) => Some(crate::repl::ProjectFile { store, root }),
-        _ => None,
-    };
+    // The project's grants (docs/design/grants.md §4.2), of a run that has a project and before any tool or the
+    // harness reads the store: what the user granted for this project holds from the first call — in `-m` too,
+    // which has no door of its own, and so in a child `iota run … -m` of the same agent in the same project.
+    let project = project_file(settings.mode, dirs, &tool_env);
     if let Some(w) = project.as_ref().and_then(|p| p.load(&tool_env.grants)) {
         io.caution(&w);
     }
@@ -589,6 +583,30 @@ fn assemble_tools(
         harness,
         messaging,
     })
+}
+
+/// The project's grants file, for a run that HAS a project (docs/design/grants.md §4.2): an agent with a
+/// workspace (`mode: agent` or `bot` — a chat has no project, whatever directory it runs in) whose root is one
+/// a project may stand on — never `/`, the home directory or an ancestor of it, the dialog's own rule
+/// ([`offers_root`](crate::tool::builtins::code::offers_root)), since [`crate::agents::project_root`] falls
+/// back to the working directory and a bucket keyed by `~` would be every later run's under it. `None`
+/// otherwise, and without a home or a working directory: no project level then — nothing loaded, offered or
+/// written.
+fn project_file(
+    mode: crate::config::AgentMode,
+    dirs: &crate::app::HostDirs,
+    tool_env: &ToolEnv,
+) -> Option<crate::repl::ProjectFile> {
+    if !mode.has_workspace() {
+        return None;
+    }
+    let root = tool_env.root().ok()?;
+    let real = crate::app::fs::physical(&root).unwrap_or_else(|| root.clone());
+    if !crate::tool::builtins::code::offers_root(dirs.home.as_deref(), &real) {
+        return None;
+    }
+    let store = crate::session::SessionStore::from_dirs(dirs).ok()?;
+    Some(crate::repl::ProjectFile { store, root })
 }
 
 /// Binds the interactive chat's socket (`<home>/.iota/run/<pid>.sock`, `session::sock`): `None` without a
@@ -693,9 +711,6 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
             .clone()
             .ok_or(SetupError::NoSessionToResume)?;
         let store = crate::session::SessionStore::from_dirs(&dirs)?;
-        // The project file a resumed session's grants are entered beside: with a home, missing only without a
-        // working directory.
-        let project = project.ok_or_else(|| SetupError::Cwd(cwd_err()))?;
         // root.go:298: agent mode tries the project's own bucket first and only widens on no match; normal
         // mode looks at the flat root (Go passes an empty `agentOpts.Root`).
         let scope = settings
@@ -774,9 +789,12 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         // The session's grants are in force for its one turn, beside the project's — before the tools and the
         // harness read them, never changed: `-m` has no door to grant through. The project's were loaded, and
         // a file that cannot be read said, at assembly.
-        if let Some(line) = project
-            .enter(&tool_env.grants, resumed.meta.grants.clone())
-            .line()
+        if let Some(line) = crate::repl::grants::enter(
+            project.as_ref(),
+            &tool_env.grants,
+            resumed.meta.grants.clone(),
+        )
+        .line()
         {
             io.warning(&line);
         }
@@ -958,6 +976,57 @@ mod tests {
             stderr: Box::new(err.clone()),
         };
         (io, err)
+    }
+
+    /// Only a run with a project has a project file (docs/design/grants.md §4.2): a `mode: chat` agent has none
+    /// wherever it runs; an agent or a bot has one keyed by its root — unless that root is the home directory
+    /// (as configured, or where it really is) or an ancestor of it, the rule the dialog keeps for a directory
+    /// (`repl::turn::tools::tests::the_dialog_never_offers_the_home_directory`).
+    #[test]
+    fn only_a_workspace_off_the_home_has_a_project_file() {
+        use crate::config::AgentMode;
+        let t = tempfile::tempdir().expect("tempdir");
+        let real = std::fs::canonicalize(t.path()).expect("real t");
+        let home = real.join("home");
+        std::fs::create_dir_all(home.join("work/proj")).expect("dirs");
+        std::fs::create_dir_all(real.join("elsewhere")).expect("elsewhere");
+        let file = |mode: AgentMode, home: &std::path::Path, root: std::path::PathBuf| {
+            let dirs = crate::app::HostDirs {
+                home: Some(home.to_path_buf()),
+                ..crate::app::HostDirs::default()
+            };
+            let env = crate::tool::ToolEnv {
+                project_root: Some(root),
+                dirs: dirs.clone(),
+                ..crate::tool::ToolEnv::default()
+            };
+            super::project_file(mode, &dirs, &env).map(|p| p.root)
+        };
+        let proj = home.join("work/proj");
+        assert_eq!(file(AgentMode::Chat, &home, proj.clone()), None);
+        assert_eq!(
+            file(AgentMode::Agent, &home, proj.clone()),
+            Some(proj.clone())
+        );
+        assert_eq!(file(AgentMode::Bot, &home, proj.clone()), Some(proj));
+        let elsewhere = real.join("elsewhere");
+        assert_eq!(
+            file(AgentMode::Agent, &home, elsewhere.clone()),
+            Some(elsewhere)
+        );
+        // The home itself, an ancestor of it, `/` — and the home reached through a link.
+        assert_eq!(file(AgentMode::Agent, &home, home.clone()), None);
+        assert_eq!(file(AgentMode::Bot, &home, real.clone()), None);
+        assert_eq!(file(AgentMode::Agent, &home, "/".into()), None);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&home, real.join("link")).expect("link");
+            assert_eq!(file(AgentMode::Agent, &home, real.join("link")), None);
+            assert_eq!(
+                file(AgentMode::Agent, &real.join("link"), home.clone()),
+                None
+            );
+        }
     }
 
     /// D17: a bind that failed is ONE warning naming the real cause, and a chat without messaging; a bound

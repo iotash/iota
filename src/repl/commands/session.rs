@@ -235,11 +235,11 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     // The session grants were the left conversation's: the switched-to one has its own, REPLACING them — a
     // merge would carry one conversation's approvals into another. The project's are reloaded: they follow the
     // project, and another chat may have changed them.
-    let entered = repl
-        .handles
-        .footing
-        .project
-        .enter(&repl.handles.grants, resumed.meta.grants.clone());
+    let entered = crate::repl::grants::enter(
+        repl.handles.footing.project.as_ref(),
+        &repl.handles.grants,
+        resumed.meta.grants.clone(),
+    );
     // The auto-compaction snooze was the session being left's answer, about ITS occupancy.
     repl.conv.compact_declined = 0;
     // A live switch takes the bundle's model and tuning whole: no flag is in play any more.

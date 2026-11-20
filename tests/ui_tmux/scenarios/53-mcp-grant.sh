@@ -6,7 +6,8 @@
 # side of it, against a real stdio server:
 #
 #   53.1 the model calls the server's tool — the approval dialog opens with its FOUR items: allow once, always
-#        allow `srv:echo` in this session, in this project, deny;
+#        allow `srv:echo` in this session, in this project, deny (the agent is `mode: agent`, run in a project
+#        of its own: only a run with a project is offered the project level, grants.md §4.2);
 #   53.2 Esc denies it: the call does not run, and the round closes on the refusal;
 #   53.3 `/allow srv:echo` grants it for this session, saying so; the bare `/allow`'s Grants tab lists it;
 #   53.4 the same call again runs without a dialog and its output closes the round.
@@ -22,6 +23,7 @@ models:
   m: mock:fake
 agents:
   default:
+    mode: agent
     model: m
     choices: [m, \"mock:*\"]
 mcp_servers:
@@ -33,7 +35,10 @@ export CONFIG_BODY
 CALL='call:mcp__srv__echo'
 RAN='ran: echoed'
 
-start_provider openai 100 30 || finish
+# The project is `proj/`: the scratch directory itself holds the scenario's home, and a root that is an ancestor
+# of the home is never a project.
+mkdir -p "$SCEN_TMP/proj"
+_launch "$SCEN_TMP/proj" openai fake 100 30 || finish
 settle || miss "startup never settled"
 
 # ------------------------------------------------------------------ 53.1: the dialog's four items
