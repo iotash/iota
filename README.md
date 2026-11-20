@@ -30,9 +30,9 @@ a model, a prompt, a set of tools — in one YAML file, and run them:
   anywhere and write in the project and the directories made writable, MCP
   servers with OAuth login — every file edit, every unsandboxed command and
   every MCP tool call asks for confirmation unless the config waives it. An
-  answer can be kept for this session or for this project: allow a built-in
-  tool or an MCP tool, or make the directory of a write outside them
-  writable. `/allow` grants the same by hand, and a bare `/allow` shows what
+  answer can be kept for this session or — for an agent with `mode: agent` —
+  for this project: allow a built-in tool or an MCP tool, or make the
+  directory of a write outside them writable. `/allow` grants the same by hand, and a bare `/allow` shows what
   is in force and takes it back. The config is the permanent form
   (`write_roots:`, `tools.code.auto_write`, `tools.shell.auto_run`, an MCP
   server's `auto_run`), `--add-dir` the one-run form. A write to git's hooks

@@ -186,9 +186,36 @@ The bucket name is lossy (`/a-b/c` and `/a/b/c` share one), so the file is a map
 by the canonical real project root and a run reads only its own entry: two projects
 that collide on the slug share a file and nothing else (§9 Q1). `list_bucket` reads
 subdirectories only and `find_dir` needs `<ulid>/meta.json`, so the file is invisible
-to every session listing. The bucket is `projects/<slug(ToolEnv::root())>` in every
-mode, created on the first project-level write — a chat whose sessions use the flat
-layout has project grants too.
+to every session listing. The bucket is `projects/<slug(ToolEnv::root())>`, created on
+the first project-level write.
+
+> **Rewritten 2026-11-20 (grants-mode, DIVERGENCES X-110).** As first shipped (0.12.0) the
+> project level existed "in every mode … a chat whose sessions use the flat layout has
+> project grants too". That was wrong twice: `mode: chat` has no project by its own
+> contract, and its key fell back to the working directory, so `/allow project .` in `~`
+> wrote a bucket for the home directory that every later run under it inherited.
+
+**Which runs have a project level.** Only a run that HAS a project, decided once at
+assembly (`cmd::project_file`):
+
+1. the agent has a workspace — `mode: agent` or `mode: bot`
+   (`AgentMode::has_workspace`). A `mode: chat` agent has no `AGENTS.md` overlay, no
+   skills set and a flat session; it has no project either, whatever directory it runs
+   in;
+2. and its root is one a project may stand on: never `/`, the home directory or an
+   ancestor of it. `agents::project_root` is the nearest `.git`, else the working
+   directory itself, so an agent started in `~` (or above it) with no repository would
+   otherwise key a bucket by the home directory. The predicate is the dialog's own
+   (`code::offers_root`, §5.1), applied to the root's real location — one rule, one
+   function.
+
+A run without one has NO project level anywhere: no `grants.json` is read at the start
+(one left there by 0.12.0 is ignored, not deleted), none is written, the dialog offers no
+`…for this project` item (§5.1), `/allow project …` is refused saying why (§5.2), and the
+`Grants` tab and `/status` — which read the store — have no project row to show. The
+session level, the directory, built-in and MCP grants at it, `write_roots:` and
+`--add-dir` are the same in every mode. A `-m` run of an agent with a project still
+inherits its grants; a `-m` run of a `mode: chat` agent inherits none.
 
 A file that does not parse as `v: 1` grants nothing and warns once (`⚠ grants: cannot
 read <path> (<error>); no project grants apply`), and a project-level write then
@@ -209,6 +236,10 @@ The title is unchanged (`<tool> <detail> — allow?`). The items by what the cal
 | a PROTECTED write | `Allow once` · `Deny` (unchanged) |
 | an MCP tool | `Allow once` · `Always allow <server>:<tool> in this session` · `Always allow <server>:<tool> in this project` · `Deny` |
 | a built-in tool (a write inside the roots, a `shell` call outside the sandbox) | `Allow once` · `Allow for this session` · `Allow for this project` · `Deny` |
+
+In a run with no project (§4.2: a `mode: chat` agent, or a root at the home directory or
+above) the `…project` item is not there: three items — `Allow once`, the session grant,
+`Deny` — for a directory, an MCP tool and a built-in tool alike.
 
 `<dir>` is the target's real parent directory, from the one resolution X-92 already
 makes (`ApprovalSubject::scope`). Choosing a "make writable" item adds `<dir>` to the
@@ -237,6 +268,12 @@ only one for `server:*`.
 /allow project <…>                  any of the four above, for this project, in every session
 ```
 
+`/allow project …` needs a project (§4.2). In a run without one it is refused before the
+rest is read: `/allow: this run has no project (mode: chat); an agent with mode: agent
+has one`; for an agent whose root is too wide, `/allow: this run has no project: <root>
+is /, the home directory or an ancestor of it, which is never a project`; without a home,
+`/allow: this run has no project (no home directory to keep its grants in)`.
+
 - **Arguments**, read in this order. (1) A CONNECTED server's whole name, the longest that
   matches, then `:` and the tool — a `--mcp` server is named by its URL or `argv[0]`, which
   may hold a `:` and start with `/` or `.` (`/allow https://h/mcp:push`, `/allow
@@ -260,7 +297,8 @@ only one for `server:*`.
     key: `this session  /path`, `this project  /path (stale)`, `this session  srv:tool`,
     `this project  shell`, a `--mcp` grant followed by `(--mcp <spec>)`. With nothing
     granted its prompt is `No grants. Add makes a directory writable for this session;
-    /allow project <dir> for this project.` Committing takes each checked grant back from
+    /allow project <dir> for this project.` (in a run with no project: `No grants. Add
+    makes a directory writable for this session.`) Committing takes each checked grant back from
     every level that holds it (the project's file first).
   - `Static` — only when there is a static root: a read-only view, prompt `Writable from
     the config and the command line: not grants, so none can be revoked here.`, one row
@@ -378,6 +416,9 @@ forgets `gate()` asks too often, never too rarely.
 | `--no-save` | memory only | written (§9 Q4) |
 | `/save` in an ephemeral chat | the snapshot is stamped into the meta it mints | — |
 | `iota resume <id> -m …` | loaded, never changed | loaded |
+
+The project column is a run's that has a project (§4.2); in any other it stays empty and
+no file is read or written.
 
 The store is ONE `Arc<Grants>` for the process, created at tool assembly
 (`src/cmd/mod.rs:511-525`) and shared by `ToolEnv`, the walks and the chat state; the
@@ -531,9 +572,11 @@ impl Door {
 `/revoke` and `/save`: the session level changes in memory and is then written through
 `update_meta` (an ephemeral chat has no writer); the project level is written to the file
 first and memory takes what the file then holds. `ProjectFile` is built once, in `cmd`, for
-the root the tools read paths against; `load` runs at assembly in every mode, `enter` at a
+the root the tools read paths against — only for a run with a project (§4.2), `None`
+otherwise; `load` runs at assembly, `enter` at a
 start resume, `iota resume -m`, `/new` and `/session`. `Footing` is what `/allow` stands on:
-the project's file and the static roots kept apart by where they were declared. The
+that root, the project's file (`Option<ProjectFile>`) and the static roots kept apart by where
+they were declared. The
 harness is recomposed by the next turn (`refresh_harness`), not by the door. `/new`, a
 resume and `/session` swap contents, never the handle (§7).
 

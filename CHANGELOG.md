@@ -3,6 +3,22 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Fixed
+
+- **A plain chat no longer has project grants.** 0.12.0 offered `Allow for this
+  project` and `/allow project …` to every agent, including the default
+  `mode: chat`, which has no project: there the "project" was the directory
+  you ran iota in, so `/allow project .` in your home directory granted it to
+  every later run under it. Now only an agent with `mode: agent` (or `bot`)
+  has project grants, and never when its project root is your home directory
+  or a directory above it. Elsewhere the prompt offers `Allow once`, the
+  session grant and `Deny`, and `/allow project …` says why it cannot. Session
+  grants, `write_roots:` and `--add-dir` work as before. A project grant made
+  from a plain chat in 0.12.0 no longer applies to plain chats, and one made
+  for your home directory applies to nothing.
+
 ## 0.12.0 - 2026-11-20
 
 ### Changed

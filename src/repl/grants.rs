@@ -6,7 +6,7 @@
 //! bundle's meta (`SessionWriter::update_meta`; an ephemeral chat keeps it in memory until `/save` stamps it);
 //! the project level is written to the project's `grants.json` FIRST ([`ProjectFile`]) and only then takes
 //! effect — `--no-save` included: it is not conversation. Entering a conversation — a start, a resume, `/new`,
-//! a `/session` switch — is [`enter`]: its session grants replace the store's, the project's are read afresh.
+//! a `/session` switch — is `enter`: its session grants replace the store's, the project's are read afresh.
 //! The project file is built ONCE, at assembly, keyed by the root the tools read paths against
 //! (`ToolEnv::root`), and handed to the chat with the static write roots ([`Footing`]) — only for a run that
 //! HAS a project (§4.2): an agent with a workspace, whose root is not the home directory or an ancestor of it.
