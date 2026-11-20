@@ -3,7 +3,7 @@
 //! are live, and iota supports both. This host is hc's IDENTITY: the terminal's id, the `hc` message
 //! envelope and the `<environment>` lines. hc has no socket method for a program's state; it reads the
 //! Program Status Protocol off the terminal, which `super::program_status` writes — a terminal-side host
-//! built at assembly beside this one, only when hc was detected and the terminal accepted the query
+//! built at assembly beside this one, for any terminal that accepted the query, hc's or not
 //! (docs/design/program-status.md).
 //!
 //! **Detected by asking the terminal.** Without `HC_TERMINAL_ID` it is not an hc terminal and the
@@ -124,9 +124,9 @@ mod tests {
     ];
 
     /// The ways hc meets the others (docs/design/herdr-core-host.md §2), each yielding exactly one host
-    /// — the right one, or none — and the writer (`program_status::for_terminal`) only where hc was
-    /// detected AND the terminal accepted: a terminal that could not be asked is hc by the environment
-    /// rule and gets no report byte (docs/design/program-status.md §2). Run through `detect`, so the
+    /// — the right one, or none — and the writer (`program_status::for_terminal`) wherever the terminal
+    /// accepted and no detected host reports state itself: a terminal that could not be asked is hc by
+    /// the environment rule and gets no report byte (docs/design/program-status.md §2). Run through `detect`, so the
     /// order of `DETECTORS` is what is tested; the terminal's answer to the probe is what each nesting
     /// gives (measured for hc and tmux; herdr's is assumed, the design doc says why).
     #[tokio::test]
@@ -173,7 +173,8 @@ mod tests {
             ),
             ("tmux in hc", &tmux_in_hc[..], Some(false), None, false),
             ("hc in tmux", &hc_in_tmux[..], Some(true), hc_, true),
-            ("no hc", &[][..], Some(true), None, false),
+            ("no hc, answering", &[][..], Some(true), None, true),
+            ("no hc, mute", &[][..], Some(false), None, false),
         ] {
             let probe = probe(vars, answer);
             let host = detect(&probe);

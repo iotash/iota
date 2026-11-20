@@ -427,6 +427,26 @@ async fn a_headless_run_reports_through_the_tty() {
     assert!(reply.contains("l#29 line"), "the reply: {reply}");
 }
 
+/// Any terminal that answers is reported to: iota run under `env -u HC_TERMINAL_ID` does not detect
+/// herdr-core — hc stands in for an anonymous OSC 7501 terminal — yet it asks the terminal, hc accepts,
+/// and the record shows `idle`, then `working` through a turn; the banner names no host.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_terminal_that_answers_is_reported_to_without_its_id() {
+    let Some(hc) = hc_binary() else { return };
+    let port = crate::mock::start().expect("mock provider");
+    let hcc = Core::start(hc, &config(port), &[]).await;
+    hcc.spawn("anon", &format!("env -u HC_TERMINAL_ID {}", script("")))
+        .await;
+    hcc.until_state("anon", "idle").await;
+    let screen = hcc.run(&["read", "anon"]).await.1;
+    assert!(screen.contains("chat · "), "no banner: {screen}");
+    assert!(!screen.contains(" · in "), "a host is named: {screen}");
+    let (code, out) = hcc.send("anon", "stream 30 100").await;
+    assert_eq!(code, Some(0), "hc send: {out}");
+    hcc.until_state("anon", "working").await;
+    hcc.until_state("anon", "idle").await;
+}
+
 /// Nesting A: an hc core started from a herdr pane gives its terminals the pane's `HERDR_*`. iota
 /// reports to hc, and the herdr pane it inherited hears nothing (before the hc host, it heard all).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

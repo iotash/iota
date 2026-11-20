@@ -132,7 +132,7 @@ pub(crate) struct ToolAssembly {
 }
 
 /// The host detectors' view of the machine (host.go:71-74 `SystemEnv`): the run's injected environment,
-/// the `PATH` lookup and the terminal's OSC 7501 answer (asked only inside an hc terminal, once: the probe
+/// the `PATH` lookup and the terminal's OSC 7501 answer (asked once, unless the detected host reports state itself: the probe
 /// remembers it for `program_status::for_terminal`), built HERE so `crate::host` never reads the process environment itself (G16:
 /// the 15-line PATH scan of `shell::exec` stands in for `exec.LookPath`). Both branches build their
 /// `Presenter` from it: the interactive loop with the ANSI fallback, the `-m` run without one.
@@ -141,9 +141,10 @@ pub(crate) fn host_probe(env: &Env) -> crate::host::Probe {
         env: env.clone(),
         look_path: Box::new(crate::shell::exec::find_in_path),
         program_status: {
-            let answer = std::sync::OnceLock::new();
             let env = env.clone();
-            Box::new(move || *answer.get_or_init(|| crate::host::program_status::probe_tty(&env)))
+            crate::host::program_status::remembered(move || {
+                crate::host::program_status::probe_tty(&env)
+            })
         },
     }
 }

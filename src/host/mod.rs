@@ -264,8 +264,8 @@ pub struct Probe {
     pub look_path: LookPathFn,
     /// Asks the terminal whether it reads OSC 7501 — a write and a read on the tty, so only the hc
     /// detector calls it (only when `HC_TERMINAL_ID` says an hc terminal may be there) and then
-    /// `program_status::for_terminal` (only when hc was detected). The real one remembers its answer:
-    /// the terminal is asked once between them.
+    /// `program_status::for_terminal` (unless the detected host reports state itself). The real one
+    /// remembers its answer (`program_status::remembered`): the terminal is asked once between them.
     pub program_status: ProgramStatusFn,
 }
 

@@ -1,6 +1,6 @@
 # Program status — OSC 7501 for any terminal that answers, not only herdr-core
 
-Status: **design, not approved** (2026-11-20) · `main` = `dd12acd` · hc 0.1.21, tmux 3.8 ·
+Status: **design, tasks 1–3 implemented** (2026-11-21: any answering terminal gets OSC 7501, DIVERGENCES X-114; designed 2026-11-20) · `main` = `dd12acd` · hc 0.1.21, tmux 3.8 ·
 research: `~/.iota/reports/iota/rex-host.md` · the protocol:
 `https://www.superlogical.com/rex/docs/build/program-status` (rev 0.4, read 2026-11-20).
 No code changes with this document; §9 lists the tasks that make it true. "Measured" means
@@ -80,8 +80,7 @@ between them.
 
 ## 2. Detection
 
-**When.** Once per run, at assembly (`cmd/mod.rs:506`, where `host::detect` already
-runs), for the interactive chat and for `-m` alike — before the screen exists, because the
+**When.** Once per run, at assembly (`cmd::assemble_tools`, right after `host::detect`), for the interactive chat and for `-m` alike — before the screen exists, because the
 round trip reads the tty itself and must not share it with the event loop
 (`osc.rs:116-118`). Never again while the run lives: a terminal does not start or stop
 speaking a protocol under a running program, and the loop cannot read a reply without
@@ -95,7 +94,9 @@ losing keys.
 | herdr-core | already, by `detect_hc` | iff it accepted | 7501, else OSC 9;4 |
 | none | yes | iff it accepted | 7501, else OSC 9;4 |
 
-So nothing reports twice by construction: `ProgramStatus` is not built when the detected
+In code (`program_status::for_terminal`): a detected host with a `StateReporter` is never
+asked; under any other detected host, or none, the remembered answer decides. So nothing
+reports twice by construction: `ProgramStatus` is not built when the detected
 host has a state channel, and where it is built it shadows OSC 9;4 in the presenter. A
 terminal inside herdr or cmux is not asked at all — no new bytes reach a pane whose
 handling of the query is unknown (herdr's is: `herdr-core-host.md` §2).

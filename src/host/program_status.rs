@@ -16,8 +16,10 @@
 //! the protocol's default five when it lists none). A terminal that answers the DSR alone, garbage, or
 //! nothing — no controlling terminal, no reply in 100 ms, a background process group — gets not one
 //! report byte: an unknown OSC in a terminal that never said it reads it is at best ignored and at
-//! worst garbage. For now the writer is built only where herdr-core was detected (the design's task 1);
-//! any other terminal keeps OSC 9;4.
+//! worst garbage. Any terminal that answers gets it, except under a detected host with a state channel of
+//! its own (herdr's socket, cmux's CLI): that host takes the state and the terminal is never asked — a
+//! 7501 terminal started from a herdr pane or a cmux surface reports to the inherited pane (accepted).
+//! The answer is the only gate: no environment rule writes without it.
 //!
 //! **One reporter per controlling terminal.** Every run gives its children [`STATUS_SESSION`] = its
 //! session id ([`session`], `getsid(0)`), and a run whose own session id equals the one it inherited is
@@ -81,16 +83,30 @@ pub(crate) fn report(s: Option<State>) -> String {
     format!("\x1b]7501;{body}\x1b\\")
 }
 
-/// The terminal-side host to put in front of the ANSI host, or `None`: built only when herdr-core was
-/// detected AND the terminal accepted the query (the module doc). The real probe remembers its answer,
-/// so the terminal is asked once between this and the hc detector.
+/// The terminal-side host to put in front of the ANSI host, or `None` (the design's §2 table): a detected
+/// host with a state channel of its own (herdr, cmux) takes the state and the terminal is not asked;
+/// under any other detected host, or none, the writer is built when the terminal accepted the query.
+/// The real probe remembers its answer, so the terminal is asked once between this and the hc detector.
 pub(crate) fn for_terminal(detected: Option<&dyn Host>, probe: &Probe) -> Option<Box<dyn Host>> {
-    if detected.map(Host::name) != Some(super::hc::HC_NAME) {
+    if let Some(h) = detected.filter(|h| h.as_state_reporter().is_some()) {
+        tracing::debug!(
+            "program status: {} reports state, the terminal is not asked",
+            h.name()
+        );
         return None;
     }
     let answer = (probe.program_status)();
     tracing::debug!("program status: the terminal's answer is {answer:?}");
     (answer == Some(true)).then(|| Box::new(ProgramStatus::new()) as Box<dyn Host>)
+}
+
+/// `ask` asked at most once: its first answer is every later call's (`cmd::host_probe`'s probe, which
+/// the hc detector and [`for_terminal`] share).
+pub(crate) fn remembered(
+    ask: impl Fn() -> Option<bool> + Send + Sync + 'static,
+) -> crate::host::ProgramStatusFn {
+    let answer = std::sync::OnceLock::new();
+    Box::new(move || *answer.get_or_init(&ask))
 }
 
 /// This process's session id (`getsid(0)`), given to every child as [`STATUS_SESSION`]. `None` where
@@ -258,7 +274,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::{
-        PROBE_QUERY, ProgramStatus, STATUS_SESSION, accepts, answer, report, unless_nested,
+        PROBE_QUERY, ProgramStatus, STATUS_SESSION, accepts, answer, for_terminal, remembered,
+        report, unless_nested,
     };
     use crate::app::env::Env;
     use crate::host::{Host, State};
@@ -441,5 +458,130 @@ mod tests {
             super::session(),
             Some(nix::unistd::getsid(None).unwrap().to_string())
         );
+    }
+
+    /// The design's §2 table through the assembly (`detect`, then [`for_terminal`], over one
+    /// [`remembered`] probe, as `cmd::host_probe` builds it): under herdr and cmux the terminal is never
+    /// asked and no writer is built, whatever it would say; under hc and in a bare terminal it is asked
+    /// once between the detector and the assembly, and only an accepting answer builds the writer.
+    #[tokio::test]
+    async fn the_terminal_is_asked_only_when_no_host_reports_state() {
+        use crate::host::detect;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let herdr = [
+            ("HERDR_ENV", "1"),
+            ("HERDR_PANE_ID", "w1:p2"),
+            ("HERDR_SOCKET_PATH", "/nonexistent/herdr.sock"),
+            ("HERDR_BIN_PATH", "/nonexistent/herdr"),
+        ];
+        let cmux = [("CMUX_SURFACE_ID", "s1")];
+        let hc = [("HC_TERMINAL_ID", "t4")];
+        let mut wrong = Vec::new();
+        // (case, environment, the terminal's answer, the host, times asked, the writer)
+        for (case, vars, says, host, asks, writer) in [
+            ("herdr", &herdr[..], Some(true), Some("herdr"), 0, false),
+            ("cmux", &cmux[..], Some(true), Some("cmux"), 0, false),
+            ("hc", &hc[..], Some(true), Some("herdr-core"), 1, true),
+            ("hc, not asked", &hc[..], None, Some("herdr-core"), 1, false),
+            ("bare, answering", &[][..], Some(true), None, 1, true),
+            ("bare, mute", &[][..], Some(false), None, 1, false),
+            ("bare, nothing", &[][..], None, None, 1, false),
+        ] {
+            let asked = Arc::new(AtomicUsize::new(0));
+            let n = Arc::clone(&asked);
+            let probe = crate::host::Probe {
+                env: Env::fixed(vars),
+                look_path: Box::new(|name| (name == "cmux").then(|| "/nonexistent/cmux".into())),
+                program_status: remembered(move || {
+                    n.fetch_add(1, Ordering::SeqCst);
+                    says
+                }),
+            };
+            let detected = detect(&probe);
+            let got = detected.as_ref().map(|h| h.name());
+            let built = for_terminal(detected.as_deref(), &probe).is_some();
+            let times = asked.load(Ordering::SeqCst);
+            if (got, times, built) != (host, asks, writer) {
+                wrong.push(format!(
+                    "{case}: {got:?} asked {times} writer {built}, want {host:?} {asks} {writer}"
+                ));
+            }
+            if let Some(c) = detected.as_ref().and_then(|h| h.as_closer())
+                && host == Some("herdr")
+            {
+                c.close().await; // the release goes to a socket nobody listens on
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    /// Where the child of [`a_real_terminal_that_answers_nothing_gets_no_report`] says it is done.
+    #[cfg(unix)]
+    const REAL_TTY_OUT: &str = "IOTA_TEST_PROGRAM_STATUS_OUT";
+
+    /// The child half: this test binary run again under `script(1)`, assembling as a `-m` run in a bare
+    /// terminal does — the real probe, `detect`, [`for_terminal`] — and reporting a state and the clear
+    /// through whatever that built. Does nothing unless it is that child.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "the child of a_real_terminal_that_answers_nothing_gets_no_report"]
+    async fn real_tty_child() {
+        let Some(out) = std::env::var_os(REAL_TTY_OUT) else {
+            return;
+        };
+        let probe = crate::cmd::host_probe(&Env::default());
+        let detected = crate::host::detect(&probe);
+        let built = for_terminal(detected.as_deref(), &probe);
+        if let Some(h) = &built {
+            h.as_state_reporter().unwrap().set_state(State::Busy);
+            h.as_closer().unwrap().close().await;
+        }
+        crate::ui::testutil::report(
+            std::path::Path::new(&out),
+            &format!(
+                "answer {:?} writer {}",
+                (probe.program_status)(),
+                built.is_some()
+            ),
+        );
+    }
+
+    /// A real `/dev/tty` that answers nothing (`script(1)`'s pty): the run asks once, the answer is
+    /// `None`, no writer is built, and the typescript — every byte the run wrote to its terminal — holds
+    /// the query once and no `state=`.
+    #[cfg(unix)]
+    #[test]
+    fn a_real_terminal_that_answers_nothing_gets_no_report() {
+        use crate::ui::testutil::{await_report, under_script_to};
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("said");
+        let typescript = dir.path().join("typescript");
+        let mut script = under_script_to(
+            "host::program_status::tests::real_tty_child",
+            &[(REAL_TTY_OUT, out.as_os_str())],
+            &typescript,
+        );
+        let said = await_report(&out, Duration::from_secs(20));
+        // `script` writes its typescript as it goes and exits when the child does: wait for that
+        // rather than kill it, which would lose what it has not written yet.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while script.try_wait().unwrap().is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = script.kill();
+        let _ = script.wait();
+        assert_eq!(
+            said.as_deref(),
+            Some("answer None writer false"),
+            "the child never said, or said otherwise"
+        );
+        let bytes = std::fs::read(&typescript).unwrap();
+        let count = |what: &[u8]| bytes.windows(what.len()).filter(|w| *w == what).count();
+        let shown = String::from_utf8_lossy(&bytes);
+        assert_eq!(count(PROBE_QUERY), 1, "the query, once: {shown:?}");
+        assert_eq!(count(b"state="), 0, "a report was written: {shown:?}");
     }
 }

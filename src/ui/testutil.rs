@@ -394,6 +394,17 @@ pub(crate) fn under_script(
     child_test: &str,
     envs: &[(&str, &std::ffi::OsStr)],
 ) -> std::process::Child {
+    under_script_to(child_test, envs, std::path::Path::new("/dev/null"))
+}
+
+/// [`under_script`], with `script`'s typescript — every byte the child wrote to its terminal — kept at
+/// `typescript`.
+#[cfg(unix)]
+pub(crate) fn under_script_to(
+    child_test: &str,
+    envs: &[(&str, &std::ffi::OsStr)],
+    typescript: &std::path::Path,
+) -> std::process::Child {
     use std::process::{Command, Stdio};
     let exe = std::env::current_exe().expect("the test binary");
     let child_args = ["--exact", child_test, "--ignored", "--test-threads=1"];
@@ -401,10 +412,10 @@ pub(crate) fn under_script(
     if cfg!(target_os = "linux") {
         // util-linux: `script -qec <command> <file>`.
         let line = format!("'{}' {}", exe.display(), child_args.join(" "));
-        cmd.args(["-qec", &line, "/dev/null"]);
+        cmd.args(["-qec", &line]).arg(typescript);
     } else {
         // BSD (macOS): `script -q <file> <command…>`.
-        cmd.args(["-q", "/dev/null"]).arg(&exe).args(child_args);
+        cmd.arg("-q").arg(typescript).arg(&exe).args(child_args);
     }
     cmd.envs(envs.iter().copied())
         .stdin(Stdio::piped())

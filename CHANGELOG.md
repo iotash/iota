@@ -7,6 +7,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **Any terminal that reads OSC 7501 now shows iota's state, not only herdr-core.**
+  At start-up iota asks its terminal once whether it reads the Program Status
+  Protocol; one that answers gets `working`, `blocked`, `idle` and `error`
+  instead of the OSC 9;4 progress bar. Inside herdr or cmux, which take the
+  state through their own channel, the terminal is not asked.
 - **Inside herdr-core, iota writes its state only to a terminal that answered.**
   When the terminal could not be asked whether it reads OSC 7501 (no reply in
   100 ms, no controlling terminal, a background `iota -m … &`), iota used to
