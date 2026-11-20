@@ -32,12 +32,17 @@ use crate::repl::run::Repl;
 use crate::session::SessionError;
 use crate::tool::grants::{self, Grants, Level, McpTool, ServerId, ToolKey};
 use crate::ui::facade::{Panel, TabbedSpec};
+use crate::ui::render::label::sgr_if;
 
 /// What the user is told when the argument is not something `/allow` takes.
 const EXPECTED: &str = "expected a directory (starting with /, ~ or .) or <server>:<tool>";
 
 /// The `Grants` tab's prompt when nothing is granted.
 const NONE: &str = "No grants. Add makes a directory writable for this session; /allow project <dir> for this project.";
+
+/// The `Grants` tab's level column: `this session` and `this project` are both this wide, so every key starts at
+/// the same column.
+const LEVEL_W: usize = 12;
 
 /// The `Static` tab's prompt: what its rows are, and why none can be taken back here.
 const STATIC: &str =
@@ -86,7 +91,8 @@ async fn panel(repl: &Repl) {
     let door = repl.door();
     let footing = &repl.handles.footing;
     let held = granted(&door.grants);
-    let rows = held.iter().map(Granted::row).collect();
+    let color = crate::app::color::enabled();
+    let rows = held.iter().map(|g| g.row(color)).collect();
     let mut grants_tab = Panel::multi("Grants", rows).with_search(true);
     if held.is_empty() {
         grants_tab = grants_tab.with_prompt(NONE);
@@ -355,17 +361,6 @@ fn allow_tool(
     Ok(Done { line, unsaved })
 }
 
-/// [`label`] as the listing shows it: a `--mcp` server's grant also names the whole flag value it is keyed by.
-fn listed(key: &ToolKey) -> String {
-    match key {
-        ToolKey::Mcp {
-            server: ServerId::Flag(spec),
-            ..
-        } => format!("{} (--mcp {spec})", label(key)),
-        _ => label(key),
-    }
-}
-
 /// What already makes the real directory `real` writable for a grant at `level`, if anything: the project
 /// root, a `write_roots:` entry, an `--add-dir` value, or a grant that covers it — of this project at either
 /// level, of this session only for another session grant (a project grant is what a session grant becomes when
@@ -459,21 +454,37 @@ enum Grant {
 }
 
 impl Granted {
-    /// The row: its level, then the directory (`(stale)` when it no longer leads anywhere) or the tool, a
-    /// `--mcp` server's also naming the whole flag value it is keyed by.
-    fn row(&self) -> String {
+    /// The row: its level in a column of one width, then the key — the directory or the tool — then its mark:
+    /// `(stale)` for a directory that no longer leads anywhere, `(--mcp <spec>)` for a `--mcp` server's tool (the
+    /// whole flag value it is keyed by). With `color` the level and the `--mcp` mark are faint and `(stale)` is
+    /// yellow (a warning); the key is plain, so the surface's bold on the current row lands on it. Without
+    /// `color` the row is the same text with no escape: search and copy read the plain text either way.
+    fn row(&self, color: bool) -> String {
         let level = match self.level {
             Level::Session => "this session",
             Level::Project => "this project",
         };
-        let what = match &self.what {
+        let (key, mark) = match &self.what {
             Grant::Dir(d) => {
-                let stale = if grants::is_live(d) { "" } else { " (stale)" };
-                format!("{}{stale}", d.display())
+                let mark = (!grants::is_live(d)).then(|| sgr_if(color, "33", "(stale)"));
+                (d.display().to_string(), mark)
             }
-            Grant::Tool(key) => listed(key),
+            Grant::Tool(key) => {
+                let mark = match key {
+                    ToolKey::Mcp {
+                        server: ServerId::Flag(spec),
+                        ..
+                    } => Some(sgr_if(color, "2", &format!("(--mcp {spec})"))),
+                    _ => None,
+                };
+                (label(key), mark)
+            }
         };
-        format!("{level}  {what}")
+        let level = sgr_if(color, "2", &format!("{level:<LEVEL_W$}"));
+        match mark {
+            Some(mark) => format!("{level}  {key} {mark}"),
+            None => format!("{level}  {key}"),
+        }
     }
 
     /// What a revocation's notice names.
@@ -606,7 +617,7 @@ mod tests {
 
         /// The `Grants` tab's rows now.
         fn rows(&self) -> Vec<String> {
-            granted(self.g()).iter().map(super::Granted::row).collect()
+            granted(self.g()).iter().map(|g| g.row(false)).collect()
         }
 
         /// Commits the `Grants` tab with the rows `checked` (indices into [`Self::rows`]) checked.
@@ -830,6 +841,80 @@ mod tests {
             std::slice::from_ref(&flag)
         );
         assert!(c.revoke(&[]).is_empty(), "nothing checked revokes nothing");
+    }
+
+    /// The `Grants` tab's rows by style alone: the level faint in its column, the key plain, the `--mcp` mark
+    /// faint and `(stale)` yellow. Stripped of its escapes a row is the plain row exactly, and the plain row (what
+    /// `NO_COLOR` gets) carries no escape. On the surface the current row keeps `▸`, its tint and the bold over
+    /// its label, and a checked row its `[x]`.
+    #[test]
+    fn the_grants_rows_set_the_level_the_key_and_the_mark_apart() {
+        use crate::text::ansi::strip_sgr;
+        use crate::text::width::str_width;
+        use crate::ui::facade::Panel;
+        use crate::ui::render::theme::{BOLD, CYAN, RESET};
+        use crate::ui::testutil::{Surf, ch};
+
+        let (t, root, out) = fixture();
+        let c = Chat::new(&t, &root, &[], &[]);
+        let gone = t.path().join("gone");
+        let flag = ToolKey::Mcp {
+            server: ServerId::Flag("npx -y @acme/mcp".to_owned()),
+            tool: McpTool::Named("push".to_owned()),
+        };
+        c.g().update(Level::Session, |s| {
+            s.add_dir(out.clone());
+            s.add_dir(gone.clone());
+        });
+        c.door
+            .apply(Level::Project, |s| {
+                s.add_tool(flag.clone());
+            })
+            .unwrap();
+        let held = granted(c.g());
+        let styled: Vec<String> = held.iter().map(|g| g.row(true)).collect();
+        let (dim, amber, off) = ("\x1b[2m", "\x1b[33m", "\x1b[0m");
+        assert_eq!(
+            styled,
+            [
+                format!("{dim}this session{off}  {}", out.display()),
+                format!(
+                    "{dim}this session{off}  {} {amber}(stale){off}",
+                    gone.display()
+                ),
+                format!("{dim}this project{off}  npx:push {dim}(--mcp npx -y @acme/mcp){off}"),
+            ]
+        );
+        let plain = c.rows();
+        assert!(plain.iter().all(|r| !r.contains('\x1b')), "{plain:?}");
+        assert_eq!(
+            styled.iter().map(|r| strip_sgr(r)).collect::<Vec<_>>(),
+            plain
+        );
+
+        // Wide enough that no temp path is cut.
+        let mut s = Surf::sized(vec![Panel::multi("Grants", styled)], 200, 0);
+        s.tap(ch(' '));
+        let rows = s.rows();
+        let (bg, b) = ("\x1b[48;5;237m", BOLD);
+        let first = format!("this session  {}", out.display());
+        assert_eq!(
+            rows[1],
+            format!(
+                "{bg}{CYAN}{bg}▸\x1b[39m{bg} \x1b[1;32m{bg}[x]\x1b[22;39m{bg} {b}{bg}{dim}{bg}{b}{bg}this session\
+                 {off}{bg}{b}{bg}  {}\x1b[22m{bg}{}{RESET}",
+                out.display(),
+                " ".repeat(200 - 6 - str_width(&first))
+            ),
+            "the current, checked row"
+        );
+        assert_eq!(
+            rows[2],
+            format!(
+                "  \x1b[2m[ ]\x1b[22m {dim}this session{off}  {} {amber}(stale){off}",
+                gone.display()
+            )
+        );
     }
 
     /// The `Static` tab lists `write_roots:` then `--add-dir`, each with its source, the labels aligned; with

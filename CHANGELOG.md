@@ -53,7 +53,8 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   session, as `/allow <dir>` does. `Grants` lists every grant in effect, each
   saying whether it is this session's or this project's; check some with
   Space and press Enter to take them back, from the session and the project
-  at once. This replaces `/revoke`, which is gone, and the old text listing.
+  at once. Each row reads at a glance: the level faint in its own column,
+  the directory or tool plain, and `(stale)` in yellow. This replaces `/revoke`, which is gone, and the old text listing.
   When the config's `write_roots:` or `--add-dir` makes other directories
   writable, a third tab, `Static`, lists them with where each comes from;
   they are not grants, so nothing there can be revoked.
