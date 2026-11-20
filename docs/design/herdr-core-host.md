@@ -2,7 +2,7 @@
 
 Status: **已随 0.10.0 发布（2026-11-16）** · 日期：2026-11-14 · hc 0.1.21、herdr 0.9.5、Claude Code 2.1.325 · 调研：`~/.iota/reports/iota/herdr-core-host.md`
 
-> **部分被取代（2026-11-20，`docs/design/program-status.md`）。** 写入器、探测和应答解析已从 `src/host/hc.rs` 移到 `src/host/program_status.rs`：`ProgramStatus` 是终端侧的 host，排在 ANSI host 前面，由 `program_status::for_terminal` 在装配时建立——**仅当**检测到 herdr-core **且**终端的应答接受 `working`、`blocked`、`idle`、`error` 四个状态（读 `states=`，没列就按协议默认的五个）。`HcHost` 只剩身份：terminal id、`hc` 信封、`<environment>`、扣下的 id。下面 §2 的写入规则（"探测不了就按环境写"）和 §3 已不成立：终端问不了时 host 仍按 `TERM_PROGRAM` 认定为 herdr-core，但**一个字节都不写**；字节钉子现在是 `host::program_status::tests::each_state_is_one_exact_report_and_close_clears`。§4 扣下 id 的做法由后续任务（`program-status-nested`）替换。
+> **部分被取代（2026-11-20，`docs/design/program-status.md`）。** 写入器、探测和应答解析已从 `src/host/hc.rs` 移到 `src/host/program_status.rs`：`ProgramStatus` 是终端侧的 host，排在 ANSI host 前面，由 `program_status::for_terminal` 在装配时建立——**仅当**检测到 herdr-core **且**终端的应答接受 `working`、`blocked`、`idle`、`error` 四个状态（读 `states=`，没列就按协议默认的五个）。`HcHost` 只剩身份：terminal id、`hc` 信封、`<environment>`。下面 §2 的写入规则（"探测不了就按环境写"）和 §3 已不成立：终端问不了时 host 仍按 `TERM_PROGRAM` 认定为 herdr-core，但**一个字节都不写**；字节钉子现在是 `host::program_status::tests::each_state_is_one_exact_report_and_close_clears`。§4 扣下 id 的做法已被替换（2026-11-20，`program-status-nested`）：见 §4 的说明。
 
 herdr-core（`hc`）是 herdr 桌面 app 背后的终端核心，是新产品，不是 herdr 多路复用器的新版本（`hc --skill`：*"It is not `herdr`, the older terminal multiplexer."*）。两者都在用，iota 两个都支持：`src/host/hc.rs` 的 `HcHost`（`name() = "herdr-core"`）与 `src/host/herdr.rs` 的 `HerdrHost` 并存。
 
@@ -88,6 +88,8 @@ Claude Code（≥2.1.295，本机 2.1.325）写的是**根记录**：`state=…:
 - 监督者的 `hc wait` 可能提前返回。
 - 一个**后台** job 里的子 agent，如果在 iota 的审批框打开时写了根记录（比如 `idle`），记录就不再是 `blocked`。`hc send` 因此不再拒绝，监督者的输入会打进审批框。
 
+> **已被取代（2026-11-20，`docs/design/program-status.md` §6）。** `HC_TERMINAL_ID` 不再扣下，`<environment>` 也没有 `hc note` 这一行了。每次运行都给子进程 `IOTA_STATUS_SESSION=<自己的 session id>`（`getsid(0)`）；继承来的 id 等于自己 session 的运行在父进程的终端上，`program_status::probe_tty` 在往返之前就返回 `None`：不探测，也不写。嵌套的 `iota -m` 照样按环境规则认出 hc，读到 `hc terminal: <id>`，但一个字节都不写；模型的 shell 拿回了 terminal id，`hc run` 又能找到 parent。新开的 pane 是新的 session，里面的 worker 照常探测和上报。下面两段是旧做法的记录。
+
 **iota 自己作为子进程，已经修掉。** `HcHost` 实现 `ChildEnvironment`，扣下 `HC_TERMINAL_ID`，做法和 herdr 扣下 `HERDR_ENV` 一样。没有 id 的嵌套 `iota -m` 既不探测，也不上报。不扣的话（变异实测）：
 
 - 加前台检查之前，子 iota 在探测时被 `SIGTTOU` 停住。
@@ -109,4 +111,4 @@ Claude Code（≥2.1.295，本机 2.1.325）写的是**根记录**：`state=…:
 - `SessionReporter`：协议里没有 session 键。`hc label` 能用，但没有证据表明 app 会显示它。
 - `--on <machine>`：协议是带内的，远程终端不需要 iota 做任何事。
 - app 无法得知：`blocked` 的原因（`kind`）、"完成但未读"（`done`）、任务标题和消息（`title`/`msg`）、session id。前三项要等 app 装好、能看到它怎么渲染再定；session id 在协议里根本没有对应的键。
-- 扣下 `HC_TERMINAL_ID` 挡不住自己直接写 `/dev/tty` 的子进程（§4）。
+- 一个终端一个上报者（`IOTA_STATUS_SESSION`）挡不住自己直接写 `/dev/tty` 的子进程（§4）。

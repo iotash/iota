@@ -13,6 +13,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   write the reports anyway; now it writes none. iota also reads the states the
   terminal lists in its answer and reports only when `working`, `blocked`,
   `idle` and `error` are all among them.
+- **Commands iota runs inside herdr-core get `HC_TERMINAL_ID` again.** An
+  `iota` they start no longer needs the variable withheld to leave the chat's
+  state alone: every run gives its children `IOTA_STATUS_SESSION`, and a run
+  on the same terminal as the iota that started it does not ask the terminal
+  and reports nothing. `hc run` from the model's shell finds its parent again,
+  and the `hc note` line is gone from the model's environment.
 
 ### Fixed
 
