@@ -2,6 +2,8 @@
 
 Status: **已随 0.10.0 发布（2026-11-16）** · 日期：2026-11-14 · hc 0.1.21、herdr 0.9.5、Claude Code 2.1.325 · 调研：`~/.iota/reports/iota/herdr-core-host.md`
 
+> **部分被取代（2026-11-20，`docs/design/program-status.md`）。** 写入器、探测和应答解析已从 `src/host/hc.rs` 移到 `src/host/program_status.rs`：`ProgramStatus` 是终端侧的 host，排在 ANSI host 前面，由 `program_status::for_terminal` 在装配时建立——**仅当**检测到 herdr-core **且**终端的应答接受 `working`、`blocked`、`idle`、`error` 四个状态（读 `states=`，没列就按协议默认的五个）。`HcHost` 只剩身份：terminal id、`hc` 信封、`<environment>`、扣下的 id。下面 §2 的写入规则（"探测不了就按环境写"）和 §3 已不成立：终端问不了时 host 仍按 `TERM_PROGRAM` 认定为 herdr-core，但**一个字节都不写**；字节钉子现在是 `host::program_status::tests::each_state_is_one_exact_report_and_close_clears`。§4 扣下 id 的做法由后续任务（`program-status-nested`）替换。
+
 herdr-core（`hc`）是 herdr 桌面 app 背后的终端核心，是新产品，不是 herdr 多路复用器的新版本（`hc --skill`：*"It is not `herdr`, the older terminal multiplexer."*）。两者都在用，iota 两个都支持：`src/host/hc.rs` 的 `HcHost`（`name() = "herdr-core"`）与 `src/host/herdr.rs` 的 `HerdrHost` 并存。
 
 ## 1. 协议（按实现）

@@ -5,6 +5,15 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ## Unreleased
 
+### Changed
+
+- **Inside herdr-core, iota writes its state only to a terminal that answered.**
+  When the terminal could not be asked whether it reads OSC 7501 (no reply in
+  100 ms, no controlling terminal, a background `iota -m … &`), iota used to
+  write the reports anyway; now it writes none. iota also reads the states the
+  terminal lists in its answer and reports only when `working`, `blocked`,
+  `idle` and `error` are all among them.
+
 ### Fixed
 
 - **A plain chat no longer has project grants.** 0.12.0 offered `Allow for this
