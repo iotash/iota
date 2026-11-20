@@ -709,7 +709,9 @@ impl wiremock::Respond for EchoTheToolResult {
         };
         let mut sse = String::new();
         for c in &chunks {
-            sse.push_str(&format!("data: {c}\n\n"));
+            sse.push_str("data: ");
+            sse.push_str(&c.to_string());
+            sse.push_str("\n\n");
         }
         sse.push_str("data: [DONE]\n\n");
         wiremock::ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream")
