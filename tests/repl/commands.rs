@@ -1947,8 +1947,8 @@ fn bundle_with_grants(f: &Fixture, grants: iota::tool::grants::GrantSet) -> Path
 }
 
 /// A `/session` resume brings the bundle's session grants back (X-110, reversing X-92's "a resume starts
-/// with none"): the directory is a root again and the tool is not asked again, and the switch says how many
-/// it loaded.
+/// with none"): the directory is a root again and the tool is not asked again — and the switch says nothing
+/// about them.
 #[tokio::test]
 async fn session_resume_restores_the_bundles_grants() {
     use iota::tool::grants::{GrantSet, Level, ToolKey};
@@ -1983,10 +1983,9 @@ async fn session_resume_restores_the_bundles_grants() {
         "the restored grant answers the call"
     );
     let printed = printed(&f.ui);
-    let notice = "grants: 2 for this session (/allow lists them)".to_owned();
     assert!(
-        printed.contains(&notice),
-        "{notice:?} missing:\n{printed:#?}"
+        printed.iter().all(|l| !l.contains("grants:")),
+        "the load was said:\n{printed:#?}"
     );
 }
 
@@ -2046,10 +2045,9 @@ async fn session_switch_replaces_and_never_merges() {
     );
     assert_eq!(read(&their_dir), theirs, "nothing written into the other");
     let printed = printed(&f.ui);
-    let notice = "grants: 1 for this session (/allow lists them)".to_owned();
     assert!(
-        printed.contains(&notice),
-        "{notice:?} missing:\n{printed:#?}"
+        printed.iter().all(|l| !l.contains("grants:")),
+        "the load was said:\n{printed:#?}"
     );
 }
 

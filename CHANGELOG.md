@@ -19,6 +19,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   on the same terminal as the iota that started it does not ask the terminal
   and reports nothing. `hc run` from the model's shell finds its parent again,
   and the `hc note` line is gone from the model's environment.
+- **Grants load silently.** A chat that starts or resumes with grants, a
+  `/session` switch and an `iota -m` run no longer print a `grants: …` line;
+  `/status`'s `Grants` row and the bare `/allow` panel still list them.
 
 ### Fixed
 

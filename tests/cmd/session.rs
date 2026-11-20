@@ -181,6 +181,15 @@ fn write_config(cwd: &Path, url: &str, model: &str, mode: &str) {
     .expect("write config");
 }
 
+/// [`write_config`]'s agent with the code tools on: it then sends a harness, whose `write roots:` line is how
+/// a test sees the grants a run loaded.
+fn with_code_tools(cwd: &Path) {
+    let path = cwd.join(".iota.yaml");
+    let mut text = fs::read_to_string(&path).expect("read config");
+    text.push_str("    tools: {code: }\n");
+    fs::write(&path, text).expect("write config");
+}
+
 /// Runs `cmd` off the async runtime (wiremock needs its worker threads to keep serving).
 async fn output(mut cmd: Command) -> Output {
     tokio::task::spawn_blocking(move || cmd.output().expect("run iota"))
@@ -1348,9 +1357,9 @@ async fn resume_a_log_ending_in_tool_results() {
     assert_eq!(contents[2]["parts"][1]["text"], "carry on");
 }
 
-/// `iota resume <id> -m` runs under the session grants its bundle carries (docs/design/grants.md §7): it
-/// says how many it loaded, on stderr after the resume line, and leaves them in the meta as they were — a
-/// headless run has no door to change them.
+/// `iota resume <id> -m` runs under the session grants its bundle carries (docs/design/grants.md §7): the
+/// granted directory is a write root the model is told of, nothing on stderr says so — the load is silent —
+/// and the meta keeps them as they were: a headless run has no door to change them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resume_m_loads_the_session_grants_and_keeps_them() {
     let server = MockServer::start().await;
@@ -1373,14 +1382,17 @@ async fn resume_m_loads_the_session_grants_and_keeps_them() {
     meta.write(&dir).expect("write meta");
 
     write_config(cwd.path(), &server.uri(), "", "");
+    with_code_tools(cwd.path());
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args(["resume", id, "-m", "carry on"]);
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
-    assert_eq!(
-        err(&o),
-        format!("Resumed session {id} (2 messages)\ngrants: 1 for this session\n")
-    );
+    assert_eq!(err(&o), format!("Resumed session {id} (2 messages)\n"));
+    assert!(!err(&o).contains("grants:"), "stderr: {}", err(&o));
+    let reqs = server.received_requests().await.expect("requests");
+    let body = String::from_utf8_lossy(&reqs[0].body).into_owned();
+    let roots = format!("write roots: {}", granted.display());
+    assert!(body.contains(&roots), "the model was not told: {body}");
     assert_eq!(
         SessionMeta::read(&dir).expect("meta").grants.dirs,
         [granted]
@@ -1388,9 +1400,10 @@ async fn resume_m_loads_the_session_grants_and_keeps_them() {
 }
 
 /// Only a run with a project loads the project's grants (docs/design/grants.md §4.2): the same `grants.json`
-/// is nothing to a `mode: chat` agent's `-m` — the mode has no project — and is loaded, and said, by a
-/// `mode: agent` one in the same directory. An agent whose root is an ancestor of the home directory has no
-/// project either: a bucket keyed there would be every run's under it.
+/// is nothing to a `mode: chat` agent's `-m` — the mode has no project — and is loaded by a `mode: agent` one in
+/// the same directory: its directory is a write root the model is told of. Either way the load is silent. An
+/// agent whose root is an ancestor of the home directory has no project either: a bucket keyed there would be
+/// every run's under it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn only_a_run_with_a_project_loads_the_project_grants() {
     let server = MockServer::start().await;
@@ -1404,18 +1417,21 @@ async fn only_a_run_with_a_project_loads_the_project_grants() {
             .update_project_grants(cwd.path(), |s| s.dirs.push(granted.clone()))
             .expect("grant");
     };
+    let told = async || {
+        let reqs = server.received_requests().await.expect("requests");
+        let body = String::from_utf8_lossy(&reqs.last().expect("a request").body).into_owned();
+        body.contains(&granted.display().to_string())
+    };
     grant(home.path());
-    for (mode, said) in [
-        ("", ""),
-        ("chat", ""),
-        ("agent", "grants: 1 for this project\n"),
-    ] {
+    for (mode, loaded) in [("", false), ("chat", false), ("agent", true)] {
         write_config(cwd.path(), &server.uri(), "gemini-2.5-pro", mode);
+        with_code_tools(cwd.path());
         let mut cmd = iota(cwd.path(), home.path());
         cmd.args(["-m", "hi"]);
         let o = output(cmd).await;
         assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
-        assert_eq!(err(&o), said, "mode: {mode:?}");
+        assert_eq!(err(&o), "", "mode: {mode:?}");
+        assert_eq!(told().await, loaded, "mode: {mode:?}");
     }
 
     // The same agent, its home now UNDER its root.
@@ -1427,6 +1443,10 @@ async fn only_a_run_with_a_project_loads_the_project_grants() {
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
     assert_eq!(err(&o), "");
+    assert!(
+        !told().await,
+        "a home under the root loaded the project's grants"
+    );
 }
 
 /// A run that FAILS persists nothing (DIVERGENCES D-43): the log and the meta are byte-identical afterwards.

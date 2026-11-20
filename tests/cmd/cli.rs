@@ -1894,9 +1894,6 @@ async fn an_ephemeral_chat_still_writes_a_project_grant() {
         "the model was told: {}",
         out(&o)
     );
-    assert!(
-        err(&o).contains("grants: 1 for this project\n"),
-        "stderr: {}",
-        err(&o)
-    );
+    // The load is silent: the file landing is its only evidence.
+    assert!(!err(&o).contains("grants:"), "stderr: {}", err(&o));
 }

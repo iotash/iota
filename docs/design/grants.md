@@ -425,11 +425,14 @@ The store is ONE `Arc<Grants>` for the process, created at tool assembly
 swaps above are `replace_session` / `replace_project` on it, at the two places
 `gate.reset()` is called today (`src/repl/commands/new.rs:107`,
 `src/repl/commands/session.rs:236`) and where a start opens its session. No tool is
-reassembled. A start or a resume that loads anything says so, once:
+reassembled. The load is silent: a start, a resume, a `/session` switch and a `-m` run
+print nothing about the grants they loaded. `/status`'s `Grants` row and the bare
+`/allow` panel are where they are described.
 
-```
-grants: 2 for this session, 3 for this project (/allow lists them)
-```
+> **Amended 2026-11-20 (no-grants-line, DIVERGENCES X-110).** As first shipped, a start
+> or a resume that loaded anything said so once — `grants: 2 for this session, 3 for this
+> project (/allow lists them)` in a chat, `grants: …` on stderr for `-m`. The owner wants
+> nothing printed at startup about grants, so the line is gone.
 
 ## 8. What the model reads
 
@@ -713,7 +716,8 @@ persists. X-95 amendment. Done when the gate passes and these exist:
 
 **6. `grants-session`** — `SessionMeta::grants`; every session-level change goes
 through `update_meta`; a start resume, a `/session` resume and `iota resume -m` load
-it; `/save` stamps it; the one-line `grants: …` notice. X-110 (second half),
+it; `/save` stamps it; the one-line `grants: …` notice (removed 2026-11-20, no-grants-line:
+the load is silent, §7). X-110 (second half),
 `session-format.md` §4.1. Done when the gate passes and these exist:
 `session::meta::tests::grants_are_omitted_when_empty_and_round_trip`,
 `tests/repl/commands.rs::{session_resume_restores_the_bundles_grants, session_switch_replaces_and_never_merges}`,

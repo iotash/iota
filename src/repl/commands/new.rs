@@ -105,12 +105,11 @@ pub(crate) async fn cmd_new(repl: &mut Repl, arg: &str) {
     let dropped = repl.conv.pending.len();
     repl.conv.pending.clear();
     // The session grants were this conversation's; the project's follow the project, read afresh.
-    let entered = crate::repl::grants::enter(
+    if let Some(w) = crate::repl::grants::enter(
         repl.handles.footing.project.as_ref(),
         &repl.handles.grants,
         GrantSet::default(),
-    );
-    if let Some(w) = entered.warning {
+    ) {
         repl.handles.tr.error(&format!("⚠ {w}"));
     }
     repl.conv.ctxm.reset();

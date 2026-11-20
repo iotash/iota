@@ -63,34 +63,15 @@ impl ProjectFile {
 
 /// Enters a conversation: its `session` grants REPLACE the store's — a merge would carry one conversation's
 /// approvals into another — and the project's are read afresh: they follow the project, and another process
-/// may have changed them. A run with no `project` has no project level to read.
-pub(crate) fn enter(project: Option<&ProjectFile>, grants: &Grants, session: GrantSet) -> Entered {
+/// may have changed them. A run with no `project` has no project level to read. Returns why the project file
+/// could not be read, without its `⚠`; nothing is said about what was loaded.
+pub(crate) fn enter(
+    project: Option<&ProjectFile>,
+    grants: &Grants,
+    session: GrantSet,
+) -> Option<String> {
     grants.replace_session(session);
-    let warning = project.and_then(|p| p.load(grants));
-    Entered {
-        warning,
-        count: summary(grants),
-    }
-}
-
-/// What entering a conversation found ([`enter`]).
-pub(crate) struct Entered {
-    /// The project file could not be read: why, without its `⚠`.
-    pub(crate) warning: Option<String>,
-    /// How many grants each level now holds ([`counted`]); `None` when neither holds any.
-    pub(crate) count: Option<String>,
-}
-
-impl Entered {
-    /// The line a `-m` start says it with ([`loaded`]).
-    pub(crate) fn line(&self) -> Option<String> {
-        self.count.as_deref().map(loaded)
-    }
-
-    /// The line a chat says it with ([`loaded_in_chat`]).
-    pub(crate) fn line_in_chat(&self) -> Option<String> {
-        self.count.as_deref().map(loaded_in_chat)
-    }
+    project.and_then(|p| p.load(grants))
 }
 
 /// What a chat's grant doors stand on, resolved ONCE at assembly beside the project load (`cmd`): the root, the
@@ -172,8 +153,8 @@ pub(crate) fn unsaved_session(e: &SessionError) -> String {
     format!("Warning: failed to save session: {e}")
 }
 
-/// How many grants each level holds, as `/status` and the start's line say it — `2 for this session, 3 for this
-/// project`, a level with none left out: `None` when neither holds any.
+/// How many grants each level holds, as `/status` says it — `2 for this session, 3 for this project`, a level
+/// with none left out: `None` when neither holds any.
 pub(crate) fn counted(session: usize, project: usize) -> Option<String> {
     let parts: Vec<String> = [(session, "this session"), (project, "this project")]
         .into_iter()
@@ -181,24 +162,6 @@ pub(crate) fn counted(session: usize, project: usize) -> Option<String> {
         .map(|(n, level)| format!("{n} for {level}"))
         .collect();
     (!parts.is_empty()).then(|| parts.join(", "))
-}
-
-/// [`counted`] over the store.
-pub(crate) fn summary(grants: &Grants) -> Option<String> {
-    counted(
-        grants.snapshot(Level::Session).len(),
-        grants.snapshot(Level::Project).len(),
-    )
-}
-
-/// The line a `-m` start prints for the grants it loaded, `count` being [`counted`]'s.
-pub(crate) fn loaded(count: &str) -> String {
-    format!("grants: {count}")
-}
-
-/// [`loaded`] as a chat says it: with where to look.
-pub(crate) fn loaded_in_chat(count: &str) -> String {
-    format!("{} (/allow lists them)", loaded(count))
 }
 
 /// The name a server's identity is typed as: an entry's name; a `--mcp` server's `argv[0]` (or URL), as it is

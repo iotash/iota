@@ -727,10 +727,6 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     // server.
     // The run's own provider is open unless it resumes: then the session names the one it runs on.
     let resumed = if let Some(opened) = opened {
-        // A fresh run's grants are the project's, loaded at assembly.
-        if let Some(count) = crate::repl::grants::summary(&tool_env.grants) {
-            io.warning(&crate::repl::grants::loaded(&count));
-        }
         Err(opened)
     } else {
         let fragment = settings
@@ -815,16 +811,12 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         ));
         // The session's grants are in force for its one turn, beside the project's — before the tools and the
         // harness read them, never changed: `-m` has no door to grant through. The project's were loaded, and
-        // a file that cannot be read said, at assembly.
-        if let Some(line) = crate::repl::grants::enter(
+        // a file that cannot be read said, at assembly. Nothing is said about what was loaded.
+        let _ = crate::repl::grants::enter(
             project.as_ref(),
             &tool_env.grants,
             resumed.meta.grants.clone(),
-        )
-        .line()
-        {
-            io.warning(&line);
-        }
+        );
         if let Some(notice) = resumed.repair_notice() {
             io.warning(&notice);
         }

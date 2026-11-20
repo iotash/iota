@@ -235,7 +235,7 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     // The session grants were the left conversation's: the switched-to one has its own, REPLACING them — a
     // merge would carry one conversation's approvals into another. The project's are reloaded: they follow the
     // project, and another chat may have changed them.
-    let entered = crate::repl::grants::enter(
+    let unread = crate::repl::grants::enter(
         repl.handles.footing.project.as_ref(),
         &repl.handles.grants,
         resumed.meta.grants.clone(),
@@ -279,11 +279,8 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
         "Resumed session {id} ({} messages)",
         repl.conv.history.len()
     ));
-    if let Some(w) = &entered.warning {
+    if let Some(w) = &unread {
         repl.handles.tr.error(&format!("⚠ {w}"));
-    }
-    if let Some(notice) = entered.line_in_chat() {
-        repl.handles.tr.notice(&notice);
     }
     if let Some(notice) = repair_notice {
         repl.handles.tr.notice(&notice);
