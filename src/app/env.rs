@@ -13,12 +13,14 @@ use super::{DOT_DIR, HostDirs};
 /// module's knowledge: `crate::host::child_env` gathers them from the detected host. Cheap to clone; the
 /// default withholds nothing.
 ///
-/// It also carries the one variable a child is given that the run itself was not: an interactive chat's
-/// `IOTA_SOCKET` (`session::sock`), so a script the model starts can message the chat it came from.
+/// It also carries the variables a child is given that the run itself was not, in order: the run's
+/// `IOTA_STATUS_SESSION` (`host::program_status`), so a nested run on the same terminal does not report,
+/// and an interactive chat's `IOTA_SOCKET` (`session::sock`), so a script the model starts can message the
+/// chat it came from.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChildEnv {
     withheld: Arc<[String]>,
-    given: Option<(String, String)>,
+    given: Vec<(String, String)>,
 }
 
 impl ChildEnv {
@@ -32,14 +34,16 @@ impl ChildEnv {
         }
         Self {
             withheld: withheld.into(),
-            given: None,
+            given: Vec::new(),
         }
     }
 
-    /// Also gives every child `name=value`.
+    /// Also gives every child `name=value`, beside what it already gives (a name given twice: the last
+    /// value).
     #[must_use]
     pub fn giving(mut self, name: &str, value: &str) -> Self {
-        self.given = Some((name.to_owned(), value.to_owned()));
+        self.given.retain(|(n, _)| n != name);
+        self.given.push((name.to_owned(), value.to_owned()));
         self
     }
 
@@ -55,7 +59,7 @@ impl ChildEnv {
         for name in self.withheld.iter() {
             cmd.env_remove(name);
         }
-        if let Some((name, value)) = &self.given {
+        for (name, value) in &self.given {
             cmd.env(name, value);
         }
     }
@@ -291,18 +295,25 @@ mod tests {
         assert!(format!("{copy:?}").starts_with("Env { dirs: "));
     }
 
-    /// A given variable is set on the child after the withheld ones are removed.
+    /// Every given variable is set on the child after the withheld ones are removed: a second one does
+    /// not replace the first, and a name given again takes its last value.
     #[test]
     fn a_child_is_given_what_it_is_given() {
-        let env =
-            super::ChildEnv::new(["HERDR_ENV".to_owned()]).giving("IOTA_SOCKET", "/run/1.sock");
+        use std::ffi::OsStr;
+        let env = super::ChildEnv::new(["HERDR_ENV".to_owned()])
+            .giving("IOTA_STATUS_SESSION", "7")
+            .giving("IOTA_SOCKET", "/run/0.sock")
+            .giving("IOTA_SOCKET", "/run/1.sock");
         let mut cmd = tokio::process::Command::new("true");
         env.apply(&mut cmd);
         let envs: Vec<_> = cmd.as_std().get_envs().collect();
-        assert!(envs.contains(&(std::ffi::OsStr::new("HERDR_ENV"), None)));
-        assert!(envs.contains(&(
-            std::ffi::OsStr::new("IOTA_SOCKET"),
-            Some(std::ffi::OsStr::new("/run/1.sock"))
-        )));
+        assert_eq!(
+            envs,
+            [
+                (OsStr::new("HERDR_ENV"), None),
+                (OsStr::new("IOTA_SOCKET"), Some(OsStr::new("/run/1.sock"))),
+                (OsStr::new("IOTA_STATUS_SESSION"), Some(OsStr::new("7"))),
+            ]
+        );
     }
 }

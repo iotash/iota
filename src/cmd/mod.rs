@@ -109,7 +109,8 @@ pub(crate) struct ToolAssembly {
     /// HERE beside [`Self::host`] because the terminal is asked before the screen exists; the branch puts
     /// it in front of the terminal's other hosts. `None` when the terminal did not accept.
     pub(crate) program_status: Option<Box<dyn crate::host::Host>>,
-    /// What every child of the run is spawned without: [`Self::host`]'s `ChildEnvironment`, for the MCP
+    /// What every child of the run is spawned with ([`child_env`]): without [`Self::host`]'s
+    /// `ChildEnvironment`, given the run's `IOTA_STATUS_SESSION` and the chat's `IOTA_SOCKET`, for the MCP
     /// stdio servers (the job registry holds its own copy).
     pub(crate) child_env: crate::host::ChildEnv,
     /// Agent-mode options.
@@ -141,8 +142,21 @@ pub(crate) fn host_probe(env: &Env) -> crate::host::Probe {
         look_path: Box::new(crate::shell::exec::find_in_path),
         program_status: {
             let answer = std::sync::OnceLock::new();
-            Box::new(move || *answer.get_or_init(crate::host::program_status::probe_tty))
+            let env = env.clone();
+            Box::new(move || *answer.get_or_init(|| crate::host::program_status::probe_tty(&env)))
         },
+    }
+}
+
+/// What every child of a run is spawned with: without what `host` withholds (`crate::host::child_env`),
+/// and given the run's session as `IOTA_STATUS_SESSION`, so a nested run on the same terminal does not
+/// report over this one (`crate::host::program_status`).
+pub(crate) fn child_env(host: Option<&dyn crate::host::Host>) -> crate::host::ChildEnv {
+    use crate::host::program_status::{STATUS_SESSION, session};
+    let env = crate::host::child_env(host);
+    match session() {
+        Some(id) => env.giving(STATUS_SESSION, &id),
+        None => env,
     }
 }
 
@@ -510,7 +524,8 @@ fn assemble_tools(
 
     // root.go:221-232, plus the run's job registry: the `shell` tool needs it to exist before the dispatcher
     // is built, and both branches need the same one afterwards. Its children are spawned without what the
-    // detected host withholds — the hosts' knowledge, not this module's (`crate::host::ChildEnvironment`).
+    // detected host withholds — the hosts' knowledge, not this module's (`crate::host::ChildEnvironment`) —
+    // and with the run's session ([`child_env`]).
     let probe = host_probe(&ctx.env);
     let host = crate::host::detect(&probe);
     let program_status = crate::host::program_status::for_terminal(host.as_deref(), &probe);
@@ -519,7 +534,7 @@ fn assemble_tools(
         .is_none()
         .then(|| bind_messaging(dirs))
         .flatten();
-    let mut child_env = crate::host::child_env(host.as_deref());
+    let mut child_env = child_env(host.as_deref());
     if let Some(Ok(listener)) = &messaging {
         child_env = child_env.giving(
             crate::session::sock::IOTA_SOCKET,

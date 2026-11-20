@@ -1603,6 +1603,65 @@ async fn cli_children_outside_herdr_inherit_everything() {
     }
 }
 
+/// Every run gives BOTH kinds of child the model can start — a `shell` call and an MCP stdio server —
+/// its session id as `IOTA_STATUS_SESSION` (docs/design/program-status.md §6): an `iota` either of them
+/// starts is on the same terminal and neither asks it nor reports over this run's record. iota is this
+/// test's child, so its session is the test's.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_children_carry_the_status_session() {
+    let (dir, home) = project();
+    let shell_seen = dir.path().join("shell.env");
+    let mcp_seen = dir.path().join("mcp.env");
+    let record = "printf 'session=%s\\n' \"${IOTA_STATUS_SESSION-unset}\"";
+    let server = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(OneShellCall {
+            command: format!("{record} > '{}'", shell_seen.display()),
+        })
+        .mount(&server)
+        .await;
+    write_config(
+        &home,
+        &format!(
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{shell: {{sandbox: off, auto_run: true}}}}}}\n",
+            server.uri()
+        ),
+    );
+    let script = dir.path().join("server.sh");
+    let recording = SH_SERVER_RECORDING_ENV.replace(
+        r#"printf 'env=%s pane=%s\n' "${HERDR_ENV-unset}" "${HERDR_PANE_ID-unset}""#,
+        record,
+    );
+    assert_ne!(recording, SH_SERVER_RECORDING_ENV, "the server records");
+    fs::write(&script, recording).expect("write the server script");
+    let mut cmd = iota(dir.path(), &home);
+    // An id inherited from another session is replaced by this run's own.
+    cmd.args([
+        "-m",
+        "go",
+        "--mcp",
+        &format!("sh {} {}", script.display(), mcp_seen.display()),
+    ])
+    .env("IOTA_STATUS_SESSION", "1");
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert_eq!(out(&o), "ran.\n");
+    let session = nix::unistd::getsid(None).expect("getsid");
+    assert_ne!(session.as_raw(), 1);
+    for (child, seen) in [
+        ("the shell call", &shell_seen),
+        ("the MCP server", &mcp_seen),
+    ] {
+        assert_eq!(
+            fs::read_to_string(seen).unwrap_or_else(|e| panic!("{child} wrote nothing: {e}")),
+            format!("session={session}\n"),
+            "what {child} inherited"
+        );
+    }
+}
+
 /// `models.<name>.moderation` reaches the wire through a real run: the YAML a user writes, and no warning.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cli_moderation_reaches_the_generation() {

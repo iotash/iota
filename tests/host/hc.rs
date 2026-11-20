@@ -575,8 +575,8 @@ async fn inside_tmux_inside_hc_the_terminal_keeps_the_progress() {
 }
 
 /// A shell-tool call that runs `iota -m` (the chat's child) leaves the chat's record alone: the child
-/// gets no `HC_TERMINAL_ID`, so it neither asks the tty nor reports, and the record is still the
-/// chat's `working` after the child is done.
+/// gets the terminal id AND the chat's `IOTA_STATUS_SESSION`, which is its own session, so it neither
+/// asks the tty nor reports, and the record is still the chat's `working` after the child is done.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_nested_headless_iota_leaves_the_chat_s_record() {
     let Some(hc) = hc_binary() else { return };
@@ -585,7 +585,7 @@ async fn a_nested_headless_iota_leaves_the_chat_s_record() {
     hcc.spawn("chat", &script("")).await;
     hcc.until_state("chat", "idle").await;
     let child = format!(
-        "runfg:{} -m 'stream 5 50' > child.txt 2>&1; sleep 4",
+        "runfg:printf '%s %s\\n' \"${{HC_TERMINAL_ID-unset}}\" \"${{IOTA_STATUS_SESSION-unset}}\" > ids.txt; {} -m 'stream 5 50' > child.txt 2>&1; sleep 4",
         env!("CARGO_BIN_EXE_iota")
     );
     let (code, out) = hcc.send("chat", &child).await;
@@ -604,6 +604,15 @@ async fn a_nested_headless_iota_leaves_the_chat_s_record() {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    // The child had the chat's terminal id, and the chat's session: the terminal's first process, which
+    // leads the session hc started it in.
+    let ids = std::fs::read_to_string(hcc.cwd().join("ids.txt")).expect("the call wrote its ids");
+    let chat = hcc.get("chat").await;
+    assert_eq!(
+        ids,
+        format!("{} {}\n", chat["address"].as_str().unwrap(), chat["pid"]),
+        "{chat}"
+    );
     // The child is done; the call's `sleep` still runs, so the chat is still in its turn.
     tokio::time::sleep(Duration::from_millis(500)).await;
     let got = hcc.get("chat").await;

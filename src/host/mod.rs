@@ -1288,7 +1288,7 @@ mod tests {
     /// environment holds hc's lines alone.
     #[tokio::test]
     async fn over_hc_the_terminal_s_writer_takes_the_state_and_the_terminal_keeps_the_ping() {
-        use super::hc::{HC_CHILD_NOTE, HcHost};
+        use super::hc::HcHost;
         use super::program_status::{ProgramStatus, report};
         use super::{AnsiHost, Host};
         use crate::testing::{ScriptedUi, UiEvent};
@@ -1335,7 +1335,6 @@ mod tests {
             vec![
                 ("host".to_owned(), "herdr-core".to_owned()),
                 ("hc terminal".to_owned(), "t4".to_owned()),
-                ("hc note".to_owned(), HC_CHILD_NOTE.to_owned()),
             ]
         );
     }

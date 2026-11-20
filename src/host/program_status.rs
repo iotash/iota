@@ -19,6 +19,13 @@
 //! worst garbage. For now the writer is built only where herdr-core was detected (the design's task 1);
 //! any other terminal keeps OSC 9;4.
 //!
+//! **One reporter per controlling terminal.** Every run gives its children [`STATUS_SESSION`] = its
+//! session id ([`session`], `getsid(0)`), and a run whose own session id equals the one it inherited is
+//! on the terminal of the run that started it — an `iota -m` the chat's shell tool or an MCP server ran:
+//! [`probe_tty`] returns `None` before a byte is written, so it neither asks nor reports, and the
+//! parent's record stays. A worker in a terminal of its own (a new pane is a new session), or a run with
+//! no inherited id, asks as usual. A session, not a flag: a controlling terminal belongs to one.
+//!
 //! **The writer.** Interactively the bytes go through the facade ([`InBand::write_through`], given by
 //! `Presenter::show_turn_on`), so the UI thread writes them between draws and never inside one. A `-m`
 //! run has no facade; there the host opens `/dev/tty` on its first report and writes it directly — the
@@ -34,9 +41,13 @@ use std::io::Write as _;
 use std::sync::{Arc, Mutex};
 
 use crate::BoxFuture;
+use crate::app::env::Env;
 use crate::host::{Closer, Host, InBand, Probe, State, StateReporter};
 use crate::sync::lock;
 use crate::ui::facade::Ui;
+
+/// The variable every child is given: the giving run's [`session`] (the module doc).
+pub(crate) const STATUS_SESSION: &str = "IOTA_STATUS_SESSION";
 
 /// The `app` key of every report: the program name.
 pub(crate) const APP: &str = crate::app::NAME;
@@ -82,11 +93,38 @@ pub(crate) fn for_terminal(detected: Option<&dyn Host>, probe: &Probe) -> Option
     (answer == Some(true)).then(|| Box::new(ProgramStatus::new()) as Box<dyn Host>)
 }
 
-/// The real [`Probe::program_status`]: one [`PROBE_QUERY`] round-trip on the controlling terminal.
-/// `Some(true)` when the reply accepts the four states, `Some(false)` when it does not (the DSR alone,
-/// garbage, a partial `states=`), `None` without a terminal or a reply in time.
-pub(crate) fn probe_tty() -> Option<bool> {
-    answer(crate::ui::runtime::osc::round_trip(PROBE_QUERY))
+/// This process's session id (`getsid(0)`), given to every child as [`STATUS_SESSION`]. `None` where
+/// there is none to read (Windows, which has no probe to guard).
+pub(crate) fn session() -> Option<String> {
+    #[cfg(unix)]
+    {
+        nix::unistd::getsid(None).ok().map(|sid| sid.to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// The real [`Probe::program_status`]: one [`PROBE_QUERY`] round-trip on the controlling terminal —
+/// unless `env` names this run's own [`session`] (the module doc). `Some(true)` when the reply accepts
+/// the four states, `Some(false)` when it does not (the DSR alone, garbage, a partial `states=`), `None`
+/// in the parent's session, without a terminal or without a reply in time.
+pub(crate) fn probe_tty(env: &Env) -> Option<bool> {
+    unless_nested(env, session().as_deref(), || {
+        answer(crate::ui::runtime::osc::round_trip(PROBE_QUERY))
+    })
+}
+
+/// `ask`'s answer, or `None` without asking when `env`'s [`STATUS_SESSION`] is `own`.
+fn unless_nested(env: &Env, own: Option<&str>, ask: impl FnOnce() -> Option<bool>) -> Option<bool> {
+    if own.is_some() && env.var(STATUS_SESSION).as_deref() == own {
+        tracing::debug!(
+            "program status: in the session of the run that started this one, not asked"
+        );
+        return None;
+    }
+    ask()
 }
 
 /// What a round-trip's outcome says (`probe_tty`, and the socket-pair test).
@@ -219,7 +257,10 @@ impl InBand for ProgramStatus {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use super::{PROBE_QUERY, ProgramStatus, accepts, answer, report};
+    use super::{
+        PROBE_QUERY, ProgramStatus, STATUS_SESSION, accepts, answer, report, unless_nested,
+    };
+    use crate::app::env::Env;
     use crate::host::{Host, State};
     use crate::testing::{ScriptedUi, UiEvent};
     use crate::ui::facade::Ui;
@@ -370,5 +411,35 @@ mod tests {
         let mut key = [0u8; 8];
         assert_eq!(tty.read(&mut key).unwrap(), 1);
         assert_eq!(key[0], b'x', "the next byte was taken");
+    }
+
+    /// A run whose inherited [`STATUS_SESSION`] is its own session does not ask the terminal (and so
+    /// writes nothing); no inherited id, an empty one or another session's asks as before.
+    #[test]
+    fn a_run_in_its_parents_session_does_not_ask() {
+        let asked = std::cell::Cell::new(0);
+        let ask = || {
+            asked.set(asked.get() + 1);
+            Some(true)
+        };
+        let own = || Some("42");
+        let nested = Env::fixed(&[(STATUS_SESSION, "42")]);
+        assert_eq!(unless_nested(&nested, own(), ask), None);
+        assert_eq!(asked.get(), 0, "asked in the parent's session");
+        for env in [
+            Env::default(),
+            Env::fixed(&[(STATUS_SESSION, "")]),
+            Env::fixed(&[(STATUS_SESSION, "7")]),
+        ] {
+            assert_eq!(unless_nested(&env, own(), ask), Some(true), "{env:?}");
+        }
+        // Without a session of its own (no getsid), a run asks whatever it inherited.
+        assert_eq!(unless_nested(&nested, None, ask), Some(true));
+        assert_eq!(asked.get(), 4);
+        #[cfg(unix)]
+        assert_eq!(
+            super::session(),
+            Some(nix::unistd::getsid(None).unwrap().to_string())
+        );
     }
 }

@@ -18,18 +18,18 @@
 //! detector sits BEFORE herdr's (`super::DETECTORS`): an hc terminal started from a herdr pane inherits
 //! the pane's `HERDR_*`, and reporting to that pane would be the wrong surface.
 //!
-//! **Children do not get the id** ([`ChildEnvironment`]). A child of the chat that saw
-//! `HC_TERMINAL_ID` would probe the same tty — racing the chat's input reader for the reply — and, an
-//! `iota -m` being one, report over the chat's record and clear it when it ends. Withheld, a child does
-//! not probe and writes nothing; the model is told the id is missing on purpose, and that its
-//! `hc run` passes `--parent <id>` (the `hc` CLI takes an explicit id everywhere, measured).
+//! **Children get the id.** A nested `iota` — the chat's shell tool or an MCP server ran it — sees
+//! `HC_TERMINAL_ID` and detects hc, but it is in the chat's session (`IOTA_STATUS_SESSION`,
+//! `super::program_status`): the terminal is not asked, so the identity comes from the environment rule
+//! and nothing is written over the chat's record. The model's shell keeps its terminal id, so `hc run`
+//! finds its parent.
 //!
 //! **What it does not do.** No state, no clear, no in-band writer: those are the terminal's
 //! (`super::program_status`). No [`Notifier`](crate::host::Notifier): the ANSI host keeps OSC 9, and hc
 //! makes no event of it. No [`BackgroundReporter`](crate::host::BackgroundReporter): hc answers OSC 11
 //! itself. No [`SessionReporter`](crate::host::SessionReporter): the protocol has no key for a session.
 
-use crate::host::{ChildEnvironment, EnvironmentContributor, Host, MessageEnvelope, Probe};
+use crate::host::{EnvironmentContributor, Host, MessageEnvelope, Probe};
 
 /// The host's name — the product's, as `hc --skill` names it.
 pub(crate) const HC_NAME: &str = "herdr-core";
@@ -37,10 +37,6 @@ pub(crate) const HC_NAME: &str = "herdr-core";
 pub(crate) const HC_TERMINAL_ID: &str = "HC_TERMINAL_ID";
 /// `herdr` inside a herdr pane (herdr ≥0.9.2): the detector's rule when the terminal cannot be asked.
 pub(crate) const TERM_PROGRAM: &str = "TERM_PROGRAM";
-
-/// What the model is told about the withheld id (the module doc). Short: every host line is paid for in
-/// every request.
-pub(crate) const HC_CHILD_NOTE: &str = "HC_TERMINAL_ID is unset in your shell on purpose; give hc the terminal id, and hc run --parent <id>";
 
 /// The herdr-core host: the terminal's id.
 pub struct HcHost {
@@ -63,10 +59,6 @@ impl Host for HcHost {
         Some(self)
     }
 
-    fn as_child_env(&self) -> Option<&dyn ChildEnvironment> {
-        Some(self)
-    }
-
     fn as_message_envelope(&self) -> Option<&dyn MessageEnvelope> {
         Some(self)
     }
@@ -81,21 +73,12 @@ impl MessageEnvelope for HcHost {
 }
 
 impl EnvironmentContributor for HcHost {
-    /// `host: herdr-core`, the terminal — the address `hc get`, `hc read` and `hc label` take — and the
-    /// note on the id the model's shell lacks.
+    /// `host: herdr-core` and the terminal — the address `hc get`, `hc read` and `hc label` take.
     fn environment(&self) -> Vec<(String, String)> {
         vec![
             ("host".to_owned(), HC_NAME.to_owned()),
             ("hc terminal".to_owned(), self.terminal.clone()),
-            ("hc note".to_owned(), HC_CHILD_NOTE.to_owned()),
         ]
-    }
-}
-
-impl ChildEnvironment for HcHost {
-    /// `HC_TERMINAL_ID` (the module doc).
-    fn withheld(&self) -> Vec<String> {
-        vec![HC_TERMINAL_ID.to_owned()]
     }
 }
 
@@ -115,7 +98,7 @@ pub(crate) fn detect_hc(probe: &Probe) -> Option<Box<dyn Host>> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use super::{HC_CHILD_NOTE, HcHost, detect_hc};
+    use super::{HcHost, detect_hc};
     use crate::app::env::Env;
     use crate::host::program_status::for_terminal;
     use crate::host::{Host, Probe, detect};
@@ -241,25 +224,20 @@ mod tests {
         assert!(detect_hc(&probe(&[t1, ("TERM_PROGRAM", "herdr")], None)).is_none());
     }
 
-    /// The id is withheld from every child (the module doc), and the model is told so.
+    /// hc's `<environment>` is the host and the terminal, nothing else, and no child loses a variable:
+    /// the id reaches the model's shell (the module doc).
     #[test]
-    fn children_are_spawned_without_the_id() {
+    fn hc_names_itself_and_the_terminal_and_nothing_else() {
         let h = HcHost::new("t4".to_owned());
+        assert!(h.as_child_env().is_none(), "hc withholds a variable");
         assert_eq!(
-            h.as_child_env().expect("hc withholds").withheld(),
-            vec!["HC_TERMINAL_ID".to_owned()]
+            h.as_environment().unwrap().environment(),
+            vec![
+                ("host".to_owned(), "herdr-core".to_owned()),
+                ("hc terminal".to_owned(), "t4".to_owned()),
+            ]
         );
-        let lines = h.as_environment().unwrap().environment();
-        assert_eq!(
-            lines.last().unwrap(),
-            &("hc note".to_owned(), HC_CHILD_NOTE.to_owned())
-        );
-        let bytes: usize = lines.iter().map(|(k, v)| k.len() + 2 + v.len() + 1).sum();
-        let share = crate::agents::harness::HARNESS_CAP / 10;
-        assert!(
-            bytes <= share,
-            "hc's lines are {bytes} bytes, its share {share}"
-        );
+        assert!(crate::host::child_env([&h as &dyn Host]).names().is_empty());
     }
 
     /// herdr-core claims `hc`, its own envelope, and no other host claims anything: under herdr's
