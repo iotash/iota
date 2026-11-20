@@ -850,6 +850,7 @@ async fn approval_allow_once_session_and_deny() {
         [
             "Allow once".to_owned(),
             "Allow for this session".to_owned(),
+            "Allow for this project".to_owned(),
             "Deny".to_owned()
         ]
     );
@@ -885,7 +886,7 @@ async fn approval_allow_once_session_and_deny() {
 
     // "Deny": the refusal is the call's result and the turn continues.
     let dispatch = Arc::new(StaticDispatcher::new(&["write_file"]).with_approval(&["write_file"]));
-    let mut script = vec![choose(2)];
+    let mut script = vec![choose(3)];
     script.extend(quiet(1));
     let fx = Fx::new(dispatch, script);
     let p = stream(vec![
@@ -2504,6 +2505,7 @@ async fn a_protected_write_is_asked_every_time_and_never_granted_for_the_session
                 vec![
                     "Allow once".to_owned(),
                     "Allow for this session".to_owned(),
+                    "Allow for this project".to_owned(),
                     "Deny".to_owned()
                 ],
             ),
@@ -2526,6 +2528,67 @@ async fn a_protected_write_is_asked_every_time_and_never_granted_for_the_session
             .ok()
             .as_deref(),
         Some("j")
+    );
+}
+
+// "Allow for this project" on a built-in tool stores `Builtin(<wire name>)` in the project's grants file, by
+// way of the door: the second call is not asked, and the session level stays empty.
+#[tokio::test]
+async fn a_builtin_tool_granted_for_the_project_is_kept_in_its_file() {
+    use crate::tool::grants::{Level, ToolKey};
+    let t = tempfile::tempdir().expect("tempdir");
+    let project = crate::repl::ProjectFile {
+        store: crate::session::SessionStore::new(t.path().join("sessions")),
+        root: t.path().join("proj"),
+    };
+    std::fs::create_dir_all(&project.root).expect("root");
+    let grants = Arc::new(crate::tool::grants::Grants::default());
+    let dispatch = Arc::new(StaticDispatcher::new(&["shell"]).with_approval(&["shell"]));
+    let mut script = vec![choose(2)];
+    script.extend(quiet(1));
+    let fx = Fx::new(dispatch, script)
+        .granting(&grants)
+        .with_project(project.clone());
+    let p = stream(vec![
+        Round::calls(vec![
+            call("c1", "shell", serde_json::json!({"command": "ls"})),
+            call("c2", "shell", serde_json::json!({"command": "pwd"})),
+        ]),
+        Round::text("done"),
+    ]);
+    let mut history = vec![Message::user("run")];
+    fx.turn(&p, &mut history).await.outcome.expect("turn");
+
+    let asks: Vec<Vec<String>> = fx
+        .events()
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Tabbed(s) => Some(s.panels[0].items.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        asks,
+        [[
+            "Allow once",
+            "Allow for this session",
+            "Allow for this project",
+            "Deny"
+        ]]
+    );
+    let shell = ToolKey::Builtin("shell".to_owned());
+    assert_eq!(
+        grants.snapshot(Level::Project).tools,
+        std::slice::from_ref(&shell)
+    );
+    assert!(grants.snapshot(Level::Session).is_empty());
+    assert_eq!(
+        project
+            .store
+            .project_grants(&project.root)
+            .expect("file")
+            .tools,
+        std::slice::from_ref(&shell)
     );
 }
 

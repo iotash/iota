@@ -3495,8 +3495,8 @@ async fn allow_makes_a_directory_writable_and_says_where_it_really_is() {
     );
 }
 
-/// What is not a directory is refused with the reason; what is neither a directory nor `<server>:<tool>` is
-/// refused naming both, and a tool of a run with no MCP server at all names the server it cannot find. The
+/// What is not a directory is refused with the reason; a bare word that names no built-in tool is refused
+/// saying which tools ask (none here), and a tool of a run with no MCP server at all names the server it cannot find. The
 /// project root is already writable and says so. Nothing is granted.
 #[tokio::test]
 async fn allow_refuses_what_is_not_a_directory() {
@@ -3526,7 +3526,8 @@ async fn allow_refuses_what_is_not_a_directory() {
             "/allow: ./file.txt is not a directory".to_owned(),
             "/allow: ./missing is not a directory".to_owned(),
             "/allow: no MCP server named \"github\" is connected".to_owned(),
-            "/allow: expected a directory (starting with /, ~ or .) or <server>:<tool>".to_owned(),
+            "/allow: no built-in tool named \"github\" (no built-in tool of this run asks)"
+                .to_owned(),
             "/allow: ./file.txt is not a directory".to_owned(),
             format!(
                 "/allow: {} is already writable (the project root)",
@@ -3730,6 +3731,60 @@ async fn allow_project_writes_the_bucket_file() {
     let want = format!("✓ revoked {} (this project)", out.display());
     let shown = printed(&f2.ui);
     assert!(shown.contains(&want), "{want:?} missing:\n{shown:#?}");
+}
+
+/// `/allow project <tool>` grants a built-in tool for the project: its WIRE name goes into the project's
+/// `grants.json` (the session's meta does not get it), the notice names the project, and the `Grants` tab lists
+/// it as the project's. A typo and a tool that never asks are refused, naming the tools that do, and nothing
+/// is stored for them.
+#[tokio::test]
+async fn allow_project_grants_a_builtin_tool() {
+    let (_t, root, _out) = allow_fixture();
+    let f = Fixture::new(vec![
+        input("/allow project shell"),
+        input("/allow shel"),
+        input("/allow project read_file"),
+        input("/allow"),
+        allow_cancel(),
+        Reply::Interrupted,
+    ]);
+    let grants = Arc::new(iota::tool::grants::Grants::default());
+    let mut params = allow_params(&f, &root, &grants);
+    params.dispatch =
+        Arc::new(StaticDispatcher::new(&["shell", "read_file"]).with_approval(&["shell"]));
+    let id = params
+        .session
+        .writer
+        .as_ref()
+        .expect("writer")
+        .id()
+        .to_owned();
+    iota::repl::run(params).await.expect("clean exit");
+
+    let file: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(f.store.grants_path(&root)).expect("the bucket file"),
+    )
+    .expect("json");
+    assert_eq!(
+        file,
+        serde_json::json!({"v": 1, "roots": {root.to_str().expect("utf-8"): {"tools": [{"builtin": "shell"}]}}})
+    );
+    assert!(
+        f.store.meta(&id).map_or(true, |m| m.grants.is_empty()),
+        "a project grant is not the session's"
+    );
+    let shown = printed(&f.ui);
+    for want in [
+        format!(
+            "✓ shell runs without asking in this project ({})",
+            root.display()
+        ),
+        "/allow: no built-in tool named \"shel\" (tools that ask: shell)".to_owned(),
+        "/allow: read_file never asks (tools that ask: shell)".to_owned(),
+    ] {
+        assert!(shown.contains(&want), "{want:?} missing:\n{shown:#?}");
+    }
+    assert_eq!(grants_tabs(&f.ui), [vec!["this project  shell".to_owned()]]);
 }
 
 /// [`SH_SERVER`] listing two tools, `echo` and `ping`.
@@ -3973,7 +4028,7 @@ async fn allow_is_in_the_table() {
         [
             (
                 "/allow",
-                "Make a directory writable or stop asking for an MCP tool, or browse and revoke grants"
+                "Make a directory writable or stop asking for a tool, or browse and revoke grants"
             ),
             ("/debug", "Browse API traffic; toggle request recording"),
         ]

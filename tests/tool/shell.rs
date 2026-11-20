@@ -503,11 +503,13 @@ fn shell_approval_follows_the_auto_run_and_write_matrix() {
         !approval("sandbox: off\nauto_run: true\n"),
         "auto_run should waive approval"
     );
-    // auto: approval exactly when no sandbox is available.
-    assert_eq!(
+    // auto: the argument-less probe asks whether some call can ask — what `/allow shell` grants. A sandboxed
+    // set's call that leaves the sandbox (an iota call) still does, so it is `!auto_run` with a sandbox or
+    // without one; which calls ask is per call.
+    assert!(
         approval(""),
-        !exec::available(),
-        "auto approval must mirror exec::available()"
+        "a shell without auto_run has calls that ask (sandbox available: {})",
+        exec::available()
     );
 }
 #[test]

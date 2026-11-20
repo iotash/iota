@@ -378,10 +378,11 @@ impl CodeSet {
 
     /// Whether the writers' calls are put to the user: inside the roots unless `auto_write`, outside
     /// them always under `outside_writes: ask` with a user to ask; an unverifiable or empty path never
-    /// (it is refused at the call). `None` (the argument-less probe) answers whether the tool can ask.
+    /// (it is refused at the call). `None` (the argument-less probe) is `!auto_write`: whether an inside
+    /// write asks — the one a tool grant answers.
     pub(crate) fn write_asks(&self, args: Option<&crate::provider::model::JsonObject>) -> bool {
         let Some(args) = args else {
-            return !self.auto_write || self.outside == Outside::Ask;
+            return !self.auto_write;
         };
         let arg = crate::tool::args::str_arg(args, "path");
         match self.write_path(arg) {

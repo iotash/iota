@@ -34,8 +34,8 @@ through four doors:
 
 | door | writes | level |
 |---|---|---|
-| the approval dialog | a directory, an MCP tool, a built-in tool | session or project (built-in: session) |
-| `/allow`, `/revoke` (chat) | a directory, an MCP tool or `server:*` | session or project |
+| the approval dialog | a directory, an MCP tool, a built-in tool | session or project |
+| `/allow`, `/revoke` (chat) | a directory, an MCP tool or `server:*`, a built-in tool | session or project |
 | `--add-dir <dir>` (CLI) | a directory | the run (a static root, §5.3) |
 | `write_roots:` (config) | a directory | every run (a static root, unchanged) |
 
@@ -81,7 +81,7 @@ other alone.
 pub enum Level { Session, Project }
 
 pub enum ToolKey {
-    /// A built-in tool, by wire name. Session level only.
+    /// A built-in tool, by wire name. Either level.
     Builtin(String),
     /// One MCP tool, or every tool of the server.
     Mcp { server: ServerId, tool: McpTool },
@@ -98,9 +98,17 @@ pub enum McpTool { Named(String) /* the server's raw tool name */, Any }
 pub struct GrantSet { pub dirs: Vec<PathBuf>, pub tools: Vec<ToolKey> }
 ```
 
-A built-in tool has no project-level grant: its permanent form already exists
-(`tools.code.auto_write`, `tools.shell.auto_run`) and this plan adds no second spelling
-of it.
+> **Amended 2026-11-20 (grants-builtin-project, DIVERGENCES X-110).** The rule is now
+> symmetric: every kind of grant has both levels.
+
+Every kind of grant has a session and a project level, and each also has a permanent,
+global form that is not a grant: a directory's is `write_roots:` (or `--add-dir` for one
+run), an MCP tool's is `mcp_servers.<name>.auto_run`, a built-in's is
+`tools.code.auto_write` / `tools.shell.auto_run`. Those keys live in the home or agent
+config and apply to EVERY project, and the repository's own `.iota.yaml` is shared and
+trust-gated, so none of them can say "in this repository, stop asking". In every case
+the project level is that per-repository answer. A built-in grant is still keyed by its
+wire name and still never answers a call bound to a location (§3.4).
 
 ### 3.3 A directory grant
 
@@ -200,7 +208,7 @@ The title is unchanged (`<tool> <detail> — allow?`). The items by what the cal
 | …whose `<dir>` is `/`, the home directory or an ancestor of it | `Allow once` · `Deny` |
 | a PROTECTED write | `Allow once` · `Deny` (unchanged) |
 | an MCP tool | `Allow once` · `Always allow <server>:<tool> in this session` · `Always allow <server>:<tool> in this project` · `Deny` |
-| a built-in tool (a write inside the roots, an unsandboxed `shell`) | `Allow once` · `Allow for this session` · `Deny` (unchanged) |
+| a built-in tool (a write inside the roots, a `shell` call outside the sandbox) | `Allow once` · `Allow for this session` · `Allow for this project` · `Deny` |
 
 `<dir>` is the target's real parent directory, from the one resolution X-92 already
 makes (`ApprovalSubject::scope`). Choosing a "make writable" item adds `<dir>` to the
@@ -220,6 +228,17 @@ open `~/.ssh` and every shell rc file; `/allow ~`, typed out, still works.
 > read-only view of the `write_roots:` and `--add-dir` roots, `write_roots:  /path` and
 > `--add-dir     /path`, which replaces the listing's `static …` lines. The typed forms below are unchanged. What
 > follows about `/revoke`, the text listing and the `/revoke: ` prefix is the history.
+>
+> **Amended 2026-11-20 (grants-builtin-project, DIVERGENCES X-111).** `/allow [project] <tool>`
+> grants a built-in tool. The argument order is: a connected server's whole name, a
+> directory (a leading `/`, `~` or `.`), `<server>:<tool>` (any other `:`), then a bare word,
+> a built-in tool by its wire name. It must be one the run has and whose calls ask about no
+> location (its argument-less `requires_approval` probe: `shell` without `auto_run`, the
+> writers without `auto_write`); otherwise it is refused, nothing stored, naming the tools
+> that do ask: `no built-in tool named "<t>" (tools that ask: shell, write_file)`, `<t> never
+> asks (tools that ask: …)`, or `(no built-in tool of this run asks)`. Granted:
+> `✓ shell runs without asking in this project (<root>)`; the `Grants` tab lists it as
+> `this project  shell`.
 
 The only door for the shell, since a sandboxed command cannot be prompted mid-run.
 
@@ -679,7 +698,7 @@ refuse`, `max(config, flag)`. Done when the gate passes and
 
 ## 12. Deferred
 
-A deny form for MCP tools; project grants for built-in tools; a grant that expires; a
+A deny form for MCP tools; a grant that expires; a
 picker for `/allow` (a list with checkboxes, as `/session` has) once the typed form
 has been lived with; watching `grants.json` for another process's change (a running
 chat sees it at its next `/new` or resume).

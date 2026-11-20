@@ -36,7 +36,8 @@ pub enum Level {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(from = "KeyRepr", into = "KeyRepr")]
 pub enum ToolKey {
-    /// A built-in tool by its wire name. Session level only: its permanent form is the config's.
+    /// A built-in tool by its wire name, at either level: the project level is the per-repository answer the
+    /// config's `auto_write`/`auto_run` (every project's) cannot give.
     Builtin(String),
     /// One MCP tool, or every tool of the server.
     Mcp {

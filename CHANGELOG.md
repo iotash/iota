@@ -7,6 +7,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **A built-in tool can be allowed for the project.** The approval prompt for
+  `shell`, `edit_file` or `write_file` now also offers `Allow for this project`,
+  and `/allow project shell` says the same from the chat (`/allow shell` for the
+  session): in this repository, in every session and in `-m` runs, iota stops
+  asking for that tool. `/allow` refuses a name it does not know or a tool that
+  never asks, listing the ones that do; the `Grants` tab lists and revokes it.
 - **`--add-dir <dir>` makes a directory writable for one run.** `iota run`
   and `iota resume` take it (repeatable) beside the config's `write_roots:`,
   so a `-m` run, CI or a script can write outside the project without a config

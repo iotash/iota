@@ -9,7 +9,9 @@
 //! the CONNECTED servers' names before the argument is read as a directory (a `--mcp` server is named by its
 //! URL or `argv[0]`: [`named_server`]), and `<tool>` against its current tool list, so a typo is refused instead
 //! of stored, and the grant is keyed by the server's identity (its configured name, or a `--mcp` server's whole flag value),
-//! never the wire segment.
+//! never the wire segment. `/allow [project] <tool>` — a bare word, neither a directory nor `<server>:<tool>` —
+//! stops the question for a built-in tool, named by its wire name: one the run has and that asks about a call
+//! bound to no location ([`asking`]), so a typo, or a tool that never asks, is refused naming those that do.
 //!
 //! The BARE `/allow` opens a tabbed surface, the `/file` way — the focused tab IS the verb. `Add` is a
 //! directory browser ([`crate::ui::facade::Pick::Dir`]: Enter descends, Space chooses, `./` is the directory shown) whose choice
@@ -30,6 +32,7 @@ use crate::mcp::Manager;
 use crate::repl::grants::{Door, Footing, Unsaved, label, unsaved_session};
 use crate::repl::run::Repl;
 use crate::session::SessionError;
+use crate::tool::Dispatcher;
 use crate::tool::grants::{self, Grants, Level, McpTool, ServerId, ToolKey};
 use crate::ui::facade::{Panel, TabbedSpec};
 use crate::ui::render::label::sgr_if;
@@ -77,6 +80,7 @@ pub(crate) async fn cmd_allow(repl: &Repl, arg: &str) {
         &repl.handles.footing,
         home(repl),
         servers,
+        &*repl.conv.dispatch,
         arg,
     ) {
         Ok(done) => say(repl, done),
@@ -178,13 +182,16 @@ fn typed_path(footing: &Footing, home: Option<&Path>, arg: &str) -> Option<PathB
     Some(paths::clean(&footing.project.root.join(p)))
 }
 
-/// Grants the directory or the MCP tool `arg` for this session — or, after the keyword `project`, for this
-/// project: the notice line, or why not. `servers` is the run's MCP manager, `None` in a run with no server.
+/// Grants the directory, the MCP tool or the built-in tool `arg` for this session — or, after the keyword
+/// `project`, for this project: the notice line, or why not. `servers` is the run's MCP manager, `None` in a run
+/// with no server; `tools` the run's dispatcher. The order: a connected server's name, a directory (a leading
+/// `/`, `~` or `.`), `<server>:<tool>` (any other `:`), then a bare word, a built-in tool.
 fn allow(
     door: &Door,
     footing: &Footing,
     home: Option<&Path>,
     servers: Option<&Manager>,
+    tools: &dyn Dispatcher,
     arg: &str,
 ) -> Result<Done, String> {
     let (level, arg) = match arg.strip_prefix("project") {
@@ -195,11 +202,54 @@ fn allow(
     if let Some((server, tool)) = named_server(arg, &names) {
         return allow_tool(door, servers, level, server, tool);
     }
-    if typed_path(footing, home, arg).is_none() {
-        let (server, tool) = server_tool(arg).ok_or_else(|| EXPECTED.to_owned())?;
-        return allow_tool(door, servers, level, server, tool);
+    if typed_path(footing, home, arg).is_some() {
+        return allow_dir(door, footing, home, level, arg);
     }
-    allow_dir(door, footing, home, level, arg)
+    if !arg.contains(':') {
+        return allow_builtin(door, tools, level, arg);
+    }
+    let (server, tool) = server_tool(arg).ok_or_else(|| EXPECTED.to_owned())?;
+    allow_tool(door, servers, level, server, tool)
+}
+
+/// The built-in tools of `tools` a tool grant can answer, by wire name, in its order: those whose argument-less
+/// probe asks ([`Dispatcher::requires_approval`]) — a tool that never asks, or one its config's `auto_write` or
+/// `auto_run` waives, is not among them.
+fn asking(tools: &dyn Dispatcher) -> Vec<String> {
+    tools
+        .tools()
+        .into_iter()
+        .map(|t| t.name)
+        .filter(|n| {
+            matches!(tools.grant_key(n), ToolKey::Builtin(_)) && tools.requires_approval(n, None)
+        })
+        .collect()
+}
+
+/// Grants the built-in tool `name` at `level`: the notice line, or why not — an unknown name, or a tool that
+/// never asks, is refused naming those that do ([`asking`]).
+fn allow_builtin(
+    door: &Door,
+    tools: &dyn Dispatcher,
+    level: Level,
+    name: &str,
+) -> Result<Done, String> {
+    let asks = asking(tools);
+    if !asks.iter().any(|n| n == name) {
+        let those = if asks.is_empty() {
+            "no built-in tool of this run asks".to_owned()
+        } else {
+            format!("tools that ask: {}", asks.join(", "))
+        };
+        let known = tools.tools().iter().any(|t| t.name == name)
+            && matches!(tools.grant_key(name), ToolKey::Builtin(_));
+        return Err(if known {
+            format!("{name} never asks ({those})")
+        } else {
+            format!("no built-in tool named \"{name}\" ({those})")
+        });
+    }
+    grant_tool(door, level, ToolKey::Builtin(name.to_owned()), name)
 }
 
 /// Grants the directory `arg` (spelled as one: [`typed_path`]) at `level`: the notice line, or why not.
@@ -327,6 +377,18 @@ fn allow_tool(
         server: target.id.clone(),
         tool,
     };
+    let what = match &key {
+        ToolKey::Mcp {
+            tool: McpTool::Any, ..
+        } => format!("every tool of {server}"),
+        _ => label(&key),
+    };
+    grant_tool(door, level, key, &what)
+}
+
+/// Grants the tool `key` at `level`, the notice naming it `what`: the notice line, or why not — it is refused
+/// when a project grant already covers it, or (for a session grant) a session one.
+fn grant_tool(door: &Door, level: Level, key: ToolKey, what: &str) -> Result<Done, String> {
     let shown = label(&key);
     let held = |l: Level| door.grants.snapshot(l).allows(&key);
     if held(Level::Project) {
@@ -339,12 +401,6 @@ fn allow_tool(
             "{shown} already runs without asking (this session)"
         ));
     }
-    let what = match &key {
-        ToolKey::Mcp {
-            tool: McpTool::Any, ..
-        } => format!("every tool of {server}"),
-        _ => shown,
-    };
     let unsaved = kept(
         door.apply(level, |s| {
             s.add_tool(key);
@@ -566,6 +622,7 @@ mod tests {
     struct Chat {
         door: Door,
         footing: Footing,
+        tools: crate::tool::Registry,
     }
 
     impl Chat {
@@ -590,6 +647,7 @@ mod tests {
                     write_roots: write_roots.to_vec(),
                     added_dirs: added_dirs.to_vec(),
                 },
+                tools: tools(),
             }
         }
 
@@ -601,9 +659,9 @@ mod tests {
             &self.door.project
         }
 
-        /// `/allow` in a run with no MCP server.
+        /// `/allow` in a run with no MCP server and the built-ins of [`tools`].
         fn allow(&self, arg: &str) -> Result<String, String> {
-            super::allow(&self.door, &self.footing, None, None, arg).map(|d| d.line)
+            super::allow(&self.door, &self.footing, None, None, &self.tools, arg).map(|d| d.line)
         }
 
         /// The `Static` tab's title, prompt and rows; `None` when it is not shown.
@@ -628,6 +686,41 @@ mod tests {
                 .map(|r| r.map(|d| d.line))
                 .collect()
         }
+    }
+
+    /// A built-in named `.0` whose argument-less probe asks when `.1`.
+    struct Stub(&'static str, bool);
+
+    impl crate::tool::Tool for Stub {
+        fn def(&self) -> crate::provider::model::ToolDef {
+            crate::provider::model::ToolDef {
+                name: self.0.to_owned(),
+                description: String::new(),
+                input_schema: None,
+                deferred: false,
+            }
+        }
+
+        fn call<'a>(
+            &'a self,
+            _cx: &'a crate::tool::context::RunCtx,
+            _args: &'a crate::provider::model::JsonObject,
+        ) -> crate::BoxFuture<'a, crate::tool::ToolResult> {
+            unreachable!("/allow never calls a tool")
+        }
+
+        fn requires_approval(&self, _args: Option<&crate::provider::model::JsonObject>) -> bool {
+            self.1
+        }
+    }
+
+    /// The built-ins: `shell` and `write_file` ask, `read_file` never does.
+    fn tools() -> crate::tool::Registry {
+        let mut reg = crate::tool::Registry::default();
+        for (name, asks) in [("shell", true), ("read_file", false), ("write_file", true)] {
+            reg.add(Arc::new(Stub(name, asks)));
+        }
+        reg
     }
 
     /// A relative argument is read against the project root; the protected table beats "already writable";
@@ -806,6 +899,7 @@ mod tests {
                 s.add_tool(flag.clone());
             })
             .unwrap();
+        c.allow("project shell").unwrap();
         assert_eq!(
             c.rows(),
             [
@@ -815,11 +909,12 @@ mod tests {
                 format!("this project  {}", out.join("sub").display()),
                 "this project  github:*".to_owned(),
                 "this project  npx:push (--mcp npx -y @acme/mcp)".to_owned(),
+                "this project  shell".to_owned(),
             ]
         );
-        // The stale directory, `github:*` (checked at both of its rows) and the project's directory.
+        // The stale directory, `github:*` (checked at both of its rows), the project's directory and `shell`.
         assert_eq!(
-            c.revoke(&[1, 2, 3, 4]),
+            c.revoke(&[1, 2, 3, 4, 6]),
             [
                 Ok(format!("✓ revoked {} (this session)", gone.display())),
                 Ok("✓ revoked github:* (this session, this project)".to_owned()),
@@ -827,6 +922,7 @@ mod tests {
                     "✓ revoked {} (this project)",
                     out.join("sub").display()
                 )),
+                Ok("✓ revoked shell (this project)".to_owned()),
             ]
         );
         assert_eq!(
@@ -915,6 +1011,53 @@ mod tests {
                 gone.display()
             )
         );
+    }
+
+    /// A bare word is a built-in tool: `project` grants it in the project's file by its wire name, a session grant
+    /// after it is refused as covered; without `project` it is the session's. An unknown name and a tool that
+    /// never asks are refused, naming the tools that do; nothing is stored for them.
+    #[test]
+    fn allow_grants_a_builtin_tool_and_refuses_one_that_never_asks() {
+        let (t, root, _out) = fixture();
+        let c = Chat::new(&t, &root, &[], &[]);
+        let (g, pf) = (c.g(), c.pf());
+        let shell = ToolKey::Builtin("shell".to_owned());
+        assert_eq!(
+            c.allow("project shell").unwrap(),
+            format!(
+                "✓ shell runs without asking in this project ({})",
+                root.display()
+            )
+        );
+        assert_eq!(
+            pf.store.project_grants(&root).unwrap().tools,
+            std::slice::from_ref(&shell)
+        );
+        assert_eq!(
+            c.allow("shell").unwrap_err(),
+            "shell already runs without asking (this project)"
+        );
+        assert_eq!(
+            c.allow("write_file").unwrap(),
+            "✓ write_file runs without asking in this session"
+        );
+        assert_eq!(
+            g.snapshot(Level::Session).tools,
+            [ToolKey::Builtin("write_file".to_owned())]
+        );
+        assert_eq!(
+            c.allow("shel").unwrap_err(),
+            "no built-in tool named \"shel\" (tools that ask: shell, write_file)"
+        );
+        assert_eq!(
+            c.allow("project read_file").unwrap_err(),
+            "read_file never asks (tools that ask: shell, write_file)"
+        );
+        assert_eq!(
+            pf.store.project_grants(&root).unwrap().tools,
+            std::slice::from_ref(&shell)
+        );
+        assert_eq!(g.snapshot(Level::Session).len(), 1);
     }
 
     /// The `Static` tab lists `write_roots:` then `--add-dir`, each with its source, the labels aligned; with

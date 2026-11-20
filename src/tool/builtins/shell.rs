@@ -269,13 +269,16 @@ impl Tool for ShellTool {
     }
 
     /// `!auto_run` for a call that runs outside the sandbox — every call of an unsandboxed set, and a
-    /// sandboxed set's iota call (`leaves_sandbox`). The argument-less probe answers for the set: `!sandboxed
-    /// && !auto_run`, as before the exception.
+    /// sandboxed set's iota call (`leaves_sandbox`). The argument-less probe is `!auto_run`: without it, some
+    /// call asks in either set, and a tool grant answers it.
     fn requires_approval(&self, args: Option<&JsonObject>) -> bool {
         if self.shell_cfg.auto_run {
             return false;
         }
-        !self.sandboxed || args.is_some_and(|a| self.leaves_sandbox(str_arg(a, "command")))
+        match args {
+            None => true,
+            Some(a) => !self.sandboxed || self.leaves_sandbox(str_arg(a, "command")),
+        }
     }
 
     /// `auto_run`: the setting that lifts every approval above. A sandboxed set without it waives nothing —

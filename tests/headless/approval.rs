@@ -494,6 +494,81 @@ async fn a_project_grant_runs_unattended() {
     assert!(!lib.join("twin.txt").exists());
 }
 
+/// A built-in tool's project grant is inherited by an unattended run: `{"builtin": "write_file"}` in the project's
+/// `grants.json`, loaded into the run's store, lets the `-m` loop make an inside write that `auto_write` would
+/// otherwise put to the user — while a project without the grant is refused, and the grant never answers an
+/// outside write.
+#[tokio::test]
+async fn a_project_builtin_grant_runs_unattended() {
+    use iota::session::SessionStore;
+    use iota::tool::grants::{Grants, ToolKey};
+    use iota::tool::sets::ToolsConfig;
+    use iota::tool::{Registry, ToolEnv};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let real = std::fs::canonicalize(dir.path()).expect("real");
+    let (root, other, out) = (real.join("proj"), real.join("other"), real.join("out"));
+    for d in [&root, &other, &out] {
+        std::fs::create_dir_all(d).expect("dir");
+    }
+    let store = SessionStore::new(real.join("sessions"));
+    store
+        .update_project_grants(&root, |s| {
+            s.tools.push(ToolKey::Builtin("write_file".to_owned()));
+        })
+        .expect("a project grant");
+
+    let run = |project: &std::path::Path, path: std::path::PathBuf| {
+        let grants = Arc::new(Grants::default());
+        grants.replace_project(store.project_grants(project).expect("read"));
+        let env = ToolEnv {
+            project_root: Some(project.to_path_buf()),
+            grants: Arc::clone(&grants),
+            ..ToolEnv::default()
+        };
+        let raw: ToolsConfig = serde_norway::from_str("code: {}\n").expect("tools");
+        let d = Arc::new(Registry::build(&env, &raw, &mut |w| panic!("{w}")));
+        let mut args = JsonObject::new();
+        args.insert("path".to_owned(), path.to_str().expect("utf-8").into());
+        args.insert("content".to_owned(), "x".into());
+        async move {
+            let mut history = vec![Message::user("go")];
+            let mut host = QuietHost {
+                grants,
+                ..QuietHost::new()
+            };
+            execute_with_tools(
+                TurnParams {
+                    cx: &RunCtx::default(),
+                    tp: &writing(args),
+                    dispatch: d.clone(),
+                    tools: d.tools(),
+                    harness: "",
+                    overlay: "",
+                    max_turns: None,
+                },
+                &mut history,
+                &mut host,
+            )
+            .await
+            .expect("loop");
+            history[2].clone()
+        }
+    };
+
+    let result = run(&root, root.join("x.txt")).await;
+    assert!(!result.is_error(), "{}", result.content);
+    assert!(root.join("x.txt").exists(), "the granted write landed");
+
+    let result = run(&other, other.join("x.txt")).await;
+    assert!(result.is_error(), "another project's grant applied");
+    assert!(!other.join("x.txt").exists());
+
+    let result = run(&root, out.join("x.txt")).await;
+    assert!(result.is_error(), "a tool grant answered an outside write");
+    assert!(!out.join("x.txt").exists());
+}
+
 /// A minimal MCP server in POSIX `sh`: `initialize`, `tools/list` (one tool `echo`) and `tools/call`
 /// (`"pong"`), exiting on stdin EOF.
 #[cfg(unix)]

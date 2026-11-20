@@ -135,8 +135,10 @@ pub trait Tool: Send + Sync {
     /// Executes one call.
     fn call<'a>(&'a self, cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult>;
     /// Whether a call needs interactive approval (a set may report false when configured to auto-approve).
-    /// Per CALL, like `supports_parallel`: `None` is the argument-less probe (a registry asking about the
-    /// tool), `Some(args)` the call about to run — the `shell` tool's answer depends on the command line.
+    /// Per CALL, like `supports_parallel`: `Some(args)` the call about to run — the `shell` tool's answer
+    /// depends on the command line. `None` is the argument-less probe (a registry asking about the tool):
+    /// whether some call of it bound to no location asks — what a tool grant answers, and what `/allow <tool>`
+    /// takes (a write outside the roots asks too, but no tool grant answers it).
     fn requires_approval(&self, _args: Option<&JsonObject>) -> bool {
         false
     }
@@ -197,7 +199,8 @@ pub trait Dispatcher: Send + Sync {
         name: &'a str,
         args: JsonObject,
     ) -> BoxFuture<'a, ToolResult>;
-    /// Whether the named tool's call needs interactive approval; `None` is the argument-less probe.
+    /// Whether the named tool's call needs interactive approval; `None` is the argument-less probe
+    /// ([`Tool::requires_approval`]).
     fn requires_approval(&self, _name: &str, _args: Option<&JsonObject>) -> bool {
         false
     }
