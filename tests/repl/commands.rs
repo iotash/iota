@@ -3428,12 +3428,13 @@ fn allow_cancel() -> Reply {
     })
 }
 
-/// The `Grants` tab's rows of every bare `/allow` the chat opened, in order.
+/// The `Grants` tab's rows of every bare `/allow` the chat opened, in order, as their plain text (what search
+/// reads; the rows' styling is pinned by `repl::commands::allow::tests`).
 fn grants_tabs(ui: &ScriptedUi) -> Vec<Vec<String>> {
     surfaces(ui)
         .into_iter()
         .filter(|s| s.panels.first().is_some_and(|p| p.title == "Add"))
-        .map(|s| s.panels[1].items.clone())
+        .map(|s| s.panels[1].items.iter().map(|i| strip_sgr(i)).collect())
         .collect()
 }
 
