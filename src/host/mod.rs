@@ -12,11 +12,14 @@
 //! multiplexer's pane id reaches the model through the host layer and never as a special case in
 //! `agents::harness` (brain page `host-integration`, 2026-09-21).
 //!
-//! Hosts: herdr-core (`hc::HcHost`, the terminal core behind herdr's desktop app, told the state in
-//! band with OSC 7501 — the one [`InBand`] host, and the one [`MessageEnvelope`]: it claims `hc`), the herdr multiplexer (`herdr::HerdrHost`, told the
+//! Hosts: herdr-core (`hc::HcHost`, the terminal core behind herdr's desktop app — its identity, and the
+//! one [`MessageEnvelope`]: it claims `hc`), the herdr multiplexer (`herdr::HerdrHost`, told the
 //! pane's lifecycle over its socket), the cmux multiplexer (`cmux::CmuxHost`, driven through its CLI) —
-//! all three detected from the environment — and the plain ANSI terminal ([`ansi::AnsiHost`], the
-//! fallback the command always appends).
+//! all three detected from the environment — and the terminal's own hosts, which the command puts after
+//! the detected one: the Program Status Protocol writer (`program_status::ProgramStatus`, OSC 7501 in
+//! band — the one [`InBand`] host, built only where the terminal accepted the query and, for now, hc was
+//! detected; docs/design/program-status.md) in front of the plain ANSI terminal ([`ansi::AnsiHost`],
+//! the fallback an interactive chat always appends).
 //!
 //! **The innermost host is exclusive** (decided 2026-09-21). Hosts nest — herdr runs inside a cmux
 //! window — and a pane inherits its environment from the process that spawned it: a herdr pane
@@ -25,11 +28,11 @@
 //! innermost host only: `DETECTORS` is ordered inner to outer (hc, herdr, cmux — hc first because an
 //! hc terminal inherits the `HERDR_*` of a herdr pane it was started from, while a herdr pane or a tmux
 //! inside an hc terminal does not answer the OSC 7501 query the hc detector asks the terminal), and
-//! [`Presenter::new`] keeps the FIRST detector that matches, then the ANSI fallback — never two
+//! [`Presenter::new`] keeps the FIRST detector that matches, then the terminal's hosts — never two
 //! detected hosts. A probe carrying both `HERDR_*` and `CMUX_SURFACE_ID` yields herdr alone, and
 //! cmux is not even asked. The per-capability fan-out over the remaining pair (the detected host
-//! and the terminal) is what Go had: the multiplexer takes the state (and the session), the terminal
-//! keeps the OSC 9 ping and the OSC 11 answer, both are closed, and `<environment>` gets the one
+//! and the terminal's hosts) is what Go had: the multiplexer takes the state (and the session), the terminal
+//! keeps the OSC 9 ping and the OSC 11 answer, all are closed, and `<environment>` gets the one
 //! host's lines — `host: <name>`, then the ids its CLI takes.
 //!
 //! **A running background job keeps the host at Busy** (decided 2026-09-24). What a host is shown
@@ -69,6 +72,7 @@ pub(crate) mod background;
 pub(crate) mod cmux;
 pub(crate) mod hc;
 pub(crate) mod herdr;
+pub(crate) mod program_status;
 
 pub use ansi::AnsiHost;
 
@@ -245,8 +249,9 @@ pub fn child_env<'a>(hosts: impl IntoIterator<Item = &'a dyn Host>) -> ChildEnv 
 /// `exec.LookPath` as a closure (`None` when not found).
 pub type LookPathFn = Box<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 
-/// The terminal's answer to "do you read OSC 7501?" (`hc::probe_tty`): `Some(true)` it does,
-/// `Some(false)` it answered the DSR alone, `None` there was no terminal or no answer in time.
+/// The terminal's answer to "do you read OSC 7501?" (`program_status::probe_tty`): `Some(true)` it does
+/// and accepts every state iota writes, `Some(false)` it does not (the DSR alone, garbage, a partial
+/// `states=`), `None` there was no terminal or no answer in time.
 pub type ProgramStatusFn = Box<dyn Fn() -> Option<bool> + Send + Sync>;
 
 /// What the detectors read (host.go:71-74): the run's environment (`os.Getenv`), a `PATH`
@@ -258,7 +263,9 @@ pub struct Probe {
     /// `exec.LookPath` (`None` when not found).
     pub look_path: LookPathFn,
     /// Asks the terminal whether it reads OSC 7501 — a write and a read on the tty, so only the hc
-    /// detector calls it, and only when `HC_TERMINAL_ID` says an hc terminal may be there.
+    /// detector calls it (only when `HC_TERMINAL_ID` says an hc terminal may be there) and then
+    /// `program_status::for_terminal` (only when hc was detected). The real one remembers its answer:
+    /// the terminal is asked once between them.
     pub program_status: ProgramStatusFn,
 }
 
@@ -397,23 +404,22 @@ impl Presenter {
     /// Runs the detectors until one matches — the innermost host, and no other (the module doc) —
     /// then appends `fallback` (host.go:97-108, minus Go's "every detector" collect). MUST be called
     /// inside the tokio runtime: a detected host spawns its worker task.
-    pub fn new(env: &Probe, fallback: Option<Box<dyn Host>>, notify: bool) -> Self {
-        Self::over(detect(env), fallback, notify)
+    pub fn new(env: &Probe, terminal: Vec<Box<dyn Host>>, notify: bool) -> Self {
+        Self::over(detect(env), terminal, notify)
     }
 
     /// [`Self::new`] over a host [`detect`] already found: the command detects once, at assembly — the
     /// children's environment ([`ChildEnv`]) is needed before the presenter exists, by the shell tool and
-    /// by the MCP servers that start connecting before the screen does — and hands the host over here.
+    /// by the MCP servers that start connecting before the screen does — and hands the host over here,
+    /// followed by the terminal's hosts in order: `[ProgramStatus?, AnsiHost]` interactively,
+    /// `[ProgramStatus?]` in a `-m` run (the module doc).
     pub fn over(
         detected: Option<Box<dyn Host>>,
-        fallback: Option<Box<dyn Host>>,
+        terminal: Vec<Box<dyn Host>>,
         notify: bool,
     ) -> Self {
         let name = detected.as_ref().map(|h| h.name().to_owned());
-        let mut hosts: Vec<Box<dyn Host>> = detected.into_iter().collect();
-        if let Some(f) = fallback {
-            hosts.push(f);
-        }
+        let hosts: Vec<Box<dyn Host>> = detected.into_iter().chain(terminal).collect();
         Self {
             detected: name,
             ..Self::with_hosts(hosts, notify)
@@ -749,7 +755,7 @@ mod tests {
             env: Env::default(),
             look_path: Box::new(|_| None),
         };
-        let p = Presenter::new(&none, Some(Box::new(host("full", FULL))), true);
+        let p = Presenter::new(&none, vec![Box::new(host("full", FULL))], true);
         assert_eq!(p.host_names(), vec!["full"]);
         assert_eq!(
             p.detected_host(),
@@ -768,7 +774,7 @@ mod tests {
             env: Env::fixed(&[("CMUX_SURFACE_ID", "surface-1")]),
             look_path: Box::new(|_| Some(PathBuf::from("/usr/bin/true"))),
         };
-        let p = Presenter::new(&cmux_env, Some(Box::new(host("full", FULL))), true);
+        let p = Presenter::new(&cmux_env, vec![Box::new(host("full", FULL))], true);
         assert_eq!(p.host_names(), vec!["cmux", "full"]);
         assert_eq!(p.detected_host(), Some("cmux"));
         p.close().await; // flushes the worker through /usr/bin/true
@@ -795,7 +801,7 @@ mod tests {
                 Some(PathBuf::from("/usr/bin/true"))
             }),
         };
-        let p = Presenter::new(&both, Some(Box::new(host("full", FULL))), true);
+        let p = Presenter::new(&both, vec![Box::new(host("full", FULL))], true);
         assert_eq!(p.host_names(), vec!["herdr", "full"]);
         assert_eq!(p.detected_host(), Some("herdr"));
         assert!(
@@ -1274,5 +1280,63 @@ mod tests {
         drop(p);
         drop(ui.dialogs().open());
         assert_eq!(*states.lock().unwrap(), vec![State::Idle]);
+    }
+
+    /// The presenter over `[hc, program-status, terminal]`: the program-status writer is the first state
+    /// reporter, so the ANSI host's OSC 9;4 is not written; OSC 9 pings still go to the terminal; the
+    /// facade is handed over by `show_turn_on`; all are closed; the banner names herdr-core and the
+    /// environment holds hc's lines alone.
+    #[tokio::test]
+    async fn over_hc_the_terminal_s_writer_takes_the_state_and_the_terminal_keeps_the_ping() {
+        use super::hc::{HC_CHILD_NOTE, HcHost};
+        use super::program_status::{ProgramStatus, report};
+        use super::{AnsiHost, Host};
+        use crate::testing::{ScriptedUi, UiEvent};
+        use crate::ui::facade::Ui;
+
+        let ui = ScriptedUi::new(Vec::new());
+        let terminal: Vec<Box<dyn Host>> = vec![
+            Box::new(ProgramStatus::with_writer(Box::new(std::io::sink()))),
+            Box::new(AnsiHost::new(Arc::clone(&ui) as Arc<dyn Ui>)),
+        ];
+        let p = Presenter::over(Some(Box::new(HcHost::new("t4".to_owned()))), terminal, true)
+            .show_turn_on(Arc::clone(&ui) as Arc<dyn Ui>);
+        assert_eq!(p.detected_host(), Some("herdr-core"));
+        assert_eq!(
+            p.host_names(),
+            vec!["herdr-core", "program-status", "terminal"]
+        );
+        p.set_state(State::Busy);
+        p.notify(Event {
+            kind: Kind::Done,
+            text: "iota: done".to_owned(),
+        });
+        p.close().await;
+        let events: Vec<UiEvent> = ui
+            .events()
+            .into_iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    UiEvent::ProgramStatus(_) | UiEvent::Progress(_) | UiEvent::Notify(_)
+                )
+            })
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                UiEvent::ProgramStatus(report(Some(State::Busy))),
+                UiEvent::Notify("iota: done".to_owned()),
+                UiEvent::ProgramStatus(report(None)),
+            ]
+        );
+        assert_eq!(
+            p.environment(),
+            vec![
+                ("host".to_owned(), "herdr-core".to_owned()),
+                ("hc terminal".to_owned(), "t4".to_owned()),
+                ("hc note".to_owned(), HC_CHILD_NOTE.to_owned()),
+            ]
+        );
     }
 }

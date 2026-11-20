@@ -254,6 +254,7 @@ pub(crate) async fn run_interactive(
         interactor,
         jobs,
         host,
+        program_status,
         child_env,
         agent,
         project,
@@ -364,14 +365,22 @@ pub(crate) async fn run_interactive(
     interactor.bind(Arc::clone(&ui));
 
     // chat/run.go:139 `host.NewPresenter(host.SystemEnv(), host.NewANSI(u), notify)`: the detected hosts
-    // plus the ANSI fallback over the live facade; `notify:` defaults to on (config.go, T-14). The host is
-    // the one the assembly detected (`ToolAssembly::host`): nothing has been reported to it yet.
+    // plus the terminal's — the program-status writer when the terminal accepted, then the ANSI fallback
+    // over the live facade; `notify:` defaults to on (config.go, T-14). Both the host and the writer are
+    // the ones the assembly built (`ToolAssembly::{host, program_status}`): nothing has been reported yet.
     let notify = settings.resolved.agent.notify.unwrap_or(true);
     // The same presenter shows the status row's whole-turn layer (docs/design/busy-span.md §3.5): one
     // computation for the host's state and the screen's.
     let pres = Arc::new(
-        Presenter::over(host, Some(Box::new(AnsiHost::new(Arc::clone(&ui)))), notify)
-            .show_turn_on(Arc::clone(&ui)),
+        Presenter::over(
+            host,
+            program_status
+                .into_iter()
+                .chain([Box::new(AnsiHost::new(Arc::clone(&ui))) as Box<dyn crate::host::Host>])
+                .collect(),
+            notify,
+        )
+        .show_turn_on(Arc::clone(&ui)),
     );
     let mcp = mcp_hooks(&manager, mcp_events);
     let session = wiring.take_session(store, scope);

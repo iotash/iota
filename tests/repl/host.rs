@@ -571,7 +571,7 @@ fn herdr_presenter(mock: &crate::common::HerdrMock, pane: &str) -> Arc<Presenter
             env: iota::app::env::Env::fixed(&borrowed),
             look_path: Box::new(|_| None),
         },
-        None,
+        Vec::new(),
         true,
     ));
     assert_eq!(pres.host_names(), vec!["herdr"]);

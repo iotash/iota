@@ -105,6 +105,10 @@ pub(crate) struct ToolAssembly {
     /// the job registry above already applies it, and the MCP servers start connecting before the screen
     /// exists. The branch hands it to `Presenter::over`; nothing is reported to it before then.
     pub(crate) host: Option<Box<dyn crate::host::Host>>,
+    /// The terminal's Program Status Protocol writer (`crate::host::program_status::for_terminal`), built
+    /// HERE beside [`Self::host`] because the terminal is asked before the screen exists; the branch puts
+    /// it in front of the terminal's other hosts. `None` when the terminal did not accept.
+    pub(crate) program_status: Option<Box<dyn crate::host::Host>>,
     /// What every child of the run is spawned without: [`Self::host`]'s `ChildEnvironment`, for the MCP
     /// stdio servers (the job registry holds its own copy).
     pub(crate) child_env: crate::host::ChildEnv,
@@ -127,14 +131,18 @@ pub(crate) struct ToolAssembly {
 }
 
 /// The host detectors' view of the machine (host.go:71-74 `SystemEnv`): the run's injected environment,
-/// the `PATH` lookup and the terminal's OSC 7501 answer (asked only inside an hc terminal), built HERE so `crate::host` never reads the process environment itself (G16:
+/// the `PATH` lookup and the terminal's OSC 7501 answer (asked only inside an hc terminal, once: the probe
+/// remembers it for `program_status::for_terminal`), built HERE so `crate::host` never reads the process environment itself (G16:
 /// the 15-line PATH scan of `shell::exec` stands in for `exec.LookPath`). Both branches build their
 /// `Presenter` from it: the interactive loop with the ANSI fallback, the `-m` run without one.
 pub(crate) fn host_probe(env: &Env) -> crate::host::Probe {
     crate::host::Probe {
         env: env.clone(),
         look_path: Box::new(crate::shell::exec::find_in_path),
-        program_status: Box::new(crate::host::hc::probe_tty),
+        program_status: {
+            let answer = std::sync::OnceLock::new();
+            Box::new(move || *answer.get_or_init(crate::host::program_status::probe_tty))
+        },
     }
 }
 
@@ -503,7 +511,9 @@ fn assemble_tools(
     // root.go:221-232, plus the run's job registry: the `shell` tool needs it to exist before the dispatcher
     // is built, and both branches need the same one afterwards. Its children are spawned without what the
     // detected host withholds — the hosts' knowledge, not this module's (`crate::host::ChildEnvironment`).
-    let host = crate::host::detect(&host_probe(&ctx.env));
+    let probe = host_probe(&ctx.env);
+    let host = crate::host::detect(&probe);
+    let program_status = crate::host::program_status::for_terminal(host.as_deref(), &probe);
     let messaging = settings
         .message
         .is_none()
@@ -577,6 +587,7 @@ fn assemble_tools(
         interactor,
         jobs,
         host,
+        program_status,
         child_env,
         agent,
         project,
@@ -686,6 +697,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         interactor: _,
         jobs,
         host,
+        program_status,
         child_env,
         agent,
         project,
@@ -817,11 +829,11 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     // The host presenter of a `-m` run: the detected hosts alone — no ANSI fallback (there is no facade to
     // write OSC through; stdout is the reply) and no pings (`notify` is a chat's knob). A multiplexer still
     // learns that its pane is working from here to the reply, which session a resume writes into, and adds
-    // what it knows to `<environment>`; the herdr-core host, given no facade, writes its in-band reports to
-    // `/dev/tty` itself (`crate::host::hc`). Built after the resume stage — over the host the assembly detected,
+    // what it knows to `<environment>`; the terminal's program-status writer, given no facade, writes its
+    // in-band reports to `/dev/tty` itself (`crate::host::program_status`). Built after the resume stage — over the host the assembly detected,
     // which nothing has spoken to yet — so every early return above leaves no host to clean up; from here on
     // the run ends at `pres.close()` below, whatever `once` says.
-    let pres = Presenter::over(host, None, false);
+    let pres = Presenter::over(host, program_status.into_iter().collect(), false);
     if let Some((writer, _, _)) = &session {
         pres.set_session(writer.id(), writer.dir());
     }

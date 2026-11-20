@@ -35,7 +35,7 @@ async fn no_herdr_variables_means_no_host_and_no_request() {
     let mock = HerdrMock::start();
     let full = mock.env("w1:p2");
     for missing in ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH"] {
-        let p = Presenter::new(&probe(&without(&full, missing)), None, true);
+        let p = Presenter::new(&probe(&without(&full, missing)), Vec::new(), true);
         assert!(
             p.host_names().is_empty(),
             "detected a host without {missing}: {:?}",
@@ -48,7 +48,7 @@ async fn no_herdr_variables_means_no_host_and_no_request() {
     }
     let mut off = without(&full, "HERDR_ENV");
     off.push(("HERDR_ENV".to_owned(), "0".to_owned()));
-    let p = Presenter::new(&probe(&off), None, true);
+    let p = Presenter::new(&probe(&off), Vec::new(), true);
     assert!(p.host_names().is_empty(), "HERDR_ENV=0 detected a host");
     p.set_state(State::Busy);
     p.close().await;
@@ -68,7 +68,7 @@ async fn no_herdr_variables_means_no_host_and_no_request() {
 #[tokio::test]
 async fn the_presenter_reports_over_the_socket() {
     let mock = HerdrMock::start();
-    let p = Presenter::new(&probe(&mock.env("w1:p2")), None, true);
+    let p = Presenter::new(&probe(&mock.env("w1:p2")), Vec::new(), true);
     assert_eq!(p.host_names(), vec!["herdr"]);
 
     p.set_state(State::Busy);
@@ -118,7 +118,7 @@ async fn the_presenter_reports_over_the_socket() {
 #[tokio::test]
 async fn the_first_state_goes_out_and_a_repeat_does_not() {
     let mock = HerdrMock::start();
-    let p = Presenter::new(&probe(&mock.env("w1:p2")), None, true);
+    let p = Presenter::new(&probe(&mock.env("w1:p2")), Vec::new(), true);
     p.set_state(State::Idle); // the first report: sent
     p.set_state(State::Idle); // a repeat: dropped
     p.set_state(State::Busy);
@@ -129,7 +129,7 @@ async fn the_first_state_goes_out_and_a_repeat_does_not() {
         ["report_agent idle", "report_agent working", "release_agent"]
     );
 
-    let p = Presenter::new(&probe(&mock.env("w1:p3")), None, true);
+    let p = Presenter::new(&probe(&mock.env("w1:p3")), Vec::new(), true);
     p.close().await;
     assert_eq!(
         mock.summaries().last().map(String::as_str),
@@ -147,7 +147,7 @@ async fn the_first_state_goes_out_and_a_repeat_does_not() {
 #[tokio::test]
 async fn a_running_job_keeps_the_pane_working() {
     let mock = HerdrMock::start();
-    let p = Presenter::new(&probe(&mock.env("w1:p2")), None, true);
+    let p = Presenter::new(&probe(&mock.env("w1:p2")), Vec::new(), true);
     p.set_state(State::Idle);
     p.set_jobs(1); // a job starts while the chat is idle
     p.job_ended(0); // it ends; the notice is on the way
@@ -183,7 +183,7 @@ async fn an_unreachable_socket_never_blocks() {
         "HERDR_SOCKET_PATH".to_owned(),
         absent.to_string_lossy().into_owned(),
     ));
-    let p = Presenter::new(&probe(&vars), None, true);
+    let p = Presenter::new(&probe(&vars), Vec::new(), true);
     assert_eq!(p.host_names(), vec!["herdr"]);
 
     let started = Instant::now();
@@ -212,7 +212,7 @@ async fn the_environment_names_the_host_and_its_ids() {
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect()
     };
-    let p = Presenter::new(&probe(&mock.env("w1:p2")), None, true);
+    let p = Presenter::new(&probe(&mock.env("w1:p2")), Vec::new(), true);
     assert_eq!(
         p.environment(),
         pairs(&[
@@ -229,7 +229,7 @@ async fn the_environment_names_the_host_and_its_ids() {
         &without(&mock.env("w1:p2"), "HERDR_WORKSPACE_ID"),
         "HERDR_TAB_ID",
     );
-    let p = Presenter::new(&probe(&bare), None, true);
+    let p = Presenter::new(&probe(&bare), Vec::new(), true);
     assert_eq!(
         p.environment(),
         pairs(&[

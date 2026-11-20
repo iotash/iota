@@ -113,7 +113,7 @@ fn detect_dark() -> io::Result<bool> {
 /// the terminal's foreground process group: raw mode is a `tcsetattr`, which stops a background
 /// process with `SIGTTOU` (measured: an hc-probing `iota -m` started by the shell tool, whose
 /// commands get a process group of their own, hung stopped). Shared by the OSC 11 background detect and the
-/// herdr-core probe (`host::hc::probe_tty`): both run before any event loop claims the input, one
+/// program-status probe (`host::program_status::probe_tty`): both run before any event loop claims the input, one
 /// after the other. It is never run once the loop has the terminal: it reads the tty itself, and a
 /// key typed before the reply would be read here and lost (`super::requery` asks without reading).
 ///
@@ -166,7 +166,7 @@ pub(crate) fn round_trip(_query: &[u8]) -> io::Result<Vec<u8>> {
 /// that answered nothing it stayed parked and took the first key typed.) Nothing past the `R` is
 /// read either.
 #[cfg(unix)]
-fn exchange(tty: &mut File, query: &[u8], timeout: Duration) -> io::Result<Vec<u8>> {
+pub(crate) fn exchange(tty: &mut File, query: &[u8], timeout: Duration) -> io::Result<Vec<u8>> {
     tty.write_all(&[query, b"\x1b[6n"].concat())?;
     tty.flush()?;
     let deadline = Instant::now() + timeout;
