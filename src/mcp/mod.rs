@@ -134,28 +134,39 @@ pub(crate) mod testutil {
         }
     }
 
-    /// A manager over one stdio server `srv` (with `auto_run` as given) already connected to a
+    /// A manager over one stdio server `srv` (with `auto_run` as given), in a run with a project, already connected to a
     /// [`CountingSession`] that serves two tools, `push` and `pull` — wire names `mcp__srv__push`/`…pull`.
     pub(crate) fn approval_manager(
         auto_run: bool,
     ) -> (Arc<crate::mcp::Manager>, Arc<CountingSession>) {
-        approval_manager_for(crate::mcp::config::ServerConfig {
-            name: "srv".to_owned(),
-            command: "srv-bin".to_owned(),
-            auto_run,
-            ..crate::mcp::config::ServerConfig::default()
-        })
+        approval_manager_for(
+            crate::mcp::config::ServerConfig {
+                name: "srv".to_owned(),
+                command: "srv-bin".to_owned(),
+                auto_run,
+                ..crate::mcp::config::ServerConfig::default()
+            },
+            true,
+        )
     }
 
-    /// [`approval_manager`] over the server `cfg` describes (its wire segment is `cfg.name` sanitised).
+    /// [`approval_manager`] over the server `cfg` describes (its wire segment is `cfg.name` sanitised), in a
+    /// run with a project or without one ([`ManagerOptions::project`]).
     pub(crate) fn approval_manager_for(
         cfg: crate::mcp::config::ServerConfig,
+        project: bool,
     ) -> (Arc<crate::mcp::Manager>, Arc<CountingSession>) {
         use crate::mcp::manager::{Manager, ServerResult, ServerStatus};
         use crate::provider::model::ToolDef;
 
         let name = cfg.name.clone();
-        let m = Manager::new(vec![cfg], options());
+        let m = Manager::new(
+            vec![cfg],
+            ManagerOptions {
+                project,
+                ..options()
+            },
+        );
         let session = Arc::new(CountingSession::default());
         let tools: Vec<ToolDef> = ["push", "pull"]
             .into_iter()

@@ -447,7 +447,9 @@ grants: 2 for this session, 3 for this project (/allow lists them)
   "<server>" need the user's approval, which this non-interactive run cannot ask for;
   set `mcp_servers.<server>.auto_run: true`, or allow it for the project from a chat
   (/allow project <server>:<tool>).` For a `--mcp` server the first clause stays
-  `write it as an `mcp_servers` entry with `auto_run: true``.
+  `write it as an `mcp_servers` entry with `auto_run: true``. In a run without a project
+  (§4.2) — where `/allow project …` is refused — the sentence ends after that first
+  clause: `…; set `mcp_servers.<server>.auto_run: true`.`
 - **The grants themselves** — `Why::Grants`: `<path> is protected: it holds the
   permissions the user granted — no tool may write it; the user grants with /allow`.
 

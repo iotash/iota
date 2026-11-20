@@ -18,6 +18,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   grants, `write_roots:` and `--add-dir` work as before. A project grant made
   from a plain chat in 0.12.0 no longer applies to plain chats, and one made
   for your home directory applies to nothing.
+- **A `-m` run without a project no longer suggests `/allow project`.** When
+  an MCP tool is refused because nobody can approve it, the message names the
+  server's `auto_run` key, and adds `/allow project <server>:<tool>` only when
+  the run has a project in which that command works.
 
 ## 0.12.0 - 2026-11-20
 

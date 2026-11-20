@@ -296,6 +296,10 @@ pub struct ManagerOptions {
     /// What every stdio server is spawned without — the hosts' knowledge (`crate::host::child_env`); empty
     /// unless the command sets it.
     pub child_env: ChildEnv,
+    /// Whether this run has a project level (`cmd::project_file`, docs/design/grants.md §4.2) — what
+    /// [`unattended_refusal`](crate::tool::Dispatcher::unattended_refusal) may advise: `/allow project …` only
+    /// where it can work. False unless the command says so.
+    pub project: bool,
 }
 
 impl ManagerOptions {
@@ -309,6 +313,7 @@ impl ManagerOptions {
             stderr_cap: DEFAULT_STDERR_CAP,
             env,
             child_env: ChildEnv::default(),
+            project: false,
         }
     }
 }
@@ -1059,8 +1064,9 @@ impl Dispatcher for Manager {
     }
 
     /// The tool's server and what would let its calls run here (the outside-write refusal's shape): the
-    /// entry's `auto_run` key — or, for a `--mcp` server, which has no entry, writing it as one — or a project
-    /// grant made from a chat, which a later unattended run inherits.
+    /// entry's `auto_run` key — or, for a `--mcp` server, which has no entry, writing it as one — and, in a run
+    /// with a project ([`ManagerOptions::project`]), a project grant made from a chat, which a later unattended
+    /// run inherits. A run without one is never told to relay `/allow project …`: it is refused there.
     fn unattended_refusal(&self, name: &str) -> Option<String> {
         let (cfg, raw) = self.server_of(name)?;
         let server = &cfg.name;
@@ -1069,10 +1075,14 @@ impl Dispatcher for Manager {
         } else {
             format!("set `mcp_servers.{server}.auto_run: true`")
         };
+        let grant = if self.opts.project {
+            format!(", or allow it for the project from a chat (/allow project {server}:{raw})")
+        } else {
+            String::new()
+        };
         Some(format!(
             "{name} was not executed: the tools of MCP server \"{server}\" need the user's approval, which \
-             this non-interactive run cannot ask for; {config}, or allow it for the project from a chat \
-             (/allow project {server}:{raw})."
+             this non-interactive run cannot ask for; {config}{grant}."
         ))
     }
 
@@ -1239,24 +1249,63 @@ mod tests {
         );
         assert_eq!(asks.unattended_refusal("search_tools"), None);
 
-        // A `--mcp` server has no entry to set `auto_run` in: its refusal says what does work.
+        // A `--mcp` server asks too (its refusal: `the_unattended_refusal_names_a_project_grant_only_with_a_project`).
         let flag = crate::mcp::config::parse_mcp_flag("https://mcp.example.com/mcp").expect("flag");
-        let (flagged, _) = crate::mcp::testutil::approval_manager_for(flag);
+        let (flagged, _) = crate::mcp::testutil::approval_manager_for(flag, true);
         let wire = super::wire_tool_name("https://mcp.example.com/mcp", "push");
         assert!(flagged.requires_approval(&wire, None));
-        assert_eq!(
-            flagged.unattended_refusal(&wire),
-            Some(format!(
-                "{wire} was not executed: the tools of MCP server \"https://mcp.example.com/mcp\" need the user's \
-                 approval, which this non-interactive run cannot ask for; write it as an `mcp_servers` entry with \
-                 `auto_run: true`, or allow it for the project from a chat \
-                 (/allow project https://mcp.example.com/mcp:push)."
-            ))
-        );
 
         let (trusted, _) = approval_manager(true);
         assert!(!trusted.requires_approval("mcp__srv__push", Some(&args)));
         assert!(trusted.waives_approval());
+    }
+
+    /// The unattended refusal names what would let the call run HERE: the `auto_run` key (for a `--mcp` server,
+    /// writing it as an entry) and, only in a run with a project, the project grant a chat can make — a run
+    /// without one (`mode: chat`, a root at or above the home directory) refuses `/allow project …`.
+    #[test]
+    fn the_unattended_refusal_names_a_project_grant_only_with_a_project() {
+        use crate::mcp::testutil::approval_manager_for;
+        let entry = crate::mcp::config::ServerConfig {
+            name: "srv".to_owned(),
+            command: "srv-bin".to_owned(),
+            ..crate::mcp::config::ServerConfig::default()
+        };
+        let flag = crate::mcp::config::parse_mcp_flag("https://mcp.example.com/mcp").expect("flag");
+        let flag_wire = super::wire_tool_name("https://mcp.example.com/mcp", "push");
+
+        let refusal = |cfg: &crate::mcp::config::ServerConfig, project: bool, wire: &str| {
+            let (m, _) = approval_manager_for(cfg.clone(), project);
+            m.unattended_refusal(wire).expect("a refusal")
+        };
+        assert_eq!(
+            refusal(&entry, true, "mcp__srv__push"),
+            "mcp__srv__push was not executed: the tools of MCP server \"srv\" need the user's approval, which \
+             this non-interactive run cannot ask for; set `mcp_servers.srv.auto_run: true`, or allow it for the \
+             project from a chat (/allow project srv:push)."
+        );
+        assert_eq!(
+            refusal(&entry, false, "mcp__srv__push"),
+            "mcp__srv__push was not executed: the tools of MCP server \"srv\" need the user's approval, which \
+             this non-interactive run cannot ask for; set `mcp_servers.srv.auto_run: true`."
+        );
+        assert_eq!(
+            refusal(&flag, true, &flag_wire),
+            format!(
+                "{flag_wire} was not executed: the tools of MCP server \"https://mcp.example.com/mcp\" need the \
+                 user's approval, which this non-interactive run cannot ask for; write it as an `mcp_servers` \
+                 entry with `auto_run: true`, or allow it for the project from a chat \
+                 (/allow project https://mcp.example.com/mcp:push)."
+            )
+        );
+        assert_eq!(
+            refusal(&flag, false, &flag_wire),
+            format!(
+                "{flag_wire} was not executed: the tools of MCP server \"https://mcp.example.com/mcp\" need the \
+                 user's approval, which this non-interactive run cannot ask for; write it as an `mcp_servers` \
+                 entry with `auto_run: true`."
+            )
+        );
     }
 
     /// A grant names the server by its CONFIGURED name and the tool by the name the server gave it — never
@@ -1306,7 +1355,7 @@ mod tests {
         for spec in ["npx -y @acme/mcp", "npx -y @other/mcp"] {
             let cfg = crate::mcp::config::parse_mcp_flag(&format!("  {spec} ")).expect("flag");
             assert_eq!(cfg.name, "npx");
-            let (m, _) = crate::mcp::testutil::approval_manager_for(cfg);
+            let (m, _) = crate::mcp::testutil::approval_manager_for(cfg, true);
             assert_eq!(
                 m.grant_key("mcp__npx__push"),
                 ToolKey::Mcp {

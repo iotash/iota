@@ -619,7 +619,11 @@ async fn a_project_mcp_grant_runs_unattended() {
             args: vec!["-c".to_owned(), SH_SERVER.to_owned()],
             ..ServerConfig::default()
         }],
-        iota::mcp::ManagerOptions::new(reqwest::Client::new(), iota::app::env::Env::default()),
+        // A run with a project: its refusal may name the project grant.
+        iota::mcp::ManagerOptions {
+            project: true,
+            ..iota::mcp::ManagerOptions::new(reqwest::Client::new(), iota::app::env::Env::default())
+        },
     );
     manager.connect_all(&CancellationToken::new()).await;
     let wire = "mcp__gh__echo";
@@ -678,4 +682,93 @@ async fn a_project_mcp_grant_runs_unattended() {
         )
     );
     manager.close().await;
+}
+
+/// Calls `mcp__gh__echo` once, then answers with the text of the tool result it was sent — so a real `-m`
+/// run prints what the model was told.
+#[cfg(unix)]
+struct EchoTheToolResult;
+
+#[cfg(unix)]
+impl wiremock::Respond for EchoTheToolResult {
+    fn respond(&self, req: &wiremock::Request) -> wiremock::ResponseTemplate {
+        let body: serde_json::Value = serde_json::from_slice(&req.body).expect("a JSON body");
+        let told = body["messages"]
+            .as_array()
+            .and_then(|m| m.iter().find(|m| m["role"] == "tool"))
+            .map(|m| m["content"].as_str().expect("text").to_owned());
+        let chunks = match told {
+            Some(text) => vec![
+                serde_json::json!({"choices": [{"delta": {"content": text}}]}),
+                serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+            ],
+            None => vec![
+                serde_json::json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": "mcp__gh__echo", "arguments": "{}"}}]}}]}),
+                serde_json::json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+            ],
+        };
+        let mut sse = String::new();
+        for c in &chunks {
+            sse.push_str(&format!("data: {c}\n\n"));
+        }
+        sse.push_str("data: [DONE]\n\n");
+        wiremock::ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream")
+    }
+}
+
+/// The refusal of a real `-m` run names `/allow project …` only where that command can work: a `mode: chat`
+/// agent has no project level, so it is told the `auto_run` key alone; a `mode: agent` one in a project of
+/// its own is told the grant too (docs/design/grants.md §4.2, §8).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_unattended_mcp_refusal_follows_the_mode() {
+    use std::process::{Command, Stdio};
+
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(EchoTheToolResult)
+        .mount(&server)
+        .await;
+    let home = tempfile::tempdir().expect("home");
+    let project = tempfile::tempdir().expect("project");
+    std::fs::create_dir_all(project.path().join(".git")).expect(".git");
+    let script = home.path().join("server.sh");
+    std::fs::write(&script, SH_SERVER).expect("the server script");
+
+    let head = "mcp__gh__echo was not executed: the tools of MCP server \"gh\" need the user's approval, which \
+                this non-interactive run cannot ask for; set `mcp_servers.gh.auto_run: true`";
+    for (mode, tail) in [
+        ("chat", ".".to_owned()),
+        (
+            "agent",
+            ", or allow it for the project from a chat (/allow project gh:echo).".to_owned(),
+        ),
+    ] {
+        std::fs::write(
+            home.path().join(".iota.yaml"),
+            format!(
+                "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\n\
+                 agents:\n  default: {{model: m, mode: {mode}}}\n\
+                 mcp_servers:\n  gh: {{command: sh, args: [{}]}}\n",
+                server.uri(),
+                script.display()
+            ),
+        )
+        .expect("config");
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
+        crate::common_child::cleared_env(&mut cmd, home.path())
+            .current_dir(project.path())
+            .stdin(Stdio::null())
+            .args(["-m", "go"]);
+        let o = tokio::task::spawn_blocking(move || cmd.output().expect("run iota"))
+            .await
+            .expect("child join");
+        let (out, err) = (
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr),
+        );
+        assert_eq!(o.status.code(), Some(0), "mode: {mode}, stderr: {err}");
+        assert_eq!(out, format!("{head}{tail}\n"), "mode: {mode}");
+    }
 }

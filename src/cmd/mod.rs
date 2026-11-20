@@ -832,6 +832,8 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         mcp_configs,
         crate::mcp::ManagerOptions {
             child_env,
+            // Its refusal names `/allow project …` only where the run has a project to grant for.
+            project: project.is_some(),
             ..crate::mcp::ManagerOptions::new(http, env.clone())
         },
         &cancel,
