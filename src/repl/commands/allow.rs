@@ -1695,10 +1695,7 @@ mod tests {
             ["shell", "write_file", "gh:", "lin:"]
         );
         assert_eq!(offered(&c, "/allow g"), ["gh:"]);
-        assert_eq!(
-            offered(&c, "/allow gh:"),
-            ["gh:", "*", "create_issue", "search"]
-        );
+        assert_eq!(offered(&c, "/allow gh:"), ["*", "create_issue", "search"]);
         assert_eq!(offered(&c, "/allow gh:s"), ["search"]);
         assert_eq!(offered(&c, "/allow gh:search "), ["project"]);
 
