@@ -20,7 +20,7 @@
 //! connection closes without a receipt.
 //!
 //! **The hold** (docs/design/agent-messaging.md §4): a chat whose tools act without asking would let whoever
-//! can write the socket make the model act. [`Hold`] says whether it does — the dispatcher's switches
+//! can write the socket make the model act. `Hold` says whether it does — the dispatcher's switches
 //! (`Dispatcher::waives_approval`: `tools.shell.auto_run`, `tools.code.auto_write`,
 //! `mcp_servers.<name>.auto_run`, a bot's usual setup) or any tool grant in force ([`Grants::waives`]: a
 //! `/allow shell`, a project's `github:*`; a directory grant alone is not a waiver) — asked afresh for EVERY

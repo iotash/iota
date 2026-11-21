@@ -644,7 +644,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     let title_provider = title_provider.map(|p| Arc::new(tokio::sync::Mutex::new(p)));
     // The hold's trigger is the dispatcher's own answer — one truth with the approvals it waives — or a tool
     // grant in the store, asked per message.
-    let hold = crate::repl::inbound::Hold::new(dispatch.waives_approval(), Arc::clone(&grants));
+    let inbound_hold =
+        crate::repl::inbound::Hold::new(dispatch.waives_approval(), Arc::clone(&grants));
     let mut repl = Repl {
         conv: Conversation {
             provider,
@@ -694,7 +695,12 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             cancel: root_cancel.clone(),
             jobs: Arc::clone(&jobs),
             inbound: messaging.map(|m| {
-                crate::repl::inbound::Served::start(m, Arc::clone(&ui), Arc::clone(&pres), hold)
+                crate::repl::inbound::Served::start(
+                    m,
+                    Arc::clone(&ui),
+                    Arc::clone(&pres),
+                    inbound_hold,
+                )
             }),
         },
         notices: NoticeGate::default(),
