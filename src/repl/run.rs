@@ -788,7 +788,10 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             events,
             Arc::clone(&tr),
             ui.done(),
-            move || rows.issue(),
+            move || {
+                rows.issue();
+                rows.unexposed()
+            },
         ));
     }
 
@@ -1326,9 +1329,39 @@ pub(crate) struct AllowRows {
     servers: Option<Arc<crate::mcp::Manager>>,
     table: Arc<Mutex<CommandTable>>,
     ui: Arc<dyn crate::ui::facade::Ui>,
+    /// The agent's `agents:` name, the coordinate of [`Self::unexposed`]'s warnings.
+    agent: String,
+    /// What [`Self::unexposed`] has said already: each entry warns once.
+    warned: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 impl AllowRows {
+    /// The warnings, each said once, for the `allow:` entries naming a tool a connected server does not expose
+    /// (docs/design/config-allow.md §3.3): `⚠ agents.<name>.allow: server "github" has no tool "serch_issues"`.
+    /// Asked on the MCP status path, when a server's tool list resolves.
+    pub(crate) fn unexposed(&self) -> Vec<String> {
+        let Some(servers) = &self.servers else {
+            return Vec::new();
+        };
+        let mut warned = lock(&self.warned);
+        allow::unexposed(&self.door.grants, servers)
+            .into_iter()
+            .filter(|found| {
+                let new = !warned.contains(found);
+                if new {
+                    warned.push(found.clone());
+                }
+                new
+            })
+            .map(|(server, tool)| {
+                format!(
+                    "⚠ agents.{}.allow: server \"{server}\" has no tool \"{tool}\"",
+                    self.agent
+                )
+            })
+            .collect()
+    }
+
     /// Recomputes the rows and re-issues the table when they changed. Both under the table's lock, so two
     /// tasks issuing at once cannot leave the older rows standing.
     pub(crate) fn issue(&self) {
@@ -1356,6 +1389,8 @@ impl Repl {
             servers: self.handles.mcp.manager.clone(),
             table: Arc::clone(&self.handles.table),
             ui: Arc::clone(&self.handles.ui),
+            agent: self.handles.footing.agent.clone(),
+            warned: Arc::default(),
         }
     }
 

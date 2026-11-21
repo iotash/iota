@@ -438,6 +438,29 @@ impl Rows<'_> {
     }
 }
 
+/// The tools the agent's `allow:` names that a connected server does not expose, as `(server, tool)` — the
+/// late check of an MCP entry, which the load cannot make (docs/design/config-allow.md §3.3): read when a
+/// server's tool list resolves, beside the completion rows. Such an entry grants nothing meanwhile.
+pub(crate) fn unexposed(grants: &Grants, servers: &Manager) -> Vec<(String, String)> {
+    grants
+        .statics()
+        .tools
+        .iter()
+        .filter_map(|k| {
+            let ToolKey::Mcp {
+                server: id @ ServerId::Config(name),
+                tool: McpTool::Named(tool),
+            } = k
+            else {
+                return None;
+            };
+            let connected = servers.connected_named(name);
+            let server = connected.iter().find(|s| s.id == *id)?;
+            (!server.tools.iter().any(|t| t.name == *tool)).then(|| (name.clone(), tool.clone()))
+        })
+        .collect()
+}
+
 /// Whether a server's or a tool's name can be a completed line the parse reads back: not empty, and no
 /// whitespace or control character in it. One that cannot gets no row; it stays grantable from the dialog.
 fn typable(name: &str) -> bool {
@@ -1929,6 +1952,33 @@ mod tests {
                 "/allow gh:*",
                 "/allow gh:search",
             ]
+        );
+    }
+
+    /// An `allow:` entry naming a tool its server does not expose is found once the server is connected; one it
+    /// exposes, a `*`, and a server that is not connected say nothing.
+    #[test]
+    fn an_allowed_tool_the_server_lacks_is_found_when_it_connects() {
+        let (t, root, _out) = fixture();
+        let m = crate::mcp::testutil::serving(vec![(entry("gh", false), &[("search", "")])]);
+        let key = |server: &str, tool: &str| ToolKey::Mcp {
+            server: ServerId::Config(server.to_owned()),
+            tool: McpTool::parse(tool),
+        };
+        let c = Chat::new(&t, &root, &[], &[])
+            .with_servers(Arc::clone(&m))
+            .with_config(grants::GrantSet {
+                dirs: Vec::new(),
+                tools: vec![
+                    key("gh", "search"),
+                    key("gh", "serch"),
+                    key("gh", "*"),
+                    key("lin", "list"),
+                ],
+            });
+        assert_eq!(
+            super::unexposed(c.g(), &m),
+            [("gh".to_owned(), "serch".to_owned())]
         );
     }
 
