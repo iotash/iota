@@ -9,6 +9,8 @@ pub mod env;
 pub mod fs;
 pub(crate) mod paths;
 pub mod protected;
+#[cfg(test)]
+pub(crate) mod testutil;
 
 use std::path::{Path, PathBuf};
 
@@ -95,6 +97,7 @@ impl HostDirs {
 /// the `\\?\` verbatim prefix `canonicalize` puts on a drive path dropped again ([`plain`]), so the result
 /// reads like a path the user would write (and two canonical paths compare by their bytes). `None` when the
 /// path does not exist or cannot be resolved.
+#[allow(clippy::disallowed_methods)] // the one resolver: `plain` makes its result the crate's spelling
 pub(crate) fn canonical(p: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(p).ok().map(plain)
 }

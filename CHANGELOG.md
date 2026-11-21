@@ -18,6 +18,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **A path is resolved one way, now enforced.** Internal: `std::fs::canonicalize`
+  is a clippy lint (`clippy.toml`); a resolved path comes from `app::canonical` /
+  `app::fs::physical`, so the Windows `\\?\` spelling cannot creep back in.
 - **A completion row can wait for the word before it, and Enter on a row with a
   level behind it opens that level.** Internal for now: `/skills` completes exactly
   as before, and no command has such a row yet.

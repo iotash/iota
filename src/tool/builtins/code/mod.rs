@@ -1020,7 +1020,7 @@ mod tests {
         // On macOS this really is the ENAMETOOLONG branch (Linux's PATH_MAX is 4096, so there
         // the links resolve and the result is an ordinary "outside").
         #[cfg(target_os = "macos")]
-        assert!(std::fs::canonicalize(root.join("L/S/secret.txt")).is_err());
+        assert!(crate::app::canonical(&root.join("L/S/secret.txt")).is_none());
         assert!(
             std::fs::read_to_string(root.join("L/S/secret.txt")).is_ok(),
             "the kernel follows it"

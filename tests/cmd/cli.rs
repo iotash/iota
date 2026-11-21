@@ -12,7 +12,7 @@ use std::{
     process::{Command, Output, Stdio},
 };
 
-use crate::common::{cleared_env, temp_project, transcript};
+use crate::common::{child_cwd, cleared_env, shown, temp_project, transcript};
 use tempfile::TempDir;
 use wiremock::MockServer;
 
@@ -829,11 +829,7 @@ async fn cli_headless_run_sends_the_harness_for_an_agent_with_tools() {
     );
     // The environment says what THIS run found — not a fixture. The root is the process's own `getcwd`:
     // on macOS the canonical spelling of the temp path (`/private/var/…`), on Windows the path as given.
-    let root = if cfg!(windows) {
-        cwd.clone()
-    } else {
-        fs::canonicalize(&cwd).expect("canonical cwd")
-    };
+    let root = child_cwd(&cwd);
     assert!(
         content.contains(&format!("\nproject root: {}\n", root.display())),
         "{content}"
@@ -846,12 +842,10 @@ async fn cli_headless_run_sends_the_harness_for_an_agent_with_tools() {
         content.contains("\nproject config: (absent)\n"),
         "{content}"
     );
-    // The binary is canonical, minus the `\\?\` prefix Windows' `canonicalize` adds (`app::canonical`).
-    let exe = fs::canonicalize(env!("CARGO_BIN_EXE_iota")).expect("canonical exe");
-    let exe = exe.to_string_lossy();
-    let exe = exe.trim_start_matches(r"\\?\");
+    // The binary is named as the product resolves it (`app::canonical`: no `\\?\` on Windows).
+    let exe = shown(Path::new(env!("CARGO_BIN_EXE_iota")));
     assert!(
-        content.contains(&format!("\niota binary: {exe}\n")),
+        content.contains(&format!("\niota binary: {}\n", exe.display())),
         "{content}"
     );
     assert!(content.contains("\nshell: "), "{content}");
@@ -1439,11 +1433,7 @@ async fn add_dir_is_relative_to_the_working_directory() {
     // looked up (`ToolEnv::with_write_roots`). That cwd is the process's `getcwd` — on macOS the canonical
     // spelling of the temp path (`/private/var/…`), on Windows the path as given — so `../../out` from
     // `proj/sub` is `out` under the temp directory in that same spelling.
-    let seen = if cfg!(windows) {
-        dir.path().to_path_buf()
-    } else {
-        fs::canonicalize(dir.path()).expect("canonical dir")
-    };
+    let seen = child_cwd(dir.path());
     assert!(
         system.contains(&format!("\nwrite roots: {}\n", seen.join("out").display())),
         "{system}"

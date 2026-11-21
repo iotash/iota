@@ -9,9 +9,12 @@
 // inside an inline module resolves through a directory that does not exist.
 #[path = "../common/herdr_mock.rs"]
 mod common_herdr;
+#[path = "../common/paths.rs"]
+mod common_paths;
 
 mod common {
     pub(crate) use crate::common_herdr::HerdrMock;
+    pub(crate) use crate::common_paths::shown;
 }
 
 // The L4 SSE mock provider (`tests/ui_tmux/mock.rs`), which the herdr-core run drives by message.

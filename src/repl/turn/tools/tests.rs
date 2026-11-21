@@ -268,16 +268,11 @@ impl Fx {
     }
 }
 
-/// A project file no write can reach on any platform: its store is under the crate's `Cargo.toml`, a regular file,
-/// so no directory can be made there and a project grant is refused. (`/dev/null/sessions` is not that on
-/// Windows: there it is `\dev\null\sessions` on the current drive, which a run can create.)
+/// A project file no write can reach on any platform: its store is `app::testutil::unwritable`, so a project grant is
+/// refused.
 fn unwritable_project() -> crate::repl::ProjectFile {
     crate::repl::ProjectFile {
-        store: crate::session::SessionStore::new(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("Cargo.toml")
-                .join("sessions"),
-        ),
+        store: crate::session::SessionStore::new(crate::app::testutil::unwritable()),
         root: PathBuf::from("/"),
     }
 }

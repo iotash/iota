@@ -97,8 +97,9 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 # (`Streams`, src/cmd/io.rs). A violation names the file and line; the upward edges the tree still
 # carries are a table in that file that only ever shrinks.
 # Every test binary, the tmux suite included: THE single L4 execution, enabled and made
-# mandatory by IOTA_TMUX_REQUIRED above (tests/ui_tmux/main.rs).
-cargo test
+# mandatory by IOTA_TMUX_REQUIRED above (tests/ui_tmux/main.rs). `--no-fail-fast`: one red binary
+# must not hide the rest — every binary runs, and the exit status is still non-zero if any failed.
+cargo test --no-fail-fast
 # The ONE release build; its stripped size is reported to target/size.md (a CI artifact, not a
 # tracked file).
 cargo build --release

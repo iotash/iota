@@ -335,6 +335,8 @@ fn truncate_runes_front(s: &str, n: usize) -> String {
 mod tests {
     use std::path::Path;
 
+    use crate::app::testutil::FIXTURE_ROOT;
+
     use super::{
         HEADER_PATH_MAX, display_tool_name, header_command, header_path, print_tool_result_lines,
     };
@@ -348,13 +350,6 @@ mod tests {
         assert_eq!(display_tool_name("mcp__srv__"), "mcp__srv__");
         assert_eq!(display_tool_name("mcp__loose"), "mcp__loose");
     }
-
-    /// An absolute fixture root: `filepath.IsAbs`'s twin wants a drive letter on Windows, and the
-    /// ladder's rungs are only reachable for a path that clears that bar.
-    #[cfg(windows)]
-    const FIXTURE_ROOT: &str = r"C:\proj";
-    #[cfg(not(windows))]
-    const FIXTURE_ROOT: &str = "/proj";
 
     /// An absolute path in neither the project nor home.
     #[cfg(windows)]

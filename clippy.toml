@@ -1,0 +1,7 @@
+# A resolved path has ONE spelling (docs/ARCHITECTURE.md, paths): `app::canonical` / `app::fs::physical`,
+# which drop the `\\?\` prefix `canonicalize` puts on a Windows drive path. A bare call anywhere else —
+# product or test — is a second spelling that compares unequal on Windows only (paths-audit §2 S1).
+disallowed-methods = [
+    { path = "std::fs::canonicalize", reason = "resolve with app::canonical / app::fs::physical: one spelling on every platform" },
+    { path = "std::path::Path::canonicalize", reason = "resolve with app::canonical / app::fs::physical: one spelling on every platform" },
+]

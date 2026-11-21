@@ -232,15 +232,8 @@ mod tests {
 
     use super::{byte_size, expand_skill, find_skill, skills_status_lines};
     use crate::agents::skills::{SKILL_FILE_NAME, Skill};
+    use crate::app::testutil::FIXTURE_ROOT;
     use crate::text::ansi::strip_sgr;
-
-    /// An absolute fixture root: a `/tmp/proj` would be RELATIVE on Windows, and joining onto it there
-    /// spells the half-Unix `/tmp/proj\.agents\skills` no assertion can be written against. The twin of
-    /// `crate::tool::fmt::tests::FIXTURE_ROOT`.
-    #[cfg(windows)]
-    const FIXTURE_ROOT: &str = r"C:\proj";
-    #[cfg(not(windows))]
-    const FIXTURE_ROOT: &str = "/proj";
 
     /// Go: `chat/skillcmd_test.go:12` `writeSkill` — a real `SKILL.md` under `<dir>/<name>/`, and the
     /// [`Skill`] discovery would have produced for it.

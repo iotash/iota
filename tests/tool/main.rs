@@ -4,6 +4,8 @@
 // The shared fixtures this binary uses (`tests/common/`), and no others.
 #[path = "../common/project.rs"]
 mod common;
+#[path = "../common/paths.rs"]
+mod common_paths;
 
 mod agents;
 mod code;

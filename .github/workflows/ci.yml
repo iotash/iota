@@ -124,7 +124,9 @@ jobs:
           cargo fmt --check
           cargo clippy --all-targets -- -D warnings
           RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
-          cargo test
+          # Every test binary, even after one fails: a round must report ALL that is red on Windows, not
+          # the first binary (paths-audit P1). The step still fails when anything did.
+          cargo test --no-fail-fast
 
       - name: Upload binary size
         if: runner.os != 'Windows'

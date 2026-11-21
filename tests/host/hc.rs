@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::common::HerdrMock;
+use crate::common::{HerdrMock, shown};
 
 /// How long a state may take to show up.
 const DEADLINE: Duration = Duration::from_secs(20);
@@ -91,7 +91,7 @@ impl Core {
             .expect("tempdir");
         // Canonical, as hc measures it (`/var` is `/private/var` on macOS). The session needs no
         // unique name: every core has state directories of its own.
-        let root = dir.path().canonicalize().unwrap();
+        let root = shown(dir.path());
         let home = root.join("h");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::write(home.join(".iota.yaml"), config).unwrap();
@@ -140,7 +140,7 @@ impl Core {
 
     /// `ROOT` and `NAME` for the [`SWEEP`].
     fn sweep_env(&self) -> [(&'static str, String); 2] {
-        let root = self.dir.path().canonicalize().unwrap();
+        let root = shown(self.dir.path());
         let name = root.file_name().unwrap().to_string_lossy().into_owned();
         [
             ("ROOT", root.to_string_lossy().into_owned()),

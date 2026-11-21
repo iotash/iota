@@ -51,6 +51,8 @@ pub(crate) fn command(
         arg.push(p.as_os_str());
         params.push(arg);
     };
+    // macOS only: `spellings` wants the raw resolution next to the path as given, and there is no `\\?\` here.
+    #[allow(clippy::disallowed_methods)]
     let writable = writable
         .iter()
         .flat_map(|p| spellings(p, std::fs::canonicalize(p).ok()));

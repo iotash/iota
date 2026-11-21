@@ -43,6 +43,8 @@ use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
 use crate::common::temp_project;
+#[cfg(unix)]
+use crate::common_paths::shown;
 
 /// What this machine resolved to: `bash` on Unix, and on Windows whatever `shell::interp`'s ladder found
 /// (Git Bash on a developer box and on CI, PowerShell or `cmd.exe` elsewhere).
@@ -1561,7 +1563,7 @@ async fn the_sandbox_keeps_the_trust_and_config_writers_in() {
     )
     .expect("fake iota");
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).expect("chmod");
-    let exe = fs::canonicalize(&fake).expect("canonical");
+    let exe = shown(&fake);
     let env = ToolEnv {
         project_root: Some(root.clone()),
         dirs: iota::app::HostDirs {
@@ -1650,7 +1652,7 @@ async fn the_sandbox_keeps_an_iota_that_names_its_own_config_in() {
     .expect("fake iota");
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).expect("chmod");
     fs::write(root.join("scratch.yaml"), "sandbox: off\n").expect("scratch config");
-    let exe = fs::canonicalize(&fake).expect("canonical");
+    let exe = shown(&fake);
     let env = ToolEnv {
         project_root: Some(root.clone()),
         dirs: iota::app::HostDirs {
@@ -1721,7 +1723,7 @@ async fn the_sandbox_lets_iota_itself_out_and_nothing_else() {
     let fake = bin.join("iota");
     fs::write(&fake, "#!/bin/sh\necho ran > \"$1\" && echo wrote\n").expect("fake iota");
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).expect("chmod");
-    let exe = fs::canonicalize(&fake).expect("canonical");
+    let exe = shown(&fake);
     let env = ToolEnv {
         project_root: Some(root.clone()),
         dirs: iota::app::HostDirs {

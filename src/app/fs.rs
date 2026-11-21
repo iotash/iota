@@ -103,6 +103,8 @@ pub fn physical(p: &Path) -> Option<PathBuf> {
                 Err(_) => return None,
             }
         };
+        // `canonicalize`'s NotFound-on-a-dangling-link is the branch below, which `canonical` would erase.
+        #[allow(clippy::disallowed_methods)]
         let (base, done) = match std::fs::canonicalize(at) {
             Ok(c) => (super::plain(c), true),
             Err(e) if e.kind() == NotFound && meta.file_type().is_symlink() => {

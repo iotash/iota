@@ -10,7 +10,7 @@ use std::{
     process::{Command, Output, Stdio},
 };
 
-use crate::common::{cleared_env, temp_project};
+use crate::common::{child_cwd, cleared_env, temp_project};
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
@@ -55,19 +55,10 @@ fn ok(o: &Output) -> String {
     out(o)
 }
 
-/// The project file as the CHILD names it: `<its cwd>/.iota.yaml`, where its cwd is what the OS reports for
-/// the directory it was started in. On unix that is the physical path — `getcwd` resolves symlinks, so a
-/// macOS temp dir comes back as `/private/var/…` — which is what `canonicalize` gives. On Windows
-/// `GetCurrentDirectory` returns the string the child was started with, verbatim, and `canonicalize`
-/// would instead add a `\\?\` prefix and expand an 8.3 name (`RUNNER~1` → `runneradmin`): there the path
-/// handed to the command IS the expectation.
+/// The project file as the CHILD names it: `<its cwd>/.iota.yaml`, its cwd being what the OS reports for the
+/// directory it was started in (`common::child_cwd`).
 fn child_project_file(cwd: &Path) -> std::path::PathBuf {
-    let cwd = if cfg!(windows) {
-        cwd.to_path_buf()
-    } else {
-        cwd.canonicalize().expect("the temp dir resolves")
-    };
-    cwd.join(".iota.yaml")
+    child_cwd(cwd).join(".iota.yaml")
 }
 
 /// Asserts the command failed with exit 1 and printed exactly `Error: {message}`.

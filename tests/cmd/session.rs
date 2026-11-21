@@ -17,7 +17,7 @@ use std::{
     process::{Command, Output, Stdio},
 };
 
-use crate::common::cleared_env;
+use crate::common::{cleared_env, in_json};
 use iota::cmd::Declared;
 use iota::provider::ProviderKind;
 use iota::provider::model::{RawContent, Role};
@@ -100,13 +100,6 @@ fn copy_dir(from: &Path, to: &Path) {
             fs::copy(entry.path(), &target).expect("copy file");
         }
     }
-}
-
-/// `s` as a request body spells it: the body is JSON, so a string in it is escaped — a Windows path's every
-/// `\` is `\\` there, and the path as displayed is nowhere in the raw bytes.
-fn in_json(s: &str) -> String {
-    let quoted = serde_json::to_string(s).expect("a JSON string");
-    quoted[1..quoted.len() - 1].to_owned()
 }
 
 /// `<home>/.iota/sessions`.

@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::common::{cleared_env, temp_project, transcript};
+use crate::common::{child_cwd, cleared_env, temp_project, transcript};
 use tempfile::TempDir;
 use wiremock::MockServer;
 
@@ -58,12 +58,9 @@ async fn output(mut cmd: Command) -> Output {
         .expect("child join")
 }
 
-/// `<cwd>/.iota.yaml` as the child names it: its cwd is what the OS reports, symlinks resolved (macOS's
-/// `/var` is `/private/var`).
+/// `<cwd>/.iota.yaml` as the child names it: its cwd is what the OS reports (`common::child_cwd`).
 fn as_child_names(cwd: &Path) -> PathBuf {
-    fs::canonicalize(cwd)
-        .expect("canonical cwd")
-        .join(".iota.yaml")
+    child_cwd(cwd).join(".iota.yaml")
 }
 
 /// A headless run: `-m hi`.

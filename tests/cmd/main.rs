@@ -10,6 +10,8 @@ mod common_child;
 mod common_herdr;
 #[path = "../common/oauth_mock.rs"]
 mod common_oauth;
+#[path = "../common/paths.rs"]
+mod common_paths;
 #[path = "../common/project.rs"]
 mod common_project;
 #[path = "../common/transcript.rs"]
@@ -19,6 +21,7 @@ mod common {
     pub(crate) use crate::common_child::cleared_env;
     #[cfg(unix)]
     pub(crate) use crate::common_herdr::HerdrMock;
+    pub(crate) use crate::common_paths::{child_cwd, in_json, shown};
     pub(crate) use crate::common_project::temp_project;
     pub(crate) use crate::common_transcript as transcript;
 }
