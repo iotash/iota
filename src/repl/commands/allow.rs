@@ -806,7 +806,7 @@ fn revoke_checked(door: &Door, held: &[Granted], checked: &[usize]) -> Vec<Resul
 #[cfg(all(test, unix))]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
     use super::{
@@ -825,6 +825,28 @@ mod tests {
         let root = std::fs::canonicalize(t.path().join("proj")).expect("real proj");
         let out = std::fs::canonicalize(t.path().join("out")).expect("real out");
         (t, root, out)
+    }
+
+    /// A new directory `name` in the temp dir, physical, for a test to grant and then make stale with
+    /// [`make_stale`].
+    fn stale_to_be(t: &tempfile::TempDir, name: &str) -> PathBuf {
+        let dir = std::fs::canonicalize(t.path())
+            .expect("real temp")
+            .join(name);
+        std::fs::create_dir(&dir).expect("the directory");
+        dir
+    }
+
+    /// Makes the granted directory `dir` genuinely stale, as `code::tests::a_directory_replaced_by_a_link_is_stale`
+    /// does: moves it away and puts a link to another directory of the temp dir in its place, so its physical
+    /// location is no longer the path the grant names. A path that was never created is NOT stale — its missing
+    /// tail is kept as it is — and only read as stale on macOS, where the temp dir is under `/var`, a link to
+    /// `/private/var`; on Linux `/tmp` is physical and such a grant is live.
+    fn make_stale(dir: &Path) {
+        let elsewhere = dir.with_file_name("elsewhere");
+        std::fs::create_dir(&elsewhere).expect("elsewhere");
+        std::fs::rename(dir, dir.with_file_name("moved")).expect("move away");
+        std::os::unix::fs::symlink(&elsewhere, dir).expect("link in its place");
     }
 
     /// A chat's grants over `root`, its project file in the temp dir, `write_roots:` and `--add-dir` as given,
@@ -1195,7 +1217,7 @@ mod tests {
         let c = Chat::new(&t, &root, &[], &[]);
         let (g, pf) = (c.g(), c.pf());
         assert!(c.rows().is_empty());
-        let gone = t.path().join("gone");
+        let gone = stale_to_be(&t, "gone");
         let star = ToolKey::Mcp {
             server: ServerId::Config("github".to_owned()),
             tool: McpTool::Any,
@@ -1209,6 +1231,7 @@ mod tests {
             s.add_dir(gone.clone());
             s.add_tool(star.clone());
         });
+        make_stale(&gone);
         c.allow("../out/sub project").unwrap();
         c.door
             .apply(Level::Project, |s| {
@@ -1270,7 +1293,7 @@ mod tests {
 
         let (t, root, out) = fixture();
         let c = Chat::new(&t, &root, &[], &[]);
-        let gone = t.path().join("gone");
+        let gone = stale_to_be(&t, "gone");
         let flag = ToolKey::Mcp {
             server: ServerId::Flag("npx -y @acme/mcp".to_owned()),
             tool: McpTool::Named("push".to_owned()),
@@ -1279,6 +1302,7 @@ mod tests {
             s.add_dir(out.clone());
             s.add_dir(gone.clone());
         });
+        make_stale(&gone);
         c.door
             .apply(Level::Project, |s| {
                 s.add_tool(flag.clone());

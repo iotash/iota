@@ -54,6 +54,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **The `Grants`-tab tests pass on Linux.** Their stale directory is now made
+  stale for real (granted, then replaced by a link) instead of being a path
+  never created, which read as stale only under macOS's `/var` link.
 - **`/allow <server>:` no longer lists the server again.** After descending into
   a server in the `/allow` completion list, its own row stayed at the top of
   the next level; now the list there is `*` and the server's tools.
