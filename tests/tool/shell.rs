@@ -1929,7 +1929,7 @@ async fn a_static_directory_is_writable_in_the_sandbox() {
     let fixed = static_grants(&cfg, "a", &cfg.agents["a"], &env).expect("resolves");
     assert_eq!(fixed.dirs, std::slice::from_ref(&extra));
     let env = ToolEnv {
-        grants: Arc::new(Grants::with_static(fixed)),
+        grants: Arc::new(iota::tool::grants::Grants::with_static(fixed)),
         ..env
     };
     assert_eq!(env.grants.roots(), std::slice::from_ref(&extra));

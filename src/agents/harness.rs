@@ -401,7 +401,6 @@ mod tests {
     /// The roots in force — the store's static directories (`allow:`, `--allow`), then the live directory
     /// grants (`Grants::roots`) — are the one `write roots:` line: no second source. A grant alone makes the
     /// line, and none leaves the bytes of a run without one.
-    #[cfg(unix)]
     #[test]
     fn write_roots_line_lists_the_static_and_the_live_grants() {
         use crate::tool::grants::{GrantSet, Grants, Level};
