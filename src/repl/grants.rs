@@ -158,13 +158,18 @@ pub(crate) fn unsaved_session(e: &SessionError) -> String {
     format!("Warning: failed to save session: {e}")
 }
 
-/// How many grants each level holds, as `/status` says it — `2 for this session, 3 for this project`, a level
-/// with none left out: `None` when neither holds any.
-pub(crate) fn counted(session: usize, project: usize) -> Option<String> {
-    let parts: Vec<String> = [(session, "this session"), (project, "this project")]
+/// How many grants each level holds, as `/status` says it — `3 static, 2 for this session, 1 for this
+/// project`, a level with none left out: `None` when none holds any.
+pub(crate) fn counted(fixed: usize, session: usize, project: usize) -> Option<String> {
+    let fixed = (fixed > 0).then(|| format!("{fixed} static"));
+    let parts: Vec<String> = fixed
         .into_iter()
-        .filter(|(n, _)| *n > 0)
-        .map(|(n, level)| format!("{n} for {level}"))
+        .chain(
+            [(session, "this session"), (project, "this project")]
+                .into_iter()
+                .filter(|(n, _)| *n > 0)
+                .map(|(n, level)| format!("{n} for {level}")),
+        )
         .collect();
     (!parts.is_empty()).then(|| parts.join(", "))
 }

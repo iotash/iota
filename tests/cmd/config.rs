@@ -734,6 +734,138 @@ fn a_write_root_that_names_nothing_is_refused() {
     let _ = dir;
 }
 
+// ---------------------------------------------------------------- allow:
+
+/// The refusal of one document, as the load says it.
+fn refusal(yaml: &str) -> String {
+    parse(yaml).expect_err("the load refuses").to_string()
+}
+
+/// `allow:` names a built-in only among the agent's own tools: a set it does not enable, or the writers a
+/// `read_only` code set leaves out, fail the load at the entry's coordinate — as does the entry's shape, a name
+/// that never asks or is no tool, and a `~` with no home.
+#[test]
+fn allow_refuses_a_tool_the_agent_lacks() {
+    let ok = parse("agents:\n  a:\n    tools: {shell: {}, code: {}}\n    allow: [shell, edit_file, write_file, ./out]\n")
+        .expect("parses");
+    assert_eq!(
+        ok.agents["a"].allow,
+        ["shell", "edit_file", "write_file", "./out"]
+    );
+    let those = "(tools that ask: shell, edit_file, write_file)";
+    for (yaml, want) in [
+        (
+            "agents:\n  a:\n    tools: {code: {}}\n    allow: [edit_file, shell]\n".to_owned(),
+            "agents.a.allow[1]: shell is not one of this agent's tools (tools.shell is not enabled)".to_owned(),
+        ),
+        (
+            "agents:\n  a:\n    tools: {shell: {}, code: false}\n    allow: [write_file]\n".to_owned(),
+            "agents.a.allow[0]: write_file is not one of this agent's tools (tools.code is not enabled)".to_owned(),
+        ),
+        (
+            "agents:\n  a:\n    tools: {code: {read_only: true}}\n    allow: [edit_file]\n".to_owned(),
+            "agents.a.allow[0]: edit_file is not one of this agent's tools (tools.code.read_only leaves the writers out)".to_owned(),
+        ),
+        (
+            "agents:\n  a:\n    tools: {code: {}}\n    allow: [read_file]\n".to_owned(),
+            format!("agents.a.allow[0]: read_file never asks {those}"),
+        ),
+        (
+            "agents:\n  a:\n    allow: [bash]\n".to_owned(),
+            format!("agents.a.allow[0]: no built-in tool named \"bash\" {those}"),
+        ),
+        (
+            "agents:\n  a:\n    allow: shell\n".to_owned(),
+            "agents.a.allow: expected a list".to_owned(),
+        ),
+        (
+            "agents:\n  a:\n    allow: [/tmp, 3]\n".to_owned(),
+            "agents.a.allow[1]: expected a string (a directory, a built-in tool or <server>:<tool>)".to_owned(),
+        ),
+        (
+            "agents:\n  a:\n    allow: ['  ']\n".to_owned(),
+            "agents.a.allow[0]: is blank".to_owned(),
+        ),
+        (
+            "agents:\n  a:\n    allow: [~/scratch]\n".to_owned(),
+            "agents.a.allow[0]: \"~\" needs a home directory, and this run has none".to_owned(),
+        ),
+    ] {
+        assert_eq!(refusal(&yaml), want, "{yaml}");
+    }
+}
+
+/// An MCP entry names a server the agent LOADS: one no `mcp_servers:` entry defines, one the agent's own list
+/// leaves out, or a server with no tool after its `:`, fail the load; a tool name is not checked here — the
+/// server is not connected.
+#[test]
+fn allow_refuses_a_server_the_agent_does_not_load() {
+    let servers = "mcp_servers:\n  github: {command: gh-mcp}\n  linear: {command: lin-mcp}\n";
+    let ok = parse(&format!(
+        "{servers}agents:\n  a:\n    allow: [\"github:*\", \"linear:serch_issues\"]\n"
+    ))
+    .expect("every server, when the agent lists none");
+    assert_eq!(ok.agents["a"].allow, ["github:*", "linear:serch_issues"]);
+    for (yaml, want) in [
+        (
+            format!("{servers}agents:\n  a:\n    allow: [\"gitlab:push\"]\n"),
+            "agents.a.allow[0]: no mcp_servers entry named \"gitlab\" (entries: github, linear)",
+        ),
+        (
+            format!("{servers}agents:\n  a:\n    mcp_servers: [linear]\n    allow: [\"github:*\"]\n"),
+            "agents.a.allow[0]: \"github\" is not one of this agent's mcp_servers (it loads: linear)",
+        ),
+        (
+            format!("{servers}agents:\n  a:\n    mcp_servers: []\n    allow: [\"github:*\"]\n"),
+            "agents.a.allow[0]: \"github\" is not one of this agent's mcp_servers (it loads none)",
+        ),
+        (
+            format!("{servers}agents:\n  a:\n    allow: [\"github:\"]\n"),
+            "agents.a.allow[0]: \"github:\" names no tool: write github:<tool> or github:*",
+        ),
+    ] {
+        assert_eq!(refusal(&yaml), want, "{yaml}");
+    }
+}
+
+/// YAML's alias is the way to share one list between agents: the decoder resolves it before the audit, and
+/// each agent holds its own copy, checked against its own tools.
+#[test]
+fn an_aliased_allow_list_is_each_agents_own() {
+    let yaml = "agents:\n  a:\n    tools: {code: {}}\n    allow: &w [/tmp/out, edit_file]\n  b:\n    tools: {code: {}}\n    allow: *w\n";
+    let cfg = parse(yaml).expect("parses");
+    assert_eq!(cfg.agents["a"].allow, ["/tmp/out", "edit_file"]);
+    assert_eq!(cfg.agents["b"].allow, cfg.agents["a"].allow);
+    assert_eq!(
+        refusal("agents:\n  a:\n    tools: {code: {}}\n    allow: &w [edit_file]\n  b:\n    allow: *w\n"),
+        "agents.b.allow[0]: edit_file is not one of this agent's tools (tools.code is not enabled)"
+    );
+}
+
+/// An `agents:` entry merges whole, by name: a project file that defines `coder` replaces the home's — its
+/// `allow:` included, an empty one too — and an agent it does not define keeps the home's list.
+#[test]
+fn a_project_agent_replaces_the_homes_allow() {
+    let (dir, dirs) = temp_project(&[
+        (
+            "home/.iota.yaml",
+            "agents:\n  coder:\n    tools: {shell: {}}\n    allow: [shell, /tmp/home]\n  other:\n    allow: [/tmp/other]\n",
+        ),
+        (
+            ".iota.yaml",
+            "agents:\n  coder:\n    tools: {code: {}}\n    allow: [edit_file]\n",
+        ),
+    ]);
+    let env = Env::default().with_dirs(dirs.clone());
+    let cfg = Config::load(None, &env, &mut |_, _, _| true, &mut |_| {}).expect("loads");
+    assert_eq!(cfg.agents["coder"].allow, ["edit_file"]);
+    assert_eq!(cfg.agents["other"].allow, ["/tmp/other"]);
+
+    fs::write(dir.path().join(".iota.yaml"), "agents:\n  coder:\n    tools: {shell: {}}\n").unwrap();
+    let cfg = Config::load(None, &env, &mut |_, _, _| true, &mut |_| {}).expect("loads");
+    assert!(cfg.agents["coder"].allow.is_empty(), "replaced, not merged");
+}
+
 // ---------------------------------------------------------------- references
 
 /// The three reference forms, each parsed the same way wherever one is written.
