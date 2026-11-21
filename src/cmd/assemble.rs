@@ -91,8 +91,6 @@ pub(crate) fn harness_environment(
         exe: dirs.exe.clone(),
         configs,
         host: Vec::new(),
-        // The resolved roots are the tool assembly's (`ToolEnv::write_roots`); it fills them in.
-        write_roots: Vec::new(),
     }
 }
 
@@ -645,7 +643,7 @@ mod tests {
             ..crate::agents::harness::Environment::default()
         };
         let harness =
-            crate::agents::harness::compose(&env, &super::enabled_toolsets(&raw("{}"), true));
+            crate::agents::harness::compose(&env, &super::enabled_toolsets(&raw("{}"), true), &[]);
         assert!(harness.contains("date: 2026-09-30"), "{harness}");
     }
 

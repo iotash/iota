@@ -83,7 +83,7 @@
 //! | `50-list-overlay.sh` | sel-float, sel-top | — (a fresh session: the banner on the first rows, unchanged byte for byte while `/` opens the list under it, `d` narrows it and it closes; over a full screen, `/` opens the list and `d` narrows it: the rows above the area unchanged byte for byte through both, the top edge coming down with the narrowed list onto it and the rows it gave back showing the conversation, the list one blank row over the composer, the gap row blank in raw bytes; closing gives the screen back) |
 //! | `51-xml-tab.sh` | xml-tab | — (a pasted `<hc>` snippet on a plain terminal — no host claims an element — is the user block byte for byte, with no tab, on screen and in the exit's write-out) |
 //! | `53-mcp-grant.sh` | grants-refactor, X-112 | — (a stdio MCP server's tool called by the model: the dialog's four items, Esc denying it, `/allow srv:echo` saying the grant and the bare `/allow`'s Grants tab listing it, the same call then running without a dialog) |
-//! | `54-allow-panel.sh` | allow-panel, X-111 | — (`/allow ../zz-out` grants a sibling directory and the transcript says it is writable, `/status` counting it; the bare `/allow` opens `Grants` and `Static` and no directory browser; the `Grants` tab lists the grant, Space and Enter revoke it, `/status`'s Grants row gone; the next bare `/allow`'s Grants tab says `No grants.`, and the `Static` tab says what it is, lists the root as `write_roots:  <path>`, and Enter there closes it changing nothing) |
+//! | `54-allow-panel.sh` | allow-panel, X-111 | — (`/allow ../zz-out` grants a sibling directory and the transcript says it is writable, `/status` counting it; the bare `/allow` opens `Grants` and `Static` and no directory browser; the `Grants` tab lists the grant, Space and Enter revoke it, `/status`'s Grants row down to `1 static`; the next bare `/allow`'s Grants tab says `No grants.`, and the `Static` tab says what it is, lists the directory as `allow:   <path>`, and Enter there closes it changing nothing) |
 //! | `55-allow-completion.sh` | allow-rows-mcp, X-111 | — (the `/allow ` completion list walked key by key against a stdio MCP server `github`: level 1 lists the built-ins that ask and `github:` with its count once it connects, `g` leaves the server alone, Tab writes `/allow github:`, Enter on it submits nothing and shows `*` and the tool with its description, `e` Tab Space Tab Enter grants `github:echo` for the project, and the model's next call of it runs without a dialog) |
 
 use std::io::Write as _;
@@ -761,7 +761,7 @@ fn tmux_mcp_grant() {
 
 /// allow-panel (X-111): a directory granted by the typed `/allow <dir>`, then revoked from the bare `/allow`'s
 /// `Grants` tab, `/status` following both; no directory browser; the read-only `Static` tab listing the
-/// config's `write_roots:` entry.
+/// agent's `allow:` directory.
 #[test]
 fn tmux_allow_panel() {
     run_scenario("54-allow-panel.sh");

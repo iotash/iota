@@ -75,15 +75,7 @@ mod tests {
         let root = crate::app::canonical(t.path()).expect("real").join("proj");
         std::fs::create_dir_all(&root).expect("root");
         let grants = Arc::new(Grants::default());
-        let cs = CodeSet::new(
-            root.clone(),
-            Vec::new(),
-            false,
-            true,
-            None,
-            Arc::clone(&grants),
-        )
-        .expect("set");
+        let cs = CodeSet::new(root.clone(), false, true, None, Arc::clone(&grants)).expect("set");
         let mut reg = Registry::default();
         reg.add(Arc::new(WriteFile(Arc::clone(&cs))));
         reg.add(Arc::new(EditFile(cs)));

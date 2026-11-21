@@ -556,8 +556,7 @@ fn assemble_tools(
                 .as_deref(),
         ),
         ..ToolEnv::default()
-    }
-    .with_write_roots(&cfg.write_roots);
+    };
     // The static level (docs/design/config-allow.md §4.1): the agent's `allow:`, resolved once against the root
     // and the home, then the `--allow` values (§3.4), against the working directory and with the `--mcp` servers
     // nameable — before any tool, the harness or a door reads the store. A target that cannot be one refuses
@@ -600,15 +599,12 @@ fn assemble_tools(
     // tools sends nothing — its bytes on the wire are exactly what they were. Composed by the branch, once
     // its hosts are detected: they have facts for `<environment>` too.
     let harness = crate::agents::harness::HarnessInputs {
-        env: crate::agents::harness::Environment {
-            write_roots: tool_env.write_roots.clone(),
-            ..assemble::harness_environment(
-                dirs,
-                project_root.as_deref(),
-                inv.config.as_deref(),
-                project_trusted,
-            )
-        },
+        env: assemble::harness_environment(
+            dirs,
+            project_root.as_deref(),
+            inv.config.as_deref(),
+            project_trusted,
+        ),
         toolsets: assemble::enabled_toolsets(
             &settings.resolved.agent.tools,
             // The bot's own session, the same test as the interactive branch's (`iota resume` names a session
@@ -903,7 +899,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         harness: harness.compose(
             &harness.today(),
             pres.environment(),
-            &tool_env.grants.roots(&harness.env.write_roots),
+            &tool_env.grants.roots(),
         ),
         agent,
         max_turns: settings.max_turns,

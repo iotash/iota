@@ -47,8 +47,9 @@ and no safer.
 — symlinks resolved, the nearest existing ancestor canonicalized
 (`CodeSet::write_path`):
 
-- **INSIDE**: the real location of the project root or of a top-level
-  `write_roots:` entry (below) holds it. Written at the path as given.
+- **INSIDE**: the real location of the project root or of a directory of
+  the grant store (`Grants::roots`: the agent's `allow:`, `--allow`, a live
+  grant; below) holds it. Written at the path as given.
 - **OUTSIDE**: the real location is known and lies outside every root — a
   link inside a root that leads out of every root included. Approvable
   (see Approval): the prompt names the real location, and the write lands
@@ -57,7 +58,7 @@ and no safer.
   `ELOOP`, `EACCES`, too many hops). Refused, never approvable, never judged
   lexically: `cannot verify <path> inside the project root (…)`.
 - **PROTECTED**: the real location is on the protected table, checked BEFORE
-  inside/outside, so no root — `write_roots:` included — admits one (below).
+  inside/outside, so no root — an `allow:` directory included — admits one (below).
 
 ### Protected paths
 
@@ -70,7 +71,7 @@ sandbox (shell-toolset.md, Sandbox semantics), so the two cannot drift:
 | `<root>/.git` | the entry itself | replacing it (rename, link, `gitdir:` file) repoints git |
 | `<root>/.git/hooks` | tree | git executes them on the user's next git command |
 | `<root>/.git/config`, `<root>/.git/config.worktree` | tree | `core.fsmonitor`, `core.hooksPath` point git at a program |
-| each `write_roots:` entry `<w>` that has a `.git`: `<w>/.git`, `hooks`, `config`, `config.worktree` (and its worktree rows) | as for the root | writable is not "run later in the user's terminal" |
+| each extra root `<w>` (`Grants::roots`) that has a `.git`: `<w>/.git`, `hooks`, `config`, `config.worktree` (and its worktree rows) | as for the root | writable is not "run later in the user's terminal" |
 | linked worktree: `<common>`, `<common>/hooks`, `<common>/config`, `<gitdir>/config.worktree` | entry, tree, tree, tree | as the three rows above |
 | each submodule gitdir `<g>` under `.git/modules` (a directory with a `HEAD`, nested ones too): `<g>`, `hooks`, `config`, `config.worktree` | as for the root | a submodule's hooks run on git commands inside it |
 | `~/.iota.yaml`, `~/.iota.yml` | tree | the user's own config, loaded without asking, takes effect next run |
@@ -98,12 +99,12 @@ pushes `git commit` out of the sandbox), not shell rc files.
 
 A protected write is its own class (`Write::Protected`):
 
-- **Never silent.** `auto_write` does not waive it; `write_roots:` cannot
+- **Never silent.** `auto_write` does not waive it; `allow:` cannot
   admit it (listing `<root>/.git` or `<root>/.git/hooks` there is accepted
   and opens the rest of `.git`, but not the table's paths); no grant
   covers it — neither the writer's tool grant nor a directory grant over it
   (the table is classified before inside/outside, and a granted repository
-  gets the git rows a `write_roots:` entry gets).
+  gets the git rows an `allow:` directory gets).
 - **Asked one file at a time** in a run with a user to ask: the
   prompt names the real path, `(protected)` and why, e.g. `write_file
   /p/.git/hooks/pre-commit (protected): git executes the files in .git/hooks
@@ -120,7 +121,7 @@ A protected write is its own class (`Write::Protected`):
   themselves`, and for the sessions tree `… no tool may write it; iota alone
   writes the sessions and the grants they hold`. `~/.iota` being an entry is
   not enough for the latter: a run in the home directory, or `~` in
-  `write_roots:` or granted, makes a root that covers it.
+  `allow:` or granted, makes a root that covers it.
 
 Reads are untouched. The table is rebuilt for every classified write
 (`CodeSet::protected_at`): a gitfile read, one `lstat` per extra root, one
@@ -179,7 +180,7 @@ file's sniff to its read budget too.
 Approval is asked before a call runs (`requires_approval`, per call, read
 by `tool::approval::gate` in both walks); the jail is checked inside it. For
 the writers the two are tied by the path's class — INSIDE being under the
-project root, a `write_roots:` entry or a live directory grant:
+project root, a static directory (`allow:`, `--allow`) or a live directory grant:
 
 | class | chat (a user to ask) | `-m`, the SDK path (nobody to ask) |
 |---|---|---|
@@ -205,9 +206,9 @@ project root, a `write_roots:` entry or a live directory grant:
   write adds that real DIRECTORY to the run's grant store
   (`tool::grants::Grants`, docs/design/grants.md) and lets this call run.
   A directory grant is a write root added at run time: the directory and
-  its subtree, for both writers, read by the jail at every call beside the
-  static `write_roots:` (`admits_real`, the protected table's extra roots,
-  the refusal's roots clause). A write there is thereafter INSIDE — asked
+  its subtree, for both writers, read by the jail at every call with the
+  static directories (`Grants::roots`: `admits_real`, the protected table's
+  extra roots, the refusal's roots clause). A write there is thereafter INSIDE — asked
   or not by `auto_write`, like one in the project root. The grant is the
   real path resolved when it was made, and LIVE only while that path is
   still its own real location: a granted directory replaced by a symlink
@@ -241,8 +242,8 @@ project root, a `write_roots:` entry or a live directory grant:
   without asking (`outside_writes:` was removed, config-allow.md §5 Q5, and
   now fails the load): with a user, the user is asked and can deny; with
   nobody to ask, the write is refused. The way to admit a directory —
-  silently, in every mode — is to list it in `write_roots:`, read when the
-  tools are assembled; a running chat gains a root only through the dialog's
+  silently, in every mode — is to list it in the agent's `allow:` (or pass
+  `--allow <dir>`), read when the tools are assembled; a running chat gains a root only through the dialog's
   directory grant.
 - **The hold** (`waives_approval`, docs/design/agent-messaging.md §4) still
   reads `auto_write`: it waives writes inside the roots, which then run
@@ -251,29 +252,27 @@ project root, a `write_roots:` entry or a live directory grant:
 ## Config
 
 ```yaml
-write_roots:           # top level, every agent; shared with the shell sandbox
-  - ~/scratch          # `~` is home
-  - ../shared-lib      # relative = against the project root
-tools:
-  code:                # empty = writes inside the roots confirmed
-    # auto_write: true # skip confirmations inside the roots (and allow them in -m)
+agents:
+  coder:
+    allow:               # this agent's directories; shared with the shell sandbox
+      - ~/scratch        # `~` is home
+      - ../shared-lib    # relative = against the project root
+    tools:
+      code:              # empty = writes inside the roots confirmed
+        # auto_write: true # skip confirmations inside the roots (and allow them in -m)
 ```
 
-`write_roots:` is ONE list for both questions "where may the code tools
-write" and "where may a sandboxed shell write" — the split Cursor has
-between its file tools and its terminal is exactly what it avoids. It is a
-top-level key (beside `providers:`/`models:`/`agents:`), not a `tools:` key:
-`tools:` keys are set names. `agents.<name>.write_roots` is refused by the
-key audit. Every config file of the stack adds its entries. Each entry is
-resolved once when the tools are assembled (`ToolEnv::write_roots`); an
-extra root whose real location cannot be worked out refuses the set
-(`cannot resolve the write root <path>`) instead of being dropped. Earlier,
-at config load, a blank entry or a `~` entry with no home directory refuses
-the load (`write_roots[i]: …`); an entry that names a directory that does not
-exist yet is accepted. Two entries that clean to the same path are kept
-once. An empty
-or absent list is the project root alone, and the tools' descriptions are
-then byte-identical to a build without the key.
+The store's directories are ONE list for both questions "where may the code
+tools write" and "where may a sandboxed shell write" — the split Cursor has
+between its file tools and its terminal is exactly what it avoids. A
+directory is an `allow:` entry of each agent that may write it (or a
+`--allow <dir>` for one run), resolved once at assembly to its real
+location (docs/design/config-allow.md §3–§4.1); a blank entry or a `~` with
+no home refuses the load, one that cannot be resolved refuses the run, and
+one that does not exist yet is accepted. The top-level `write_roots:` was
+retired for it and fails the load naming `allow:` (config-allow.md §7). With
+no directory the tools' descriptions are byte-identical to a build without
+one.
 
 ## Deferred (v2+)
 
@@ -319,5 +318,5 @@ the retired key (`config::strict::tests::outside_writes_is_retired_at_both_coord
 `tests/cmd/config.rs::outside_writes_fails_the_load`), the refusal's two
 shapes (`code::tests::an_outside_write_asks_or_says_how_to_allow_it`)
 (`src/tool/builtins/code/{mod,tools}.rs` tests,
-`tests/tool/code.rs`; `write_roots:` end to end in
-`tests/cmd/cli.rs::cli_write_roots_open_a_directory_outside_the_project`).
+`tests/tool/code.rs`; an `allow:` directory end to end in
+`tests/cmd/cli.rs::cli_allow_opens_a_directory_outside_the_project`).

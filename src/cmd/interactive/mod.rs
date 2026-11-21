@@ -406,7 +406,6 @@ pub(crate) async fn run_interactive(
         dispatch: Arc::clone(&wiring.dispatch),
         grants: Arc::clone(&tool_env.grants),
         footing: crate::repl::Footing {
-            write_roots: tool_env.write_roots.clone(),
             config: config_allow,
             flag: flag_allow,
             agent: settings.resolved.agent_name.clone(),

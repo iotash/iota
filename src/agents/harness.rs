@@ -38,11 +38,6 @@ pub struct Environment {
     pub exe: Option<PathBuf>,
     /// The config files this run reads.
     pub configs: ConfigFiles,
-    /// The roots beyond the project root the code tools reach and a sandboxed shell writes: the STATIC ones —
-    /// the top-level `write_roots:`, as the tools hold them (`ToolEnv::write_roots`, resolved
-    /// once at assembly) — and, in a composition through [`HarnessInputs::compose`], the roots in force now. Empty
-    /// prints no line, so a config without the key and a run without a grant keep the block's bytes.
-    pub write_roots: Vec<PathBuf>,
     /// What the detected hosts tell the model (`host::Presenter::environment`): `(key, value)` pairs, one
     /// line each after the run's own facts — `host: herdr`, `herdr pane: w1:p3`. Empty in a plain terminal.
     pub host: Vec<(String, String)>,
@@ -82,8 +77,7 @@ impl Default for ConfigFiles {
 /// (docs/design/bot-mode.md §2.5).
 #[derive(Clone)]
 pub struct HarnessInputs {
-    /// The run's own facts. `date` and `host` are overwritten by every [`Self::compose`], and the live
-    /// grants are appended to `write_roots`.
+    /// The run's own facts. `date` and `host` are overwritten by every [`Self::compose`].
     pub env: Environment,
     /// The enabled toolsets (`cmd::assemble::enabled_toolsets`).
     pub toolsets: Vec<String>,
@@ -118,16 +112,15 @@ impl HarnessInputs {
     }
 
     /// The harness text for `day`, with the hosts' `host` facts and the write roots in force `roots` — the
-    /// static ones and the live directory grants, each once, as the caller read them (`Grants::roots` over
-    /// [`Environment::write_roots`]): `""` for an agent without tools.
+    /// store's static directories and its live directory grants, each once, as the caller read them
+    /// (`Grants::roots`): `""` for an agent without tools.
     pub fn compose(&self, day: &str, host: Vec<(String, String)>, roots: &[PathBuf]) -> String {
         let env = Environment {
             date: day.to_owned(),
             host,
-            write_roots: roots.to_vec(),
             ..self.env.clone()
         };
-        compose(&env, &self.toolsets)
+        compose(&env, &self.toolsets, roots)
     }
 }
 
@@ -160,15 +153,15 @@ Providers, models and agents: edit the config file (the user is asked), then `io
 
 /// The harness for an agent enabling `toolsets` (its `tools:` keys that are not `false`): `""` when the
 /// list is empty; the preamble and `<environment>` otherwise; `<iota_cli>` appended when the `shell` set
-/// is among them.
-pub fn compose(env: &Environment, toolsets: &[String]) -> String {
+/// is among them. `roots` are the write roots beyond the project root (`write roots:`, absent when empty).
+pub fn compose(env: &Environment, toolsets: &[String], roots: &[PathBuf]) -> String {
     if toolsets.is_empty() {
         return String::new();
     }
     let mut out = String::with_capacity(HARNESS_CAP);
     out.push_str(PREAMBLE);
     out.push_str("\n\n");
-    environment_block(env, &mut out);
+    environment_block(env, roots, &mut out);
     if toolsets.iter().any(|s| s == SHELL_SET) {
         out.push_str("\n\n");
         out.push_str(IOTA_CLI);
@@ -177,7 +170,7 @@ pub fn compose(env: &Environment, toolsets: &[String]) -> String {
 }
 
 /// One `key: value` line per fact, absence spelled out rather than left blank.
-fn environment_block(env: &Environment, out: &mut String) {
+fn environment_block(env: &Environment, roots: &[PathBuf], out: &mut String) {
     let absent = |p: &Option<PathBuf>| {
         p.as_ref()
             .map_or_else(|| "(absent)".to_owned(), |p| p.display().to_string())
@@ -216,12 +209,8 @@ fn environment_block(env: &Environment, out: &mut String) {
             );
         }
     }
-    if !env.write_roots.is_empty() {
-        let roots: Vec<String> = env
-            .write_roots
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect();
+    if !roots.is_empty() {
+        let roots: Vec<String> = roots.iter().map(|p| p.display().to_string()).collect();
         let _ = writeln!(out, "write roots: {}", roots.join(", "));
     }
     // The hosts' facts last: a terminal multiplexer names itself and the pane the chat runs in, so the
@@ -253,7 +242,6 @@ mod tests {
                 project_trusted: true,
             },
             host: Vec::new(),
-            write_roots: Vec::new(),
         }
     }
 
@@ -278,13 +266,13 @@ mod tests {
     /// No toolset, no harness: a chat-only agent sends today's bytes exactly.
     #[test]
     fn no_tools_is_empty() {
-        assert_eq!(compose(&env(), &[]), "");
+        assert_eq!(compose(&env(), &[], &[]), "");
     }
 
     /// Tools without the shell set: identity and environment, no `<iota_cli>`.
     #[test]
     fn code_without_shell_has_no_cli_block() {
-        let text = compose(&env(), &sets(&["code"]));
+        let text = compose(&env(), &sets(&["code"]), &[]);
         assert!(text.starts_with("You run inside iota"), "{text}");
         assert!(text.contains("<environment>\n"), "{text}");
         assert!(text.ends_with("</environment>"), "{text}");
@@ -294,7 +282,7 @@ mod tests {
     /// The shell set brings the CLI block, after the environment.
     #[test]
     fn shell_brings_the_cli_block() {
-        let text = compose(&env(), &sets(&["code", "shell"]));
+        let text = compose(&env(), &sets(&["code", "shell"]), &[]);
         let env_at = text.find("<environment>").expect("environment");
         let cli_at = text.find("<iota_cli>").expect("iota_cli");
         assert!(env_at < cli_at, "the environment precedes the CLI block");
@@ -346,7 +334,7 @@ mod tests {
     /// four herdr id lines, and by each host's own test for all it says.
     #[test]
     fn the_harness_fits_the_cap() {
-        let text = compose(&env(), &sets(&["code", "shell"]));
+        let text = compose(&env(), &sets(&["code", "shell"]), &[]);
         assert!(
             text.len() <= HARNESS_CAP,
             "harness is {} bytes, cap {HARNESS_CAP}",
@@ -356,7 +344,7 @@ mod tests {
             host: herdr_lines(),
             ..env()
         };
-        let added = compose(&hosted, &sets(&["code", "shell"])).len() - text.len();
+        let added = compose(&hosted, &sets(&["code", "shell"]), &[]).len() - text.len();
         assert!(
             added <= HARNESS_CAP / 10,
             "the host lines add {added} bytes, more than a tenth of the cap"
@@ -370,14 +358,14 @@ mod tests {
             host: herdr_lines(),
             ..env()
         };
-        let text = compose(&hosted, &sets(&["code"]));
+        let text = compose(&hosted, &sets(&["code"]), &[]);
         assert!(
             text.contains(
                 "\nproject config: /Users/someone/Work/project/.iota.yaml\nhost: herdr\nherdr pane: w12:p34\nherdr workspace: w12\nherdr tab: w12:t56\n</environment>"
             ),
             "{text}"
         );
-        let text = compose(&env(), &sets(&["code"]));
+        let text = compose(&env(), &sets(&["code"]), &[]);
         assert!(
             text.contains(
                 "\nproject config: /Users/someone/Work/project/.iota.yaml\n</environment>"
@@ -387,65 +375,76 @@ mod tests {
         assert!(!text.contains("host:"), "{text}");
     }
 
-    /// `write_roots:` is one line after the config files, before any host line, its roots in the order the
-    /// tools hold them; with none there is no line at all.
+    /// `write roots:` is one line after the config files, before any host line, its roots in the order given;
+    /// with none there is no line at all.
     #[test]
     fn write_roots_line_only_when_listed() {
-        let widened = Environment {
-            write_roots: vec![
-                PathBuf::from("/Users/someone/scratch"),
-                PathBuf::from("/Users/someone/Work/shared-lib"),
-            ],
+        let hosted = Environment {
             host: herdr_lines(),
             ..env()
         };
-        let text = compose(&widened, &sets(&["code"]));
+        let roots = [
+            PathBuf::from("/Users/someone/scratch"),
+            PathBuf::from("/Users/someone/Work/shared-lib"),
+        ];
+        let text = compose(&hosted, &sets(&["code"]), &roots);
         assert!(
             text.contains(
                 "\nproject config: /Users/someone/Work/project/.iota.yaml\nwrite roots: /Users/someone/scratch, /Users/someone/Work/shared-lib\nhost: herdr\n"
             ),
             "{text}"
         );
-        let text = compose(&env(), &sets(&["code"]));
+        let text = compose(&env(), &sets(&["code"]), &[]);
         assert!(!text.contains("write roots"), "{text}");
     }
 
-    /// The roots in force — the static ones, then the live directory grants (`Grants::roots`) — are the one
-    /// `write roots:` line; a grant alone makes the line, and none leaves the bytes of a run without one.
+    /// The roots in force — the store's static directories (`allow:`, `--allow`), then the live directory
+    /// grants (`Grants::roots`) — are the one `write roots:` line: no second source. A grant alone makes the
+    /// line, and none leaves the bytes of a run without one.
+    #[cfg(unix)]
     #[test]
-    fn write_roots_line_lists_the_live_grants() {
+    fn write_roots_line_lists_the_static_and_the_live_grants() {
+        use crate::tool::grants::{GrantSet, Grants, Level};
+        let t = tempfile::tempdir().expect("tempdir");
+        let base = crate::app::canonical(t.path()).expect("real");
+        let (fixed_dir, granted) = (base.join("scratch"), base.join("granted"));
+        for d in [&fixed_dir, &granted] {
+            std::fs::create_dir(d).expect("dir");
+        }
         let inputs = HarnessInputs {
-            env: Environment {
-                write_roots: vec![PathBuf::from("/Users/someone/scratch")],
-                ..env()
-            },
+            env: env(),
             toolsets: sets(&["code"]),
             ..HarnessInputs::default()
         };
-        let granted = [
-            PathBuf::from("/Users/someone/scratch"),
-            PathBuf::from("/data/granted"),
-        ];
-        let text = inputs.compose("2026-11-19", Vec::new(), &granted);
+        let mut fixed = GrantSet::default();
+        fixed.add_dir(fixed_dir.clone());
+        let grants = Grants::with_static(fixed);
+        let text = inputs.compose("2026-11-19", Vec::new(), &grants.roots());
         assert!(
-            text.contains("\nwrite roots: /Users/someone/scratch, /data/granted\n"),
+            text.contains(&format!("\nwrite roots: {}\n", fixed_dir.display())),
             "{text}"
         );
-        let text = inputs.compose("2026-11-19", Vec::new(), &inputs.env.write_roots);
+        grants.update(Level::Session, |s| s.add_dir(granted.clone()));
+        let text = inputs.compose("2026-11-19", Vec::new(), &grants.roots());
         assert!(
-            text.contains("\nwrite roots: /Users/someone/scratch\n"),
+            text.contains(&format!(
+                "\nwrite roots: {}, {}\n",
+                fixed_dir.display(),
+                granted.display()
+            )),
             "{text}"
         );
 
-        let bare = HarnessInputs {
-            env: env(),
-            ..inputs
-        };
-        let text = bare.compose("2026-11-19", Vec::new(), &granted[1..]);
-        assert!(text.contains("\nwrite roots: /data/granted\n"), "{text}");
+        let live = Grants::default();
+        live.update(Level::Project, |s| s.add_dir(granted.clone()));
+        let text = inputs.compose("2026-11-19", Vec::new(), &live.roots());
         assert!(
-            !bare
-                .compose("2026-11-19", Vec::new(), &[])
+            text.contains(&format!("\nwrite roots: {}\n", granted.display())),
+            "{text}"
+        );
+        assert!(
+            !inputs
+                .compose("2026-11-19", Vec::new(), &Grants::default().roots())
                 .contains("write roots"),
         );
     }
@@ -454,7 +453,7 @@ mod tests {
     /// file `(not trusted: not loaded)`, and `-c` collapses the two tiers into one line.
     #[test]
     fn environment_lines_name_absence() {
-        let text = compose(&env(), &sets(&["code"]));
+        let text = compose(&env(), &sets(&["code"]), &[]);
         for line in [
             "project root: /Users/someone/Work/project",
             "platform: macos (aarch64)",
@@ -473,7 +472,7 @@ mod tests {
             configs: ConfigFiles::default(),
             ..env()
         };
-        let text = compose(&absent, &sets(&["code"]));
+        let text = compose(&absent, &sets(&["code"]), &[]);
         assert!(
             text.contains("\nuser config: (absent)\nproject config: (absent)\n"),
             "{text}"
@@ -487,7 +486,7 @@ mod tests {
             },
             ..env()
         };
-        let text = compose(&skipped, &sets(&["code"]));
+        let text = compose(&skipped, &sets(&["code"]), &[]);
         assert!(
             text.contains(
                 "\nproject config: /Users/someone/Work/project/.iota.yaml (not trusted: not loaded)\n"
@@ -499,7 +498,7 @@ mod tests {
             exe: None,
             ..env()
         };
-        let text = compose(&explicit, &sets(&["code"]));
+        let text = compose(&explicit, &sets(&["code"]), &[]);
         assert!(
             text.contains("\nconfig: /tmp/f.yaml (given with -c; the only scope)\n"),
             "{text}"

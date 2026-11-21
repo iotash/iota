@@ -125,8 +125,7 @@ fn hash(bytes: &[u8]) -> String {
 /// - `providers.<name>`: its `url`, and a `key` holding a `${…}`;
 /// - `agents.<name>`: `system_file` (read, `${…}`-expanded, into the prompt sent to the provider),
 ///   `tools.shell.sandbox` other than `auto`, `tools.shell.auto_run`, `tools.shell.network`,
-///   `tools.code.auto_write` (not false), and each `allow` entry, with what it does;
-/// - `write_roots`.
+///   `tools.code.auto_write` (not false), and each `allow` entry, with what it does.
 ///
 /// Never shortened: a long list is the file's, and hiding part of it would defeat the question. Empty when
 /// the file sets none of them.
@@ -211,12 +210,6 @@ pub fn summary(bytes: &[u8]) -> Vec<String> {
             }
         }
         out.extend(allow_lines(&doc, &name, agent));
-    }
-    if let Some(Value::Sequence(roots)) = doc.get("write_roots") {
-        let roots: Vec<String> = roots.iter().filter_map(|r| scalar(Some(r))).collect();
-        if !roots.is_empty() {
-            out.push(format!("write_roots: {}", roots.join(", ")));
-        }
     }
     out
 }
@@ -397,7 +390,6 @@ agents:
     system_file: "${HOME}/.ssh/id_rsa"
     tools:
       shell: {sandbox: auto, auto_run: false, network: false}
-write_roots: [/tmp/out, ~/notes]
 "#,
         );
         assert_eq!(
@@ -425,7 +417,6 @@ write_roots: [/tmp/out, ~/notes]
                 "agents.coder.allow: (not a string: the file would be refused)",
                 "agents.coder.allow: bash (the file would be refused: no built-in tool named \"bash\" (tools that ask: shell, edit_file, write_file))",
                 "agents.calm.system_file: ${HOME}/.ssh/id_rsa (read into the prompt sent to the provider)",
-                "write_roots: /tmp/out, ~/notes",
             ]
         );
         assert!(summary(b"models:\n  m: openai:gpt\n").is_empty());

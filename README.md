@@ -36,7 +36,7 @@ a model, a prompt, a set of tools — in one YAML file, and run them:
   is in force and takes it back. The config is the permanent form: an agent's
   `allow:` lists `/allow`'s targets — `allow: [~/scratch, shell, edit_file,
   "github:*"]` — and a bare `/allow` shows them, read-only, beside the grants
-  (`write_roots:`, `tools.code.auto_write`, `tools.shell.auto_run` and an MCP
+  (`tools.code.auto_write`, `tools.shell.auto_run` and an MCP
   server's `auto_run` still work for now); `--allow <target>` is the one-run
   form, a `--mcp` server named by its whole value. A
   project's `agents.<name>` replaces the home's whole, `allow:` included. A write to git's hooks
@@ -98,7 +98,7 @@ you trust it:
   holding a `${…}`, and its `auto_run`; a provider's `url` and a `${…}` key;
   an agent's `system_file`, its tools' `sandbox` (other than `auto`),
   `auto_run`, `network` and `auto_write`, and each entry of its `allow:`, with
-  what it does; `write_roots`. Trust it, or skip it
+  what it does. Trust it, or skip it
   for this run.
 - Without a terminal (`-m`, a script, a bot), iota never asks: it skips the
   file with one warning and runs on `~/.iota.yaml`. `iota mcp list --probe`

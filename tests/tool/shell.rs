@@ -561,7 +561,7 @@ fn a_bad_shell_config_names_its_fault() {
         assert!(new_shell_set(&env, node(cfg).as_ref()).is_ok(), "{cfg:?}");
     }
 
-    // `write:` is retired for the top-level `write_roots:`; it is refused by name, never dropped.
+    // `write:` is retired for the agent's `allow:`; it is refused by name, never dropped.
     for cfg in [
         "write: [/tmp/x]\n",
         "write: []\n",
@@ -582,7 +582,7 @@ fn a_bad_shell_config_names_its_fault() {
     assert_eq!(
         warned,
         [
-            "toolset \"shell\": `write` is gone — list extra writable roots in the top-level `write_roots:` (shared by the shell and code sets) (ignored)"
+            "toolset \"shell\": `write` is gone — list each extra writable directory in the agent's `allow:` (shared by the shell and code sets) (ignored)"
         ]
     );
 
@@ -1017,7 +1017,7 @@ async fn the_sandbox_refuses_a_protected_name_in_another_case() {
 /// The protected table (`iota::app::protected`, DIVERGENCES X-95) under the real sandbox: a command can write the
 /// project root, run `git add`/`git commit` and write under `~/.iota`, but not the hooks git would execute, the
 /// file that points git at other programs, the project config or the trust record — not even with
-/// `write_roots:` naming `.git` or the home — and it cannot move `.git` or `~/.iota` out from under those rules.
+/// an `allow:` naming `.git` or the home — and it cannot move `.git` or `~/.iota` out from under those rules.
 /// Every target here exists first, since bubblewrap can only pin a path that exists; Seatbelt also refuses to
 /// CREATE one, which the macOS leg checks with `.iota.yml`.
 #[cfg(unix)]
@@ -1057,7 +1057,7 @@ async fn the_sandbox_never_writes_a_protected_path() {
     fs::create_dir_all(module.join("hooks")).expect("submodule hooks");
     fs::write(module.join("HEAD"), "ref: refs/heads/main\n").expect("submodule HEAD");
     let config_before = fs::read(root.join(".git/config")).expect("git config");
-    // `write_roots:` names `.git` and the home: neither re-opens what the table closes.
+    // `allow:` names `.git` and the home: neither re-opens what the table closes.
     let sb = Sandbox {
         write: vec![root.join(".git"), home.clone()],
         home: Some(home.clone()),
@@ -1165,7 +1165,7 @@ async fn the_sandbox_never_writes_a_protected_path() {
 }
 
 /// `~/.iota/sessions` (X-95 amended, grants.md §9 Q11) under the real sandbox, in the case `~/.iota` being an
-/// entry does not cover: the command runs IN the home, with the home listed in `write_roots:` too. It can write
+/// entry does not cover: the command runs IN the home, with the home listed in `allow:` too. It can write
 /// the home and the rest of `~/.iota`, but not a session bundle, a project bucket's `grants.json`, a new bundle,
 /// a hardlink to a grants file, or the tree itself moved or removed — so no command grants the model anything
 /// for the next start.
@@ -1276,7 +1276,7 @@ fn a_sandboxed_shell_set_creates_the_sessions_tree() {
 
 /// A linked worktree (`git worktree add`): `<root>/.git` is a `gitdir:` file, and the hooks git runs and the
 /// config it reads are the main repository's (`<main>/.git/hooks`, `<main>/.git/config`) and the worktree's
-/// `config.worktree` — outside the root. With the main `.git` listed in `write_roots:` (which a sandboxed
+/// `config.worktree` — outside the root. With the main `.git` listed in `allow:` (which a sandboxed
 /// `git commit` in a worktree needs: its objects and refs live there), those stay closed while the commit works,
 /// and the gitdir file itself cannot be repointed.
 #[cfg(unix)]
@@ -1373,7 +1373,7 @@ async fn the_sandbox_protects_a_linked_worktrees_common_hooks_and_config() {
     assert_eq!(String::from_utf8_lossy(&log.stdout), "second\nfirst\n");
 }
 
-/// A `write_roots:` entry that is itself a repository gets the project root's git rows: a sandboxed command can
+/// An `allow:` directory that is itself a repository gets the project root's git rows: a sandboxed command can
 /// write files there, but not the hooks git would run in it nor the config that points git at a program.
 #[cfg(unix)]
 #[tokio::test]
@@ -1532,7 +1532,7 @@ async fn a_stale_grant_is_not_a_sandbox_root() {
     assert!(!is_err, "live again: {text}");
 }
 
-/// A granted directory that is a repository gets the git rows a `write_roots:` entry gets: a sandboxed command
+/// A granted directory that is a repository gets the git rows an `allow:` directory gets: a sandboxed command
 /// writes files there, but not the hooks git would run in it nor the config that points git at a program.
 #[cfg(unix)]
 #[tokio::test]
@@ -1887,9 +1887,10 @@ async fn the_sandbox_lets_iota_itself_out_and_nothing_else() {
     );
 }
 
-/// The sandbox line names the `write_roots:` extras — and with none it is the constant, byte for byte.
+/// The sandbox line names the static directories (`statics().dirs`) — and with none it is the constant, byte
+/// for byte.
 #[test]
-fn the_sandbox_line_names_the_write_roots() {
+fn the_sandbox_line_names_the_static_directories() {
     let net = "network access is BLOCKED";
     assert_eq!(
         sandbox_desc(&[], net),
@@ -1901,27 +1902,37 @@ fn the_sandbox_line_names_the_write_roots() {
     );
 }
 
-/// The proof `write_roots:` exists for: ONE top-level list, from config text to the factories, opens a
-/// directory outside the project to `write_file`/`read_file` and to the sandboxed `shell` alike. The
-/// directory lives under the target dir, not `/tmp` or the system temp dir: those are writable in the
-/// sandbox whatever the config says, so a write there would prove nothing about the list.
+/// A static directory — an agent's `allow:` entry, from config text through the assembly (`static_grants`) into
+/// the store's static level — opens a directory outside the project to `write_file`/`read_file` and to the
+/// sandboxed `shell` alike: ONE list, `Grants::roots`. The directory lives under the target dir, not `/tmp` or
+/// the system temp dir: those are writable in the sandbox whatever the config says, so a write there would
+/// prove nothing about the list.
 #[tokio::test]
-async fn write_roots_open_one_directory_to_the_code_tools_and_the_shell() {
+async fn a_static_directory_is_writable_in_the_sandbox() {
     use iota::app::env::Env;
-    use iota::cmd::Config;
+    use iota::cmd::{Config, static_grants};
     use iota::tool::builtins::code::new_code_set;
 
     let (_dir, env, root) = shell_env();
     let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     fs::create_dir_all(&base).expect("target tmp dir");
+    let base = iota::app::fs::physical(&base).expect("real target tmp dir");
     let extra_dir = tempfile::tempdir_in(&base).expect("extra root");
     let extra = extra_dir.path().to_path_buf();
     assert!(!extra.starts_with(&root));
-    let yaml = format!("write_roots: [{}]\n", extra.display());
+    let yaml = format!(
+        "agents:\n  a:\n    tools: {{code: {{}}, shell: {{}}}}\n    allow: ['{}']\n",
+        extra.display()
+    );
     let cfg =
         Config::parse(yaml.as_bytes(), &Env::default(), &mut |w| panic!("{w}")).expect("config");
-    let env = env.with_write_roots(&cfg.write_roots);
-    assert_eq!(env.write_roots, std::slice::from_ref(&extra));
+    let fixed = static_grants(&cfg, "a", &cfg.agents["a"], &env).expect("resolves");
+    assert_eq!(fixed.dirs, std::slice::from_ref(&extra));
+    let env = ToolEnv {
+        grants: Arc::new(Grants::with_static(fixed)),
+        ..env
+    };
+    assert_eq!(env.grants.roots(), std::slice::from_ref(&extra));
 
     // The code tools: create a file there, then read it back.
     let code = new_code_set(&env, node("auto_write: true\n").as_ref()).expect("code set");
@@ -1979,7 +1990,7 @@ async fn write_roots_open_one_directory_to_the_code_tools_and_the_shell() {
         cache_dir: env.dirs.cache.clone(),
         home: env.dirs.home.clone(),
     };
-    if skip_unless_sandboxed("write_roots_open_one_directory", &sb, &root).await {
+    if skip_unless_sandboxed("a_static_directory_is_writable_in_the_sandbox", &sb, &root).await {
         return;
     }
     let (text, is_err) = call(
@@ -1995,9 +2006,9 @@ async fn write_roots_open_one_directory_to_the_code_tools_and_the_shell() {
         fs::read_to_string(extra.join("from-shell.txt")).expect("written"),
         "from-shell\n"
     );
-    // Without the list the same write is refused: the opening is the list's doing.
+    // Without the static level the same write is refused: the opening is the store's doing.
     let unlisted = ToolEnv {
-        write_roots: Vec::new(),
+        grants: Arc::default(),
         ..env
     };
     let shell = Arc::clone(&new_shell_set(&unlisted, None).expect("shell set")[0]);

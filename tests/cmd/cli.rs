@@ -1237,15 +1237,17 @@ impl wiremock::Respond for ToolCallsInTurn {
     }
 }
 
-/// `write_roots:` through the binary's own assembly (`cmd::assemble_tools`): an `iota -m` run whose model
-/// calls `write_file` lands the file in the directory the config lists, outside the project, and the same
-/// call into an unlisted sibling is refused naming both roots.
+/// An agent's `allow:` directory through the binary's own assembly (`cmd::assemble_tools`): an `iota -m` run
+/// whose model calls `write_file` lands the file in the directory the agent lists, outside the project, and the
+/// same call into an unlisted sibling is refused naming both roots.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cli_write_roots_open_a_directory_outside_the_project() {
+async fn cli_allow_opens_a_directory_outside_the_project() {
     let (dir, home) = project();
     let outside = tempfile::tempdir().expect("outside");
-    let extra = outside.path().join("extra");
-    let sibling = outside.path().join("sibling");
+    // Real paths: an `allow:` directory is held, and named, at its real location.
+    let outside_real = iota::app::fs::physical(outside.path()).expect("real");
+    let extra = outside_real.join("extra");
+    let sibling = outside_real.join("sibling");
     fs::create_dir_all(&extra).expect("extra");
     fs::create_dir_all(&sibling).expect("sibling");
     let server = MockServer::start().await;
@@ -1255,7 +1257,7 @@ async fn cli_write_roots_open_a_directory_outside_the_project() {
             calls: vec![
                 (
                     "write_file",
-                    serde_json::json!({"path": extra.join("landed.txt"), "content": "via write_roots\n"}),
+                    serde_json::json!({"path": extra.join("landed.txt"), "content": "via allow\n"}),
                 ),
                 (
                     "write_file",
@@ -1268,9 +1270,9 @@ async fn cli_write_roots_open_a_directory_outside_the_project() {
     write_config(
         &home,
         &format!(
-            "write_roots: ['{}']\nproviders:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: {{auto_write: true}}}}}}\n",
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: {{auto_write: true}}}}, allow: ['{}']}}\n",
+            server.uri(),
             extra.display(),
-            server.uri()
         ),
     );
     let mut cmd = iota(dir.path(), &home);
@@ -1279,7 +1281,7 @@ async fn cli_write_roots_open_a_directory_outside_the_project() {
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
     assert_eq!(
         fs::read_to_string(extra.join("landed.txt")).ok().as_deref(),
-        Some("via write_roots\n"),
+        Some("via allow\n"),
         "the write into the listed root did not land; the model was told: {}",
         out(&o)
     );
@@ -1303,14 +1305,14 @@ async fn cli_write_roots_open_a_directory_outside_the_project() {
     );
 }
 
-/// `--allow <dir>` through the binary's own assembly: its directories join the roots after the config's
-/// `write_roots:`, in flag order and each once — the write into a flag's directory lands, an unlisted sibling is
+/// `--allow <dir>` through the binary's own assembly: its directories join the roots after the agent's
+/// `allow:`, in flag order and each once — the write into a flag's directory lands, an unlisted sibling is
 /// refused naming every root in that order and the flag, and `<environment>` lists the same roots.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn allow_flag_opens_a_directory_after_the_configs_roots() {
     let (dir, home) = project();
     let outside = tempfile::tempdir().expect("outside");
-    // Real paths: a `--allow` directory is held at its real location, a `write_roots:` entry as written.
+    // Real paths: an `allow:` and a `--allow` directory are held at their real locations.
     let outside_real = iota::app::fs::physical(outside.path()).expect("real");
     let [cfg_root, first, second, sibling] =
         ["cfg", "first", "second", "sibling"].map(|n| outside_real.join(n));
@@ -1337,9 +1339,9 @@ async fn allow_flag_opens_a_directory_after_the_configs_roots() {
     write_config(
         &home,
         &format!(
-            "write_roots: ['{}']\nproviders:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: {{auto_write: true}}}}}}\n",
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: {{auto_write: true}}}}, allow: ['{}']}}\n",
+            server.uri(),
             cfg_root.display(),
-            server.uri()
         ),
     );
     let mut cmd = iota(dir.path(), &home);

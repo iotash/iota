@@ -112,11 +112,10 @@ pub(crate) struct ShellTool {
     /// defaults to `root`).
     cwd: PathBuf,
     sandboxed: bool,
-    /// `ToolEnv::write_roots`, the STATIC roots: writable inside the sandbox beside the root and the temp/cache
-    /// dirs. The live directory grants join them at every call ([`Self::writable`]).
-    write_roots: Vec<PathBuf>,
-    /// The run's grant store (`ToolEnv::grants`): its live directory grants are sandbox roots too, read per
-    /// call, so a directory the user grants is writable by the next command as it is by the code writers.
+    /// The run's grant store (`ToolEnv::grants`): its directories — the static level's and the live grants —
+    /// are writable inside the sandbox beside the root and the temp/cache dirs, read per call
+    /// ([`Self::writable`]), so a directory the user grants is writable by the next command as it is by the
+    /// code writers.
     grants: Arc<Grants>,
     dirs: HostDirs,
     /// The running binary (`HostDirs::exe`), what a command's first word is compared against to decide
@@ -127,7 +126,7 @@ pub(crate) struct ShellTool {
 /// Decode → `ShellConfig(err)`; sandbox "" → "auto"; not auto|off → `BadSandbox`; `sandboxed = sandbox == "auto"
 /// && exec::available()` evaluated ONCE — and so is the interpreter (`crate::shell::interp::resolve`); then
 /// no job registry → `NoJobs`, since every call runs through it. A `write:` key is `RetiredShellWrite`: the
-/// sandbox's extra writable roots are the top-level `write_roots:` now (`ToolEnv::write_roots`), and the
+/// sandbox's extra writable roots are the agent's `allow:` directories now (the store's static level), and the
 /// decode below would otherwise drop the key without a word.
 ///
 /// A machine with no interpreter at all is the one case where the set refuses: on Windows, where that means
@@ -177,7 +176,6 @@ pub fn new_shell_set(
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default(),
         sandboxed,
-        write_roots: env.write_roots.clone(),
         grants: Arc::clone(&env.grants),
         exe: env.dirs.exe.clone(),
         dirs: env.dirs.clone(),
@@ -195,13 +193,7 @@ impl Tool for ShellTool {
             } else {
                 "network access is BLOCKED"
             };
-            let mut roots = self.write_roots.clone();
-            for d in &self.grants.statics().dirs {
-                if !roots.contains(d) {
-                    roots.push(d.clone());
-                }
-            }
-            description.push_str(&sandbox_desc(&roots, net));
+            description.push_str(&sandbox_desc(&self.grants.statics().dirs, net));
         } else {
             description.push_str(SHELL_DESC_UNSANDBOXED);
         }
@@ -335,11 +327,11 @@ impl Tool for ShellTool {
 }
 
 impl ShellTool {
-    /// The sandbox's extra writable roots for one call: the static ones, then the live directory grants read now
+    /// The sandbox's extra writable roots for one call: the static level's, then the live directory grants read now
     /// ([`Grants::roots`]) — a stale grant is none of them. The protected table's extra roots are the same list
     /// (`exec::protected_paths`), so a granted repository keeps its git rows.
     fn writable(&self) -> Vec<PathBuf> {
-        self.grants.roots(&self.write_roots)
+        self.grants.roots()
     }
 
     /// Whether `command` is iota itself with arguments (`crate::shell::selfcall`): the one call a sandboxed
@@ -457,14 +449,15 @@ fn format_result(res: &RunResult, timeout: Option<Duration>) -> ToolOutput {
     }
 }
 
-/// The sandboxed suffix: [`SHELL_DESC_SANDBOXED`] with its network clause, and — only when `write_roots:`
-/// lists any — the extra roots named after the project root. With none it is the constant, byte for byte.
-pub fn sandbox_desc(write_roots: &[PathBuf], net: &str) -> String {
+/// The sandboxed suffix: [`SHELL_DESC_SANDBOXED`] with its network clause, and — only when the static level
+/// holds directories (`allow:`, `--allow`) — those roots named after the project root. With none it is the
+/// constant, byte for byte.
+pub fn sandbox_desc(statics: &[PathBuf], net: &str) -> String {
     let desc = SHELL_DESC_SANDBOXED.replace("{net}", net);
-    if write_roots.is_empty() {
+    if statics.is_empty() {
         return desc;
     }
-    let roots = write_roots
+    let roots = statics
         .iter()
         .map(|p| p.display().to_string())
         .collect::<Vec<_>>()

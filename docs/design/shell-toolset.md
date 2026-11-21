@@ -34,10 +34,10 @@ deliberate future work.
 
 Writable roots: the project root, `os.TempDir()`/`/tmp`, the user cache dir
 (Go/npm/pip build caches live there — blocking it breaks every build), plus
-the top-level `write_roots:` — the same list the code tools' jail admits
-(docs/design/code-toolset.md, Config); `~` is home, a relative entry hangs
-off the project root. When it lists any, the tool description's sandbox line
-names them (`confined to the project root, the extra write roots (…) and
+the directories of the agent's `allow:` and `--allow` — the grant store's
+static level, the same list the code tools' jail admits (docs/design/config-allow.md
+§4.1); `~` is home, a relative `allow:` entry hangs off the project root. When it
+holds any, the tool description's sandbox line names them (`statics().dirs`) (`confined to the project root, the extra write roots (…) and
 temp/cache directories`); with none the line is unchanged. Network is blocked unless
 `network: true`.
 
@@ -68,14 +68,14 @@ What a write outside those roots does depends on whether the sandbox is on:
 - **Sandbox off** (`sandbox: off`, or no sandbox on this platform): the call
   is approval-gated (Approval, below) unless `auto_run`, and once allowed it runs with the
   user's full permissions. Its paths are **not checked at all** — the code
-  tools' jail is theirs alone, and `write_roots:` changes nothing here.
+  tools' jail is theirs alone, and an `allow:` directory changes nothing here.
 
 **Protected paths.** Inside those roots, the sandbox still never writes the
 protected table (`app::protected::table`, the one the code writers read —
 code-toolset.md, Protected paths): `<root>/.iota.yaml|yml`, `<root>/.git/hooks`,
 `<root>/.git/config` and `config.worktree` (in a linked worktree also the
 common dir's `hooks` and `config` and the gitdir's `config.worktree`; the
-same rows for every `write_roots:` entry that is itself a repository), `~/.iota.yaml|yml`,
+same rows for every `allow:` directory that is itself a repository), `~/.iota.yaml|yml`,
 `~/.iota/trusted.json`, `~/.iota/sessions` and everything under it (created
 when a sandboxed set is built, since bubblewrap cannot pin a missing path), and the
 `<root>/.git` (and common dir) and
@@ -87,7 +87,7 @@ checks `link(2)` against its source (`ln .git/config x` is `Operation not
 permitted`), and bwrap refuses a link across a bind mount (`EXDEV`). A sandboxed command
 runs without approval, and without this a silent `echo … >
 .git/hooks/pre-commit` ran in the user's own terminal on their next commit.
-`write_roots:` cannot re-open them (listing `<root>/.git` opens the rest of
+`allow:` cannot re-open them (listing `<root>/.git` opens the rest of
 `.git` only). What trips it, and what the command sees — the same OS error as
 any denied write (`Operation not permitted` / `Read-only file system`):
 `git config …` and `git remote add` (they rewrite `.git/config`), `git init`
@@ -160,12 +160,12 @@ tools:
     # sandbox: off     # disable the sandbox (calls then need approval)
     # network: true    # allow network inside the sandbox
     # auto_run: true   # skip approval for unsandboxed calls (incl. -m)
-write_roots: [~/.cargo/registry]  # top level: extra writable roots, shared with the code tools
+allow: [~/.cargo/registry]  # in the agent: extra writable directories, shared with the code tools
 ```
 
 `tools.shell.write` is retired: a config that still writes it gets no shell
-set and the warning ``toolset "shell": `write` is gone — list extra writable
-roots in the top-level `write_roots:` (shared by the shell and code sets)
+set and the warning ``toolset "shell": `write` is gone — list each extra
+writable directory in the agent's `allow:` (shared by the shell and code sets)
 (ignored)`` — never a silent drop.
 
 The pre-bash allow-list config shape (`command: [git, ssh]`) is gone with the
@@ -228,10 +228,11 @@ flow.
 
 src/shell (unit tests) and tests/tool/shell.rs: shell semantics (pipes/exit codes/cwd), cancellation,
 truncation, writable-path derivation, and real sandbox isolation (in-root
-write allowed, out-of-root denied, `write_roots:` extras honored, the
+write allowed, out-of-root denied, a static directory honored
+(`a_static_directory_is_writable_in_the_sandbox`), the
 protected paths denied while `git commit` works —
 `the_sandbox_never_writes_a_protected_path`) with an
 environment probe that skips where the sandbox cannot run (e.g. nested
 sandboxes). tests/tool/shell.rs: config matrix (sandbox/auto_run →
 `requires_approval`), legacy-shape and retired-`write` rejection, the sandbox
-line naming `write_roots:` (`the_sandbox_line_names_the_write_roots`), model-facing formatting, registry/Merge integration.
+line naming the static directories (`the_sandbox_line_names_the_static_directories`), model-facing formatting, registry/Merge integration.

@@ -275,7 +275,7 @@ fn a_non_terminal_interactive_start_does_not_wait_for_an_answer() {
 #[test]
 fn the_record_is_private_and_config_path_names_the_skip() {
     use std::os::unix::fs::PermissionsExt as _;
-    let (dir, dirs) = temp_project(&[(".iota.yaml", "write_roots: [/tmp]\n")]);
+    let (dir, dirs) = temp_project(&[(".iota.yaml", "agents:\n  a: {allow: [/tmp]}\n")]);
     let home = dirs.home.expect("fixture home");
     let project = as_child_names(dir.path());
 
@@ -292,7 +292,7 @@ fn the_record_is_private_and_config_path_names_the_skip() {
     assert_eq!(
         out(&o),
         format!(
-            "Trusted {}\nIt sets:\n  write_roots: /tmp\n",
+            "Trusted {}\nIt sets:\n  agents.a.allow: /tmp (a directory its tools may write)\n",
             project.display()
         )
     );

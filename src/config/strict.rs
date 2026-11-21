@@ -16,17 +16,7 @@ use crate::provider::MODERATION_LEVELS;
 use crate::tool::sets::SET_NAMES;
 
 /// The top-level maps.
-const TOP_KEYS: [&str; 6] = [
-    "providers",
-    "models",
-    "agents",
-    "mcp_servers",
-    WRITE_ROOTS,
-    MOUSE,
-];
-/// The top-level key that is a list, not a map of entries: the extra roots the code tools and the shell
-/// sandbox share. The typed decode checks its shape; the audit only keeps it out of the layers.
-const WRITE_ROOTS: &str = "write_roots";
+const TOP_KEYS: [&str; 5] = ["providers", "models", "agents", "mcp_servers", MOUSE];
 /// The top-level bool: whether the full screen captures the mouse. A terminal setting, not an agent's, so
 /// the audit keeps it out of the layers and the typed decode checks its value.
 const MOUSE: &str = "mouse";
@@ -91,11 +81,12 @@ const TOP: &str = ".";
 const OUTSIDE_WRITES_GONE: &str = "`outside_writes` was removed — a write outside every root asks the user, and a run with nobody to ask refuses it; delete the key";
 
 /// Keys a redesign retired — `(section, key, replacement)`, `section` being `""` for "any entry of any
-/// section" and [`TOP`] for the top level — and the sentence that tells the user what to write instead. They
+/// section" and [`TOP`] for the top level — and the sentence that tells the user what to write instead, where
+/// `{entry}` is the entry's name (`agents.{entry}.allow`). They
 /// are checked whatever the key's value, before the "belongs under" table (and, at the top level, before
 /// `unknown top-level key`), so the message names the replacement rather than a layer; a key the section
 /// still owns never gets here.
-const RETIRED_KEYS: [(&str, &str, &str); 5] = [
+const RETIRED_KEYS: [(&str, &str, &str); 7] = [
     (
         "",
         "model",
@@ -115,6 +106,17 @@ const RETIRED_KEYS: [(&str, &str, &str); 5] = [
     // 2026-11-21: a write outside every root asks, or is refused when nobody can be asked (X-92).
     (TOP, "outside_writes", OUTSIDE_WRITES_GONE),
     ("agents", "outside_writes", OUTSIDE_WRITES_GONE),
+    // 2026-11-22: a directory is an `allow:` entry of each agent that may write it (X-91, X-117).
+    (
+        TOP,
+        "write_roots",
+        "`write_roots` is now `allow:` on an agent — list each directory in `agents.<name>.allow`, or pass `--allow <dir>` for one run",
+    ),
+    (
+        "agents",
+        "write_roots",
+        "`write_roots` is now `allow:` — list each directory in `agents.{entry}.allow`",
+    ),
 ];
 
 /// Toolsets that were removed or renamed; anything else unknown gets the generic refusal.
@@ -153,9 +155,7 @@ pub(crate) fn audit(doc: &Value) -> Result<(), ConfigError> {
                 ),
             });
         }
-        if name != WRITE_ROOTS {
-            audit_section(name, section)?;
-        }
+        audit_section(name, section)?;
     }
     Ok(())
 }
@@ -215,13 +215,7 @@ fn check_key(section: &str, entry: &str, key: &str) -> Result<(), ConfigError> {
     if let Some(hint) = retired(section, key) {
         return Err(ConfigError::Key {
             at,
-            message: hint.to_owned(),
-        });
-    }
-    if key == WRITE_ROOTS {
-        return Err(ConfigError::Key {
-            at,
-            message: format!("`{key}` is a top-level key: it applies to every agent"),
+            message: hint.replace("{entry}", entry),
         });
     }
     // The two overlapping layers (`models:` and `agents:` share the four layered parameters) can never
@@ -439,7 +433,7 @@ mod tests {
         );
         assert_eq!(
             check("agnets:\n  a: {}\n"),
-            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, write_roots:, mouse:)"
+            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, mouse:)"
         );
         assert_eq!(
             check("mcp_servers:\n  fs: {commadn: npx}\n"),
@@ -490,23 +484,25 @@ mod tests {
         );
     }
 
-    /// `write_roots:` is a top-level list — for every agent, so an agent entry refuses it by name.
+    /// `write_roots:` is retired: the load fails on it at the top level and in an agent, whatever its value, with
+    /// §7's texts (docs/design/config-allow.md); another layer does not own it, so there it is unknown.
     #[test]
-    fn write_roots_is_a_top_level_key_only() {
-        assert_eq!(check("write_roots: [~/scratch, ../shared, /tmp/x]\n"), "");
-        assert_eq!(check("write_roots: []\nagents:\n  a: {model: m}\n"), "");
-        assert_eq!(
-            check("agents:\n  a: {model: m, write_roots: [/tmp/x]}\n"),
-            "agents.a.write_roots: `write_roots` is a top-level key: it applies to every agent"
-        );
-        assert_eq!(
-            check("models:\n  m: {provider: p, id: i, write_roots: [/tmp/x]}\n"),
-            "models.m.write_roots: `write_roots` is a top-level key: it applies to every agent"
-        );
-        // The audit does not look inside a set's value: `tools.shell.write` is the shell factory's refusal.
-        assert_eq!(
-            check("agents:\n  a: {model: m, tools: {shell: {write: [/tmp/x]}}}\n"),
-            ""
+    fn write_roots_is_retired_at_both_coordinates() {
+        for value in ["[~/scratch, ../shared, /tmp/x]", "[]", "/tmp/x", "null"] {
+            assert_eq!(
+                check(&format!("write_roots: {value}\n")),
+                "write_roots: `write_roots` is now `allow:` on an agent — list each directory in `agents.<name>.allow`, or pass `--allow <dir>` for one run"
+            );
+            assert_eq!(
+                check(&format!(
+                    "agents:\n  coder: {{model: m, write_roots: {value}}}\n"
+                )),
+                "agents.coder.write_roots: `write_roots` is now `allow:` — list each directory in `agents.coder.allow`"
+            );
+        }
+        assert!(
+            check("models:\n  m: {provider: p, id: i, write_roots: [/tmp/x]}\n")
+                .starts_with("models.m.write_roots: unknown key (want provider, ")
         );
     }
 

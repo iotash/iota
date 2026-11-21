@@ -557,7 +557,7 @@ fn an_unknown_key_is_refused_with_its_coordinate() {
         ),
         (
             "agnets:\n  coder: {}\n",
-            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, write_roots:, mouse:)",
+            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, mouse:)",
         ),
     ] {
         assert_eq!(
@@ -632,27 +632,32 @@ fn a_later_file_replaces_whole_entries() {
     let _ = dir;
 }
 
-/// `write_roots:` is a top-level list kept as written; every file of the stack adds its entries, home
-/// first (repeats are dropped once resolved, by `ToolEnv::with_write_roots`).
+/// `write_roots:` was retired for `allow:` (docs/design/config-allow.md §7): a file that still sets it fails the
+/// load, whatever the value and in whichever file of the stack, naming what to write instead; the directories
+/// an agent's `allow:` lists load as written, each agent its own.
 #[test]
-fn write_roots_load_as_written_and_add_up_across_the_stack() {
-    let cfg = parse("write_roots: [/opt/scratch, ../shared]\n").expect("parses");
-    assert_eq!(cfg.write_roots, ["/opt/scratch", "../shared"]);
-    assert!(parse("").expect("parses").write_roots.is_empty());
-    assert!(parse("write_roots: {a: b}\n").is_err(), "a list, not a map");
+fn write_roots_fails_the_load_and_allow_holds_the_directories() {
+    let gone = "write_roots: `write_roots` is now `allow:` on an agent — list each directory in `agents.<name>.allow`, or pass `--allow <dir>` for one run";
+    for value in ["[/opt/scratch, ../shared]", "[]"] {
+        assert_eq!(refusal(&format!("write_roots: {value}\n")), gone, "{value}");
+    }
     let (dir, dirs) = temp_project(&[
         ("home/.iota.yaml", "write_roots: [/tmp/a, /tmp/b]\n"),
-        (".iota.yaml", "write_roots: [/tmp/b, /tmp/c]\n"),
+        (".iota.yaml", "agents:\n  a: {allow: [/tmp/b, /tmp/c]}\n"),
     ]);
-    let cfg = Config::load(
+    let err = Config::load(
         None,
         &Env::default().with_dirs(dirs),
         &mut |_, _, _| true,
         &mut |_| {},
     )
-    .expect("loads");
-    assert_eq!(cfg.write_roots, ["/tmp/a", "/tmp/b", "/tmp/b", "/tmp/c"]);
+    .expect_err("the home file's key fails the load");
+    assert!(err.to_string().ends_with(gone), "{err}");
     let _ = dir;
+    let cfg = parse("agents:\n  a: {allow: [/opt/scratch, ../shared]}\n  b: {allow: [/tmp/c]}\n")
+        .expect("parses");
+    assert_eq!(cfg.agents["a"].allow, ["/opt/scratch", "../shared"]);
+    assert_eq!(cfg.agents["b"].allow, ["/tmp/c"]);
 }
 
 /// `outside_writes:` was removed: a file that still sets it fails the load, whatever the value, naming what
@@ -697,26 +702,26 @@ fn mouse_is_a_top_level_bool_the_last_file_decides() {
     }
 }
 
-/// An entry that names no directory refuses the load, by position and with the reason: a blank one would
-/// quietly be the project root, a `~` with no home a directory called `~`.
+/// An `allow:` directory that names nothing refuses the load, by position and with the reason: a blank one
+/// would quietly be the project root, a `~` with no home a directory called `~`.
 #[test]
-fn a_write_root_that_names_nothing_is_refused() {
+fn an_allow_directory_that_names_nothing_is_refused() {
     for (yaml, want) in [
         (
-            "write_roots: [/tmp/a, '']\n",
-            "write_roots[1]: an empty entry names no directory",
+            "agents:\n  a: {allow: [/tmp/a, '']}\n",
+            "agents.a.allow[1]: is blank",
         ),
         (
-            "write_roots: ['   ']\n",
-            "write_roots[0]: an empty entry names no directory",
+            "agents:\n  a: {allow: ['   ']}\n",
+            "agents.a.allow[0]: is blank",
         ),
         (
-            "write_roots: [/tmp/a, /tmp/b, ~/x]\n",
-            "write_roots[2]: \"~/x\" starts with `~`, but there is no home directory to expand it to",
+            "agents:\n  a: {allow: [/tmp/a, /tmp/b, ~/x]}\n",
+            "agents.a.allow[2]: \"~\" needs a home directory, and this run has none",
         ),
         (
-            "write_roots: ['~']\n",
-            "write_roots[0]: \"~\" starts with `~`, but there is no home directory to expand it to",
+            "agents:\n  a: {allow: ['~']}\n",
+            "agents.a.allow[0]: \"~\" needs a home directory, and this run has none",
         ),
     ] {
         assert_eq!(
@@ -728,9 +733,13 @@ fn a_write_root_that_names_nothing_is_refused() {
     // With a home, `~` expands; `~alice` is not a home reference and stands as a name.
     let (dir, dirs) = temp_project(&[]);
     let env = Env::default().with_dirs(dirs);
-    let cfg =
-        Config::parse(b"write_roots: ['~', ~/x, ~alice]\n", &env, &mut |_| {}).expect("parses");
-    assert_eq!(cfg.write_roots, ["~", "~/x", "~alice"]);
+    let cfg = Config::parse(
+        b"agents:\n  a: {allow: ['~', ~/x, ~alice]}\n",
+        &env,
+        &mut |_| {},
+    )
+    .expect("parses");
+    assert_eq!(cfg.agents["a"].allow, ["~", "~/x", "~alice"]);
     let _ = dir;
 }
 

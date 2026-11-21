@@ -8,10 +8,10 @@
 #
 #   54.1 `/allow ../zz-out` grants the sibling directory: the transcript says it is writable for this session,
 #        and `/status` counts the grant;
-#   54.2 the bare `/allow` opens `Grants` and `Static` (the config names a `write_roots:` entry) and no
+#   54.2 the bare `/allow` opens `Grants` and `Static` (the agent's `allow:` names a directory) and no
 #        directory browser; the Grants tab lists the grant with its level; Space checks it, Enter commits: the
-#        transcript says it was revoked, and `/status`'s Grants row is gone;
-#   54.3 the Static tab says what it is and lists the `write_roots:` entry with its source; it is read-only:
+#        transcript says it was revoked, and `/status`'s Grants row counts the `allow:` directory alone;
+#   54.3 the Static tab says what it is and lists the `allow:` directory with its source; it is read-only:
 #        Enter there closes the surface and changes nothing.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
@@ -20,14 +20,13 @@
 # long, and the notice and the row must not wrap.
 mkdir -p "$SCEN_TMP/proj" "$SCEN_TMP/zz-out" "$SCEN_TMP/rooted"
 
-# The default config plus one `write_roots:` entry, so the Static tab is shown.
+# The default config plus one `allow:` directory on the agent, so the Static tab is shown.
 CONFIG_BODY="providers:
   mock: {type: openai, key: test, url: \"http://127.0.0.1:$IOTA_PORT\"}
 models:
   m: mock:fake
 agents:
-  default: {model: m, choices: [m, \"mock:*\"]}
-write_roots: [\"$SCEN_TMP/rooted\"]"
+  default: {model: m, choices: [m, \"mock:*\"], allow: [\"$SCEN_TMP/rooted\"]}"
 export CONFIG_BODY
 
 _launch "$SCEN_TMP/proj" openai fake 160 30 || finish
@@ -61,7 +60,8 @@ settle || miss "frame never settled after the revocation"
 type_ '/status'
 key Enter
 wait_vis 'Messages' || miss "/status never opened again"
-check "no Grants row after the revocation" "$(count_vis '(/allow lists them)')" 0
+check "no session grant after the revocation" "$(count_vis 'for this session (/allow lists them)')" 0
+check "the Grants row counts the allow: directory alone" "$(count_vis '1 static (/allow lists them)')" 1
 key Escape
 settle || miss "frame never settled after the last /status"
 
@@ -71,7 +71,7 @@ key Enter
 wait_vis 'No grants. /allow <dir>' || miss "the second /allow never opened on its empty Grants tab"
 key Tab
 wait_vis 'not grants made here' || miss "the Static tab never said what it is"
-check "the row names its source and the root" "$(cap | grep -F 'write_roots:  ' | grep -cF 'rooted' | tr -d ' ')" 1
+check "the row names its source and the root" "$(cap | grep -F 'allow:   ' | grep -cF 'rooted' | tr -d ' ')" 1
 check "the tab is a viewer" "$(count_vis 'q/Esc close')" 1
 key Enter
 wait_gone 'not grants made here' || miss "Enter on the Static tab never closed the surface"

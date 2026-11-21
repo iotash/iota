@@ -179,7 +179,7 @@ crossterm 0.29 默认的 unix 事件源（mio、边沿触发）有两处会让�
 
 ## 关闭开关（`mouse: false`）
 
-`~/.iota.yaml`（或项目的 `.iota.yaml`）顶层 `mouse: false`。之前没有任何 UI 设置项，这是最小的那一个：顶层标量，和 `write_roots` 并列，YAML 1.1 布尔，栈里最后一个写它的文件说了算。关了之后**一个鼠标序列都不写**（不请求也不"关闭"），终端自己的选择照旧，跨屏选择先 Ctrl+O 写出。**滚轮归终端，但终端拿它做什么不由 iota 决定**：tmux 3.8 在 alt 屏里什么也不做（L4 47 断言了：不进 copy mode、不变成 ↑↓）；不少终端默认在 alt 屏里把滚轮变成 ↑/↓——iTerm2 的 "scroll wheel sends arrow keys in alternate screen mode"、Terminal.app、WezTerm 的 alternate scroll——而 ↑/↓ 在空 composer 上会翻输入历史（X-89），这正是 X-102 不用 1007 的理由。这些终端里 `mouse: false` 的滚轮会翻历史而不是滚对话；**没验证**（这里没有图形终端），列在 TUI-VERIFY §4c.7。键盘滚动不受影响。会话选择器（`iota resume`）同样遵守。
+`~/.iota.yaml`（或项目的 `.iota.yaml`）顶层 `mouse: false`。之前没有任何 UI 设置项，这是最小的那一个：顶层标量，和 `providers:` 等并列，YAML 1.1 布尔，栈里最后一个写它的文件说了算。关了之后**一个鼠标序列都不写**（不请求也不"关闭"），终端自己的选择照旧，跨屏选择先 Ctrl+O 写出。**滚轮归终端，但终端拿它做什么不由 iota 决定**：tmux 3.8 在 alt 屏里什么也不做（L4 47 断言了：不进 copy mode、不变成 ↑↓）；不少终端默认在 alt 屏里把滚轮变成 ↑/↓——iTerm2 的 "scroll wheel sends arrow keys in alternate screen mode"、Terminal.app、WezTerm 的 alternate scroll——而 ↑/↓ 在空 composer 上会翻输入历史（X-89），这正是 X-102 不用 1007 的理由。这些终端里 `mouse: false` 的滚轮会翻历史而不是滚对话；**没验证**（这里没有图形终端），列在 TUI-VERIFY §4c.7。键盘滚动不受影响。会话选择器（`iota resume`）同样遵守。
 
 ## surface 占视口（C13）
 

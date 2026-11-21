@@ -2,8 +2,8 @@
 //! enforcement point of a run. Two kinds of grant, kept apart:
 //!
 //! - a **directory grant** — WHERE: a write root added at run time, the real directory and its subtree. The
-//!   code writers' jail reads [`Grants::live_dirs`] at every call, beside the static `write_roots:`, so a write
-//!   under a granted directory is INSIDE (asked or not by `auto_write`, like one in the project root);
+//!   code writers' jail reads [`Grants::roots`] at every call, so a write under a granted directory is INSIDE
+//!   (asked or not by `auto_write`, like one in the project root);
 //! - a **tool grant** — WHETHER: the question is not asked again for that tool. It never answers a call bound
 //!   to a location ([`crate::tool::approval::gate`]).
 //!
@@ -259,13 +259,12 @@ impl Grants {
                 .any(|s| !s.tools.is_empty())
     }
 
-    /// The write roots in force now: the static `statics` (the top-level `write_roots:`), then the static
-    /// level's directories (`allow:`, then `--allow`), then the live directory grants ([`Self::live_dirs`]) — what the
+    /// The write roots in force now: the static level's directories (`allow:`, then `--allow`), then the live directory grants ([`Self::live_dirs`]) — what the
     /// code jail, the shell sandbox, the protected table and the harness's `write roots:` line read, each root
     /// once. A directory of the static level is live by the grant's rule: one replaced by a link since the
     /// assembly is left out until it comes back.
-    pub fn roots(&self, statics: &[PathBuf]) -> Vec<PathBuf> {
-        let mut roots = statics.to_vec();
+    pub fn roots(&self) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
         for d in self.fixed.dirs.iter().filter(|d| is_live(d)) {
             push_new(&mut roots, d.clone());
         }
@@ -327,15 +326,7 @@ mod tests {
     }
 
     fn jail(root: &Path, grants: &Arc<Grants>) -> Arc<CodeSet> {
-        CodeSet::new(
-            root.to_path_buf(),
-            Vec::new(),
-            true,
-            true,
-            None,
-            Arc::clone(grants),
-        )
-        .expect("set")
+        CodeSet::new(root.to_path_buf(), true, true, None, Arc::clone(grants)).expect("set")
     }
 
     /// The hold's trigger: a tool grant at either level waives, a directory grant does not, and a revoke takes
@@ -381,7 +372,7 @@ mod tests {
         assert!(g.allows(&mcp(ServerId::Config("github".to_owned()), "push")));
         assert!(!g.allows(&ToolKey::Builtin("edit_file".to_owned())));
         assert!(g.waives(), "a static tool grant waives");
-        assert_eq!(g.roots(&[]), std::slice::from_ref(&out));
+        assert_eq!(g.roots(), std::slice::from_ref(&out));
         assert!(g.live_dirs().is_empty(), "no door granted a directory");
         assert!(
             inside(&jail(&root, &g), &out.join("x.txt")),
@@ -401,7 +392,7 @@ mod tests {
         g.replace_project(GrantSet::default());
         assert_eq!(g.statics(), &fixed);
         assert!(g.allows(&shell));
-        assert_eq!(g.roots(&[]), std::slice::from_ref(&out));
+        assert_eq!(g.roots(), std::slice::from_ref(&out));
         let directory_only = Grants::with_static(GrantSet {
             dirs: vec![out],
             tools: Vec::new(),
@@ -425,15 +416,12 @@ mod tests {
 
         std::fs::rename(&out, t.path().join("moved")).expect("move away");
         std::os::unix::fs::symlink(&elsewhere, &out).expect("link in its place");
-        assert!(
-            g.roots(&[]).is_empty(),
-            "a stale static directory is no root"
-        );
+        assert!(g.roots().is_empty(), "a stale static directory is no root");
         assert!(!inside(&cs, &out.join("x.txt")));
 
         std::fs::remove_file(&out).expect("unlink");
         std::fs::create_dir(&out).expect("the directory again");
-        assert_eq!(g.roots(&[]), std::slice::from_ref(&out));
+        assert_eq!(g.roots(), std::slice::from_ref(&out));
         assert!(inside(&cs, &out.join("x.txt")));
     }
 
@@ -571,12 +559,14 @@ mod tests {
     }
 
     /// Levels only add (docs/design/grants.md §3): a grant held at both levels is in force while either holds it
-    /// — taking it from one leaves the other's — and the roots in force are the static ones, then each live
+    /// — taking it from one leaves the other's — and the roots in force are the static level's, then each live
     /// directory grant once.
     #[test]
     fn levels_only_add() {
-        let (_t, _root, out) = fixture();
-        let g = Grants::default();
+        let (_t, root, out) = fixture();
+        let mut fixed = GrantSet::default();
+        fixed.add_dir(root.clone());
+        let g = Grants::with_static(fixed);
         let tool = || ToolKey::Builtin("edit_file".to_owned());
         for level in [Level::Session, Level::Project] {
             g.update(level, |s| {
@@ -584,8 +574,7 @@ mod tests {
                 s.add_tool(tool());
             });
         }
-        let statics = [PathBuf::from("/data/a")];
-        assert_eq!(g.roots(&statics), [statics[0].clone(), out.clone()]);
+        assert_eq!(g.roots(), [root.clone(), out.clone()]);
 
         g.update(Level::Session, |s| *s = GrantSet::default());
         assert!(g.allows(&tool()), "the project's still holds");
@@ -595,6 +584,6 @@ mod tests {
         g.update(Level::Project, |s| *s = GrantSet::default());
         assert!(g.allows(&tool()), "the session's still holds");
         assert!(g.live_dirs().is_empty());
-        assert_eq!(g.roots(&statics), statics);
+        assert_eq!(g.roots(), [root]);
     }
 }

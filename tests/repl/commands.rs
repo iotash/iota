@@ -3625,6 +3625,8 @@ async fn the_bare_allow_adds_the_static_tab_when_there_are_static_roots() {
     let (t, root, out) = allow_fixture();
     let fixed = t.path().join("static");
     std::fs::create_dir(&fixed).expect("static");
+    let mut config = iota::tool::grants::GrantSet::default();
+    config.add_dir(iota::app::fs::physical(&fixed).expect("real"));
     let f = Fixture::new(vec![
         input("/allow"),
         Reply::Tabbed(TabbedResult {
@@ -3637,9 +3639,9 @@ async fn the_bare_allow_adds_the_static_tab_when_there_are_static_roots() {
         allow_cancel(),
         Reply::Interrupted,
     ]);
-    let grants = Arc::new(iota::tool::grants::Grants::default());
+    let grants = Arc::new(iota::tool::grants::Grants::with_static(config.clone()));
     let mut params = allow_params(&f, &root, &grants);
-    params.footing.write_roots = vec![fixed];
+    params.footing.config = config;
     iota::repl::run(params).await.expect("clean exit");
 
     assert_eq!(grants.live_dirs(), std::slice::from_ref(&out));

@@ -485,7 +485,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     // The harness, now that the hosts it names in `<environment>` are known; the day and the live grants it
     // was composed with are what each turn compares against (`refresh_harness`).
     let harness_day = harness.today();
-    let harness_roots = grants.roots(&harness.env.write_roots);
+    let harness_roots = grants.roots();
     let harness_text = harness.compose(&harness_day, pres.environment(), &harness_roots);
     let mut budget = ContextBudget::new(params.context_window.value);
     if bot_state.is_some() {
@@ -1584,10 +1584,7 @@ async fn after_bot_turn(
 /// same breath as a new day (§3.4's third moment), so the two changes cost one miss, not two.
 async fn refresh_harness(repl: &mut Repl) {
     let today = repl.conv.harness_inputs.today();
-    let roots = repl
-        .handles
-        .grants
-        .roots(&repl.conv.harness_inputs.env.write_roots);
+    let roots = repl.handles.grants.roots();
     let new_day = today != repl.conv.harness_day;
     if !new_day && roots == repl.conv.harness_roots {
         return;

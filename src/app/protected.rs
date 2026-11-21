@@ -129,7 +129,7 @@ fn folded(p: &Path) -> PathBuf {
         .collect()
 }
 
-/// The table for a run rooted at `root`, with the extra write roots (`write_roots:`) and the user's `home` when
+/// The table for a run rooted at `root`, with the extra write roots (`Grants::roots`) and the user's `home` when
 /// there is one (without one there is no home config, trust record or sessions tree to protect). An entry under
 /// another entry comes after it (`.git` before `.git/hooks`), the order a bind-mount backend must apply them in.
 ///

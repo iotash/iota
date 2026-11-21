@@ -92,7 +92,7 @@ pub(crate) enum Write {
     /// (the read ledger's key), `real` where the write would land — what the prompt names and what is opened.
     Outside { path: PathBuf, real: PathBuf },
     /// On the protected table ([`protected::table`]), inside a root or not: never written without the
-    /// user's approval of this one file, whatever `auto_write`, `write_roots:` or a grant says, and the
+    /// user's approval of this one file, whatever `auto_write`, `allow:` or a grant says, and the
     /// trust record and the sessions tree never at all ([`Why::approvable`]). `path` and `real` as for
     /// [`Write::Outside`].
     Protected {
@@ -104,15 +104,14 @@ pub(crate) enum Write {
     Unverifiable,
 }
 
-/// State shared by the six tools: the project root, the extra write roots, the grant store, whether anyone
-/// can be asked and the read ledger.
+/// State shared by the six tools: the project root, the grant store, whether anyone can be asked and the read
+/// ledger.
 pub(crate) struct CodeSet {
+    /// The project root. Relative arguments and every display stay anchored on it.
     root: Root,
-    /// `ToolEnv::write_roots`: further roots the write jail accepts, fixed at assembly. Relative arguments and
-    /// every display stay anchored on `root`.
-    extra: Vec<Root>,
-    /// The run's grant store: its live directory grants are roots too, read at every call
-    /// ([`Grants::live_dirs`]) — each one a real path, so its configured and real locations are one.
+    /// The run's grant store: its directories — the static level's and the live grants — are the further roots
+    /// the write jail accepts, read at every call ([`Grants::roots`]), each one a real path, so its configured
+    /// and real locations are one.
     grants: Arc<Grants>,
     /// The process working directory — the display anchor of the header-path ladder
     /// (captured at set construction), not an execution dir.
@@ -128,28 +127,21 @@ pub(crate) struct CodeSet {
 }
 
 impl CodeSet {
-    /// A set rooted at `root`, also admitting `extra` (the header-path anchor is the process cwd;
-    /// when it cannot be read it stays empty and the ladder skips its rungs). A root whose real
-    /// location cannot be worked out (see [`fs::physical`]) fails the set — `CodeRoot` for the
-    /// project root, there being nothing to jail paths to, `WriteRoot` for an extra one, which is
-    /// never silently dropped. `attended` is whether the run has somebody to ask; `home` is the user's home,
-    /// for the protected table; `grants` the run's store, whose directory grants the jail reads per call.
+    /// A set rooted at `root` (the header-path anchor is the process cwd; when it cannot be read it stays
+    /// empty and the ladder skips its rungs). A root whose real location cannot be worked out (see
+    /// [`fs::physical`]) fails the set with `CodeRoot`, there being nothing to jail paths to. `attended` is
+    /// whether the run has somebody to ask; `home` is the user's home, for the protected table; `grants` the
+    /// run's store, whose directories the jail reads per call.
     pub(crate) fn new(
         root: PathBuf,
-        extra: Vec<PathBuf>,
         auto_write: bool,
         attended: bool,
         home: Option<PathBuf>,
         grants: Arc<Grants>,
     ) -> Result<Arc<Self>, SetError> {
         let root = Root::new(root.clone()).ok_or(SetError::CodeRoot(root))?;
-        let extra = extra
-            .into_iter()
-            .map(|p| Root::new(p.clone()).ok_or(SetError::WriteRoot(p)))
-            .collect::<Result<_, _>>()?;
         Ok(Arc::new(Self {
             root,
-            extra,
             grants,
             cwd: std::env::current_dir().unwrap_or_default(),
             auto_write,
@@ -164,7 +156,7 @@ impl CodeSet {
         &self.root.path
     }
 
-    /// The root a walk from `base` is anchored on — the project root or the extra root that
+    /// The root a walk from `base` is anchored on — the project root or the static directory that
     /// lexically contains it, the project root first: its `.gitignore` filters the walk and its
     /// relative paths are what patterns match. `base` itself when no root contains it lexically
     /// (reads are open, so a walk may start anywhere). `base` is a [`Self::walk_base`], so this
@@ -176,19 +168,16 @@ impl CodeSet {
             .unwrap_or(base)
     }
 
-    /// The roots fixed at assembly, `(as configured, real)`: the project root, the static extra roots, then the
-    /// store's static directories (`allow:`), each its own real location.
+    /// The roots fixed at assembly, `(as configured, real)`: the project root, then the store's static
+    /// directories (`allow:`, `--allow`), each its own real location.
     fn fixed_roots(&self) -> impl Iterator<Item = (&Path, &Path)> {
-        std::iter::once(&self.root)
-            .chain(&self.extra)
-            .map(|r| (r.path.as_path(), r.real.as_path()))
-            .chain(
-                self.grants
-                    .statics()
-                    .dirs
-                    .iter()
-                    .map(|d| (d.as_path(), d.as_path())),
-            )
+        std::iter::once((self.root.path.as_path(), self.root.real.as_path())).chain(
+            self.grants
+                .statics()
+                .dirs
+                .iter()
+                .map(|d| (d.as_path(), d.as_path())),
+        )
     }
 
     /// Where a walk from the existing directory `base` really starts: its real location, expressed
@@ -237,11 +226,11 @@ impl CodeSet {
 
     /// The write jail's classification. The path is [`Self::read_path`]'s (Err: `missing required
     /// argument: path`); the decision is physical: the path's real location (symlinks resolved, see
-    /// [`fs::physical`]) inside the real location of the project root, of an extra root or of a live
-    /// directory grant (read now) is [`Write::Inside`]; a known location outside them all — a symlink under a root that points out of
+    /// [`fs::physical`]) inside the real location of the project root or of a directory of the store (static
+    /// or live, read now) is [`Write::Inside`]; a known location outside them all — a symlink under a root that points out of
     /// every root, dangling or not, included — is [`Write::Outside`]; a location that cannot be worked out
     /// is [`Write::Unverifiable`]. Before any of that, a real location on the protected table is
-    /// [`Write::Protected`] — a root, `write_roots:` included, never admits one. The target need not exist,
+    /// [`Write::Protected`] — a root, a granted directory included, never admits one. The target need not exist,
     /// so `write_file` can create one.
     ///
     /// A `..` in the argument is folded before any link is resolved (`link/../x` is `x`, not
@@ -270,11 +259,10 @@ impl CodeSet {
         )
     }
 
-    /// The extra roots in force now: the static ones as configured, then the live directory grants
+    /// The extra roots in force now: the static level's directories, then the live directory grants
     /// ([`Grants::roots`]).
     fn roots(&self) -> Vec<PathBuf> {
-        let statics: Vec<PathBuf> = self.extra.iter().map(|r| r.path.clone()).collect();
-        self.grants.roots(&statics)
+        self.grants.roots()
     }
 
     /// Where a writer's call may write, decided at call time — after any prompt, so a link swapped since is
@@ -285,7 +273,7 @@ impl CodeSet {
     /// `path is outside the project root ({root}): {arg} — ` followed by why it was not approved (this call
     /// has no approval, or nobody can be asked and how to allow it), `cannot verify {arg} inside the project
     /// root ({root})` — `{root}` followed,
-    /// when `write_roots:` lists any or a directory is granted, by `) and the extra write roots ({e1}, {e2}`.
+    /// when a directory is allowed (`allow:`, `--allow`) or granted, by `) and the extra write roots ({e1}, {e2}`.
     ///
     /// A protected path ([`Write::Protected`]) is admitted only when "allow once" named exactly its real
     /// location — never by a grant — and the trust record and the sessions tree never ([`Why::approvable`]):
@@ -395,22 +383,16 @@ impl CodeSet {
     }
 
     /// `the project root`, or `the project root or the extra write roots ({e1}, {e2})` — where the
-    /// writers' descriptions say a write may land: the static roots, then the store's static directories.
+    /// writers' descriptions say a write may land: the store's static directories.
     pub(crate) fn write_scope(&self) -> String {
-        let mut statics: Vec<PathBuf> = self.extra.iter().map(|r| r.path.clone()).collect();
-        for d in &self.grants.statics().dirs {
-            if !statics.contains(d) {
-                statics.push(d.clone());
-            }
-        }
-        match extra_list(&statics) {
+        match extra_list(&self.grants.statics().dirs) {
             None => "the project root".to_owned(),
             Some(extra) => format!("the project root or the extra write roots ({extra})"),
         }
     }
 
     /// `{root}`, or `{root}) and the extra write roots ({e1}, {e2}` — the inside of the error
-    /// texts' parentheses: the static roots and the live directory grants, read now.
+    /// texts' parentheses: the static directories and the live directory grants, read now.
     fn roots_clause(&self) -> String {
         let root = self.root.path.display();
         match extra_list(&self.roots()) {
@@ -419,19 +401,16 @@ impl CodeSet {
         }
     }
 
-    /// Whether a real location lies inside the real location of any root: the project root, a static extra
-    /// root, or one of `roots` ([`Self::roots`]: a live directory grant is already a real path; a static one as
-    /// configured holds a real location only where it is its own real location).
+    /// Whether a real location lies inside the real location of any root: the project root or one of `roots`
+    /// ([`Self::roots`], each already a real path).
     fn admits_real(&self, real: &Path, roots: &[PathBuf]) -> bool {
-        std::iter::once(&self.root)
-            .chain(&self.extra)
-            .map(|r| r.real.as_path())
+        std::iter::once(self.root.real.as_path())
             .chain(roots.iter().map(PathBuf::as_path))
             .any(|r| paths::within(r, real))
     }
 
     /// Root-relative slash path; `"."` for the root; absolute outside the project root (a read
-    /// anywhere, a write under an extra root) or when `rel` fails.
+    /// anywhere, a write under a granted directory) or when `rel` fails.
     pub(crate) fn display(&self, abs: &Path) -> String {
         if !paths::within(&self.root.path, abs) {
             return abs.display().to_string();
@@ -489,7 +468,6 @@ pub fn new_code_set(env: &ToolEnv, node: Option<&RawNode>) -> Result<Vec<Arc<dyn
     let root = env.root().unwrap_or_else(|_| PathBuf::from("."));
     let cs = CodeSet::new(
         root,
-        env.write_roots.clone(),
         cfg.auto_write,
         env.interactor.is_some(),
         env.dirs.home.clone(),
@@ -637,7 +615,6 @@ mod tests {
     fn paths_and_display_are_lexical() {
         let cs = CodeSet::new(
             PathBuf::from("/proj"),
-            Vec::new(),
             false,
             false,
             None,
@@ -724,15 +701,8 @@ mod tests {
         symlink("lb", root.join("la")).expect("la");
         symlink("la", root.join("lb")).expect("lb");
         let real_out = crate::app::canonical(&out).expect("real out");
-        let cs = CodeSet::new(
-            root.clone(),
-            Vec::new(),
-            false,
-            true,
-            None,
-            std::sync::Arc::default(),
-        )
-        .expect("set");
+        let cs =
+            CodeSet::new(root.clone(), false, true, None, std::sync::Arc::default()).expect("set");
         assert_eq!(
             cs.write_path("dir/x"),
             Ok(Write::Inside(root.join("dir/x")))
@@ -780,7 +750,6 @@ mod tests {
         let set = |attended| {
             CodeSet::new(
                 root.clone(),
-                Vec::new(),
                 true,
                 attended,
                 None,
@@ -827,12 +796,13 @@ mod tests {
         }
     }
 
-    /// `write_roots:`: a path under an extra root is accepted (relative arguments still hang off
-    /// the project root), a path under no root is refused naming every root, a link inside an
-    /// extra root that leaves every root is refused, and the display stays root-anchored.
+    /// A static directory of the store (`allow:`, `--allow`) is a root: a path under it is accepted (relative
+    /// arguments still hang off the project root), a path under no root is refused naming every root by its
+    /// real location, a link inside a static directory that leaves every root is refused, and the display
+    /// stays root-anchored.
     #[cfg(unix)]
     #[test]
-    fn write_path_admits_the_extra_write_roots() {
+    fn the_jail_admits_a_static_directory_from_the_store() {
         use std::os::unix::fs::symlink;
         let (t, root, out) = jail_fixture();
         let other = t.path().join("other");
@@ -840,13 +810,16 @@ mod tests {
         let missing = t.path().join("not/yet");
         symlink(out.join("secret.txt"), other.join("escape")).expect("link");
         symlink(root.join("a.txt"), other.join("home")).expect("link");
+        let real = |p: &Path| crate::app::fs::physical(p).expect("real");
+        let mut fixed = crate::tool::grants::GrantSet::default();
+        fixed.add_dir(real(&other));
+        fixed.add_dir(real(&missing));
         let cs = CodeSet::new(
             root.clone(),
-            vec![other.clone(), missing.clone()],
             false,
             false,
             None,
-            std::sync::Arc::default(),
+            std::sync::Arc::new(crate::tool::grants::Grants::with_static(fixed)),
         )
         .expect("set");
         let abs = |p: &Path| p.to_str().expect("utf-8").to_owned();
@@ -863,8 +836,8 @@ mod tests {
         let roots = format!(
             "{}) and the extra write roots ({}, {}",
             root.display(),
-            other.display(),
-            missing.display()
+            real(&other).display(),
+            real(&missing).display()
         );
         for arg in [
             abs(&out.join("secret.txt")),
@@ -895,27 +868,6 @@ mod tests {
         assert_eq!(cs.display(&root.join("dir/x")), "dir/x");
     }
 
-    /// An extra root whose real location is unknown refuses the set, never silently dropped.
-    #[cfg(unix)]
-    #[test]
-    fn an_unresolvable_write_root_refuses_the_set() {
-        let (t, root, _out) = jail_fixture();
-        let looped = t.path().join("looped");
-        std::os::unix::fs::symlink(&looped, &looped).expect("self link");
-        assert_eq!(
-            CodeSet::new(
-                root,
-                vec![looped.clone()],
-                false,
-                false,
-                None,
-                std::sync::Arc::default()
-            )
-            .err(),
-            Some(crate::tool::sets::SetError::WriteRoot(looped))
-        );
-    }
-
     #[cfg(unix)]
     #[test]
     fn write_path_refuses_symlinks_that_leave_the_root() {
@@ -930,15 +882,8 @@ mod tests {
         symlink("s/../secret.txt", root.join("trick")).expect("link");
         // The same through the dangling-link branch: the link text is walked again, physically.
         symlink("s/../missing.txt", root.join("trick_dangling")).expect("link");
-        let cs = CodeSet::new(
-            root.clone(),
-            Vec::new(),
-            false,
-            false,
-            None,
-            std::sync::Arc::default(),
-        )
-        .expect("set");
+        let cs =
+            CodeSet::new(root.clone(), false, false, None, std::sync::Arc::default()).expect("set");
         for arg in [
             "escape",
             "outdir",
@@ -961,15 +906,8 @@ mod tests {
         symlink(root.join("a.txt"), root.join("alias")).expect("link");
         symlink("dir", root.join("subdir")).expect("link");
         symlink("dir/later.txt", root.join("dangling_inside")).expect("link");
-        let cs = CodeSet::new(
-            root.clone(),
-            Vec::new(),
-            false,
-            false,
-            None,
-            std::sync::Arc::default(),
-        )
-        .expect("set");
+        let cs =
+            CodeSet::new(root.clone(), false, false, None, std::sync::Arc::default()).expect("set");
         // The returned path is the lexical one, links and all.
         for arg in [
             "alias",
@@ -990,15 +928,8 @@ mod tests {
         let via = t.path().join("via");
         symlink(&root, &via).expect("link");
         let real = crate::app::canonical(&root).expect("canonical root");
-        let cs = CodeSet::new(
-            via.clone(),
-            Vec::new(),
-            false,
-            false,
-            None,
-            std::sync::Arc::default(),
-        )
-        .expect("set");
+        let cs =
+            CodeSet::new(via.clone(), false, false, None, std::sync::Arc::default()).expect("set");
         assert_eq!(jail(&cs, "new.txt"), Ok(via.join("new.txt")));
         let abs = real.join("new.txt");
         let abs = abs.to_str().expect("utf-8");
@@ -1010,7 +941,6 @@ mod tests {
         let tmp = tempfile::tempdir_in("/tmp").expect("tempdir in /tmp");
         let cs = CodeSet::new(
             tmp.path().to_path_buf(),
-            Vec::new(),
             false,
             false,
             None,
@@ -1036,15 +966,8 @@ mod tests {
         symlink(&root, &via).expect("via");
         symlink("dir", root.join("subdir")).expect("subdir");
         symlink(&out, root.join("outdir")).expect("outdir");
-        let cs = CodeSet::new(
-            via.clone(),
-            Vec::new(),
-            false,
-            false,
-            None,
-            std::sync::Arc::default(),
-        )
-        .expect("set");
+        let cs =
+            CodeSet::new(via.clone(), false, false, None, std::sync::Arc::default()).expect("set");
         let real_out = crate::app::canonical(&out).expect("real out");
         for (base, want) in [
             (via.clone(), via.clone()),
@@ -1104,15 +1027,8 @@ mod tests {
         // A link loop is ELOOP, not "missing".
         symlink("lb", root.join("la")).expect("la");
         symlink("la", root.join("lb")).expect("lb");
-        let cs = CodeSet::new(
-            root.clone(),
-            Vec::new(),
-            false,
-            false,
-            None,
-            std::sync::Arc::default(),
-        )
-        .expect("set");
+        let cs =
+            CodeSet::new(root.clone(), false, false, None, std::sync::Arc::default()).expect("set");
         for arg in ["L/S/secret.txt", "L/S/planted.txt", "L2"] {
             // Linux resolves the long prefix and finds it outside; macOS cannot resolve it at all.
             let want = if cfg!(target_os = "macos") {
@@ -1133,7 +1049,7 @@ mod tests {
         grants.update(crate::tool::grants::Level::Session, |s| {
             s.add_dir(real_t.clone())
         });
-        let asking = CodeSet::new(root.clone(), Vec::new(), true, true, None, grants).expect("set");
+        let asking = CodeSet::new(root.clone(), true, true, None, grants).expect("set");
         let mut unknown = vec!["la", "la/new.txt"];
         if cfg!(target_os = "macos") {
             unknown.extend(["L/S/secret.txt", "L/S/planted.txt", "L2"]);
@@ -1176,7 +1092,6 @@ mod tests {
         assert_eq!(
             CodeSet::new(
                 looped.clone(),
-                Vec::new(),
                 false,
                 false,
                 None,

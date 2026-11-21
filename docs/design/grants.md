@@ -316,9 +316,8 @@ is /, the home directory or an ancestor of it, which is never a project`; withou
   - `Static` — only when the config or the command line allows something: a read-only
     view, prompt `From the config and the command line: not grants made here, so none can
     be revoked here — edit agents.<name>.allow, or drop the flag.`, one row each,
-    `write_roots:` first, then the agent's `allow:`, then `--allow` (each directories, then
-    tools) — `write_roots:  /path`, `allow:        /path`, `allow:        shell`,
-    `--allow       /path` (docs/design/config-allow.md). Enter there closes the surface
+    the agent's `allow:`, then `--allow` (each directories, then tools) — `allow:   /path`,
+    `allow:   shell`, `--allow  /path` (docs/design/config-allow.md). Enter there closes the surface
     and does nothing.
 
   A cancel, or a commit with nothing checked, changes nothing.
@@ -376,7 +375,7 @@ the scope goes last: /allow <target> project
 expected a directory (starting with /, ~ or .) or <server>:<tool>
 <arg> is not a directory
 <dir> is protected: <why>
-<dir> is already writable (the project root | write_roots: | allow: | --allow | this project | this session)
+<dir> is already writable (the project root | allow: | --allow | this project | this session)
 no MCP server named "<s>" is connected (connected: a, b)
 server "<s>" has no tool "<t>"
 "<s>" names <n> connected servers; add one to mcp_servers: under its own name to grant it

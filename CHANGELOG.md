@@ -129,6 +129,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   with nobody to ask (`-m`) refuses it, saying how to allow it; to refuse in a
   chat, deny. A config that still sets the key, at the top level or under an
   agent, fails to load and says to delete it.
+- **`write_roots:` is gone: list each directory in an agent's `allow:`.** A
+  directory every agent may write is written in each agent's `allow:` (or
+  `--allow <dir>` for one run). A config that still sets the key, at the top
+  level or under an agent, fails to load and says what to write instead.
 
 ## 0.12.0 - 2026-11-20
 

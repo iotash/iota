@@ -182,7 +182,20 @@ async fn outside_writes_are_refused_headlessly(cfg: &str) {
         "absolute-inside read failed: {out:?}"
     );
 }
-/// A walk under a `write_roots:` extra is anchored on THAT root: the project's `.gitignore` does not
+/// `env` with a store whose static level holds `dirs` at their real locations — an agent's `allow:`
+/// directories, as the assembly resolves them.
+fn with_statics(env: ToolEnv, dirs: &[PathBuf]) -> ToolEnv {
+    let mut fixed = iota::tool::grants::GrantSet::default();
+    for d in dirs {
+        fixed.add_dir(iota::app::fs::physical(d).expect("real"));
+    }
+    ToolEnv {
+        grants: std::sync::Arc::new(iota::tool::grants::Grants::with_static(fixed)),
+        ..env
+    }
+}
+
+/// A walk under an `allow:` directory is anchored on THAT root: the project's `.gitignore` does not
 /// hide its files, its own `.gitignore` does, and a slash pattern matches relative to it. Results name
 /// such files absolute — root-relative they would read as project files.
 #[tokio::test]
@@ -196,10 +209,9 @@ async fn walks_under_an_extra_root_are_anchored_on_it() {
     write_project_file(&ext, "src/a.rs", "fn needle() {}\n");
     write_project_file(&ext, "b.log", "needle\n");
     write_project_file(&ext, "target/debug.rs", "fn needle() {}\n");
-    let env = ToolEnv {
-        write_roots: vec![ext.clone()],
-        ..env_at(&root)
-    };
+    // Named at its real location, as the store holds it.
+    let ext = iota::app::fs::physical(&ext).expect("real");
+    let env = with_statics(env_at(&root), std::slice::from_ref(&ext));
     let tools: Tools = new_code_set(&env, None)
         .expect("code set")
         .into_iter()
@@ -1218,10 +1230,10 @@ fn no_description_claims_reads_are_jailed() {
     }
 }
 
-// The writers stay jailed and say where: the project root alone, or the root and every extra write
-// root by name — the same list the jail admits.
+// The writers stay jailed and say where: the project root alone, or the root and every static directory
+// (`allow:`, `--allow`) by name — `statics().dirs`, the same list the jail admits.
 #[test]
-fn the_writers_descriptions_name_the_write_roots() {
+fn the_writers_descriptions_name_the_static_directories() {
     let dir = tempfile::tempdir().expect("tempdir");
     let tools = tools_at(dir.path(), "");
     assert!(
@@ -1237,11 +1249,9 @@ fn the_writers_descriptions_name_the_write_roots() {
             .starts_with("Create or overwrite a whole file inside the project root (parent")
     );
 
-    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
-    let env = ToolEnv {
-        write_roots: vec![a.clone(), b.clone()],
-        ..env_at(dir.path())
-    };
+    let real = iota::app::fs::physical(dir.path()).expect("real");
+    let (a, b) = (real.join("a"), real.join("b"));
+    let env = with_statics(env_at(dir.path()), &[a.clone(), b.clone()]);
     let set = new_code_set(&env, None).expect("code set");
     let scope = format!(
         "inside the project root or the extra write roots ({}, {})",

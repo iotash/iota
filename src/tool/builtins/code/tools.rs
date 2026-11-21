@@ -1009,6 +1009,15 @@ fn write_bytes(path: &Path, data: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use crate::provider::model::JsonObject;
+
+    /// A store whose static level holds `dirs` (each at its real location, as the assembly stores it).
+    fn statics(dirs: &[std::path::PathBuf]) -> std::sync::Arc<crate::tool::grants::Grants> {
+        let mut fixed = crate::tool::grants::GrantSet::default();
+        for d in dirs {
+            fixed.add_dir(crate::app::fs::physical(d).expect("real"));
+        }
+        std::sync::Arc::new(crate::tool::grants::Grants::with_static(fixed))
+    }
     use crate::tool::ToolOutput;
     use serde_json::json;
 
@@ -1154,15 +1163,8 @@ mod tests {
         let (_t, root, out) = jail_fixture();
         symlink(out.join("secret.txt"), root.join("escape")).expect("link");
         symlink(&out, root.join("outdir")).expect("link");
-        let cs = CodeSet::new(
-            root.clone(),
-            Vec::new(),
-            true,
-            false,
-            None,
-            std::sync::Arc::default(),
-        )
-        .expect("set");
+        let cs =
+            CodeSet::new(root.clone(), true, false, None, std::sync::Arc::default()).expect("set");
         let cx = RunCtx::default();
         let refused = |arg: &str| {
             ToolOutput::err(format!(
@@ -1263,15 +1265,8 @@ mod tests {
         symlink(&out, root.join("outdir")).expect("link");
         symlink("dir/kept.txt", root.join("alias")).expect("link");
         plant_overlong(&root, &out);
-        let cs = CodeSet::new(
-            root.clone(),
-            Vec::new(),
-            false,
-            false,
-            None,
-            std::sync::Arc::default(),
-        )
-        .expect("set");
+        let cs =
+            CodeSet::new(root.clone(), false, false, None, std::sync::Arc::default()).expect("set");
 
         let grep = grep_call(
             &cs,
@@ -1312,7 +1307,6 @@ mod tests {
         std::os::unix::fs::symlink(&out, root.join("outdir")).expect("link");
         let cs = super::super::CodeSet::new(
             root.clone(),
-            Vec::new(),
             auto_write,
             true,
             None,
@@ -1554,7 +1548,7 @@ mod tests {
     }
 
     /// The protected table (X-95) under the writers. Each protected path is its own class: asked when the run
-    /// has a user — whatever `auto_write` says, whether `write_roots:` names `.git` or the root again — with a
+    /// has a user — whatever `auto_write` says, whether `allow:` names `.git` or the root again — with a
     /// prompt that names the file and why and offers no session grant; refused with nobody to ask,
     /// saying why and that the user can make the change. Without "allow once" for exactly that
     /// file nothing lands: not with no approval, not with a session grant for the root or for the file's own
@@ -1592,11 +1586,10 @@ mod tests {
                     let at = format!("auto_write={auto_write} extra={extra:?} attended={attended}");
                     let cs = CodeSet::new(
                         root.clone(),
-                        extra.clone(),
                         auto_write,
                         attended,
                         Some(user_home.clone()),
-                        std::sync::Arc::default(),
+                        statics(extra),
                     )
                     .expect("set");
                     let tool = super::WriteFile(std::sync::Arc::clone(&cs));
@@ -1670,7 +1663,6 @@ mod tests {
         // reading first, as anywhere).
         let cs = CodeSet::new(
             root.clone(),
-            Vec::new(),
             true,
             true,
             Some(user_home),
@@ -1709,7 +1701,7 @@ mod tests {
         let base = crate::app::canonical(t.path()).expect("real");
         let root = base.join("root");
         let home = base.join("home");
-        // A `write_roots:` repository whose `.git` exists (so it has rows) but whose hooks do not.
+        // An `allow:` repository whose `.git` exists (so it has rows) but whose hooks do not.
         let other = base.join("other");
         for d in [&root, &home, &other.join(".git")] {
             std::fs::create_dir_all(d).expect("dir");
@@ -1740,11 +1732,10 @@ mod tests {
         ];
         let cs = CodeSet::new(
             root.clone(),
-            vec![other.clone()],
             true,
             false,
             Some(home.clone()),
-            std::sync::Arc::default(),
+            statics(std::slice::from_ref(&other)),
         )
         .expect("set");
         for (path, why) in cases {
@@ -1781,7 +1772,7 @@ mod tests {
 
     /// `~/.iota/sessions` (X-95 amended, grants.md §9 Q11) under the writers: a session bundle and a project
     /// bucket's grants file are never asked about and never written — whatever `auto_write`, whether anyone can be asked, a
-    /// project root that IS the home, `write_roots:` naming the home or the sessions tree, a directory grant of
+    /// project root that IS the home, `allow:` naming the home or the sessions tree, a directory grant of
     /// the tree, or "allow once" for exactly that file says. Refused saying iota alone writes it.
     #[cfg(unix)]
     #[test]
@@ -1812,11 +1803,10 @@ mod tests {
                         );
                         let cs = CodeSet::new(
                             root.clone(),
-                            extra.clone(),
                             auto_write,
                             attended,
                             Some(home.clone()),
-                            std::sync::Arc::default(),
+                            statics(&extra),
                         )
                         .expect("set");
                         cs.grants.update(crate::tool::grants::Level::Session, |s| {
@@ -1890,7 +1880,6 @@ mod tests {
             for attended in [true, false] {
                 let cs = CodeSet::new(
                     root.clone(),
-                    Vec::new(),
                     auto_write,
                     attended,
                     None,
@@ -1944,7 +1933,6 @@ mod tests {
         for attended in [true, false] {
             let cs = CodeSet::new(
                 std::path::PathBuf::from("/proj"),
-                Vec::new(),
                 false,
                 attended,
                 None,

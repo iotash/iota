@@ -75,7 +75,7 @@ pub(crate) fn enter(
 }
 
 /// What a chat's grant doors stand on, resolved ONCE at assembly beside the project load (`cmd`): the root, the
-/// project's file, the static write roots, the agent's `allow:` and `--allow`, kept apart by where they were declared so `/allow` can say which
+/// project's file, the agent's `allow:` and `--allow`, kept apart by where they were declared so `/allow` can say which
 /// one already covers a directory.
 #[derive(Clone, Debug)]
 pub struct Footing {
@@ -83,8 +83,6 @@ pub struct Footing {
     pub root: PathBuf,
     /// The project's grants file; `None` in a run with no project — no project level at any door.
     pub project: Option<ProjectFile>,
-    /// The top-level `write_roots:`, resolved (`ToolEnv::write_roots`).
-    pub write_roots: Vec<PathBuf>,
     /// The agent's `allow:`, resolved — the first part of the store's static level (`Grants::statics`), kept
     /// here with its source so the `Static` tab and `/allow`'s refusals can say it is the config's.
     pub config: GrantSet,

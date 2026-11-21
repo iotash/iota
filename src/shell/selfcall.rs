@@ -13,7 +13,7 @@
 //! And the lines that CHOOSE what the child loads, starts or may do unasked: a line carrying `-c`/`--config`,
 //! `--mcp` or `--allow` is never a self-call either (DIVERGENCES X-44, amended). Let out, `iota -c scratch.yaml
 //! run a -m …` would start a config the model wrote inside the project — `sandbox: off`, `auto_run: true`, any
-//! `write_roots` — `iota run a --mcp 'sh -c "…"' -m …` an arbitrary command as a server, `iota run a --allow ~
+//! `allow:` — `iota run a --mcp 'sh -c "…"' -m …` an arbitrary command as a server, `iota run a --allow ~
 //! -m …` a child that writes wherever the model chose, and `iota run a --allow shell -m …` a child with an
 //! unconfined shell nobody is asked about, all outside the sandbox.
 //!

@@ -142,8 +142,6 @@ struct ConfigFile {
     agents: BTreeMap<String, AgentConfig>,
     /// `mcp_servers:` — the servers an agent may select.
     mcp_servers: BTreeMap<String, McpServerConfig>,
-    /// `write_roots:` — extra roots the code tools and the shell sandbox may write.
-    write_roots: Vec<String>,
     /// `mouse:` — whether the full screen captures the mouse; absent leaves the stack's value as it is.
     #[serde(deserialize_with = "crate::tool::yaml11::deserialize_opt_bool")]
     mouse: Option<bool>,
@@ -165,11 +163,6 @@ pub struct Config {
     pub agents: BTreeMap<String, AgentConfig>,
     /// `mcp_servers:` — the MCP servers an agent may select, by name.
     pub mcp_servers: BTreeMap<String, McpServerConfig>,
-    /// `write_roots:` — the roots beyond the project root that the `code` tools' jail accepts and the
-    /// `shell` sandbox lets writes into, for every agent; as written (`~` and relative entries are resolved
-    /// against the run's home and project root by `ToolEnv::with_write_roots`, which also drops repeats).
-    /// Every file of the stack adds its entries, first file first.
-    pub write_roots: Vec<String>,
     /// `mouse:` — whether the full screen captures the mouse (the wheel scrolls the conversation, a click
     /// places the cursor or picks a row, a drag selects and copies); `false` requests no mouse reporting at
     /// all, so the terminal keeps its own selection. The last file of the stack that sets it wins; `None`
@@ -398,10 +391,6 @@ impl Config {
         for (name, server_cfg) in file.mcp_servers {
             self.mcp_servers.insert(name, server_cfg);
         }
-        for (i, root) in file.write_roots.iter().enumerate() {
-            check_write_root(format!("write_roots[{i}]"), root, env)?;
-        }
-        self.write_roots.extend(file.write_roots);
         if file.mouse.is_some() {
             self.mouse = file.mouse;
         }
@@ -837,21 +826,6 @@ fn ordered_models<'de, D: serde::Deserializer<'de>>(
     }
 
     d.deserialize_any(OrderedModels)
-}
-
-/// A write root named `at` (`write_roots[i]`): refuses a blank entry or a `~` with no home (typos that would quietly mean the project root or a directory called `~`) — at the load, because only the load knows both the entry's position and the home.
-fn check_write_root(at: String, entry: &str, env: &Env) -> Result<(), ConfigError> {
-    let entry = entry.trim();
-    let message = if entry.is_empty() {
-        "an empty entry names no directory".to_owned()
-    } else if (entry == "~" || entry.starts_with("~/"))
-        && env.home().is_none_or(|h| h.as_os_str().is_empty())
-    {
-        format!("{entry:?} starts with `~`, but there is no home directory to expand it to")
-    } else {
-        return Ok(());
-    };
-    Err(ConfigError::Key { at, message })
 }
 
 /// ONE document, decoded: YAML syntax first ([`ConfigError::Parse`]), then the key audit, which is what makes

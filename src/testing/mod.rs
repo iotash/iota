@@ -37,7 +37,6 @@ pub fn footing(
             store: store.clone(),
             root,
         }),
-        write_roots: Vec::new(),
         config: crate::tool::grants::GrantSet::default(),
         flag: crate::tool::grants::GrantSet::default(),
         agent: String::new(),
