@@ -40,8 +40,10 @@ const GAP: usize = 2;
 /// Filters the table by whole-line prefix (suggest.go matchSuggestions): a row is offered when
 /// its value starts with the line and the line starts with its [`after`](Suggestion::after), so
 /// `"/skills"` offers the command itself rather than its whole catalog, whose rows wait for
-/// `"/skills "`. Whole-line prefix matching keeps ordinary commands quiet after their arguments
-/// start — nothing registered begins with `"/file some/path"`.
+/// `"/skills "`. A [branch](is_branch) whose value IS the line is not offered: the line has
+/// already descended through it, so `"/allow github:"` lists the server's level, not the server
+/// again. Whole-line prefix matching keeps ordinary commands quiet after their arguments start —
+/// nothing registered begins with `"/file some/path"`.
 pub(crate) fn match_suggestions<'a>(commands: &'a [Suggestion], line: &str) -> Vec<&'a Suggestion> {
     if !line.starts_with('/') || line.contains('\n') {
         return Vec::new();
@@ -49,7 +51,9 @@ pub(crate) fn match_suggestions<'a>(commands: &'a [Suggestion], line: &str) -> V
     commands
         .iter()
         .filter(|c| {
-            c.value.starts_with(line) && c.after.as_deref().is_none_or(|a| line.starts_with(a))
+            c.value.starts_with(line)
+                && c.after.as_deref().is_none_or(|a| line.starts_with(a))
+                && !(c.value == line && is_branch(c, commands))
         })
         .collect()
 }

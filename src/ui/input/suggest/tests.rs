@@ -129,8 +129,8 @@ fn a_row_waits_for_its_after_prefix() {
     assert_eq!(at("/allow g"), vec!["/allow github:"], "level 1, narrowed");
     assert_eq!(
         at("/allow github:"),
-        vec!["/allow github:", "/allow github:*", "/allow github:search"],
-        "level 2 once the line starts with the branch, behind the branch itself"
+        vec!["/allow github:*", "/allow github:search"],
+        "level 2 once the line starts with the branch"
     );
     assert_eq!(at("/allow github:s"), vec!["/allow github:search"]);
     assert_eq!(
@@ -143,6 +143,37 @@ fn a_row_waits_for_its_after_prefix() {
         vec!["/allow github:search project"],
         "level 3"
     );
+}
+
+/// A branch row is offered while the line is short of it and gone once the line IS its value —
+/// the line has descended through it; its level stays. A leaf equal to the line stays.
+#[test]
+fn a_branch_row_is_gone_once_the_line_is_its_value() {
+    let cmds = vec![
+        next("/allow ", "/allow github:"),
+        next("/allow github:", "/allow github:*"),
+        next("/allow github:", "/allow github:search"),
+    ];
+    let at = |line: &str| vals(&match_suggestions(&cmds, line));
+    assert_eq!(
+        at("/allow github"),
+        vec!["/allow github:"],
+        "short of the branch: offered"
+    );
+    assert_eq!(
+        at("/allow github:"),
+        vec!["/allow github:*", "/allow github:search"],
+        "at the branch: its level, not the branch"
+    );
+    assert_eq!(
+        at("/allow github:search"),
+        vec!["/allow github:search"],
+        "a leaf equal to the line is still offered"
+    );
+    let mut c = Composer::new();
+    c.set_value("/allow github");
+    tab_complete(&mut c, &cmds);
+    assert_eq!(c.value(), "/allow github:", "Tab still lands on the branch");
 }
 
 /// A `"/"` prefix shows the list; Tab cycles the matches of the line typed before the FIRST

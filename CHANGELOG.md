@@ -54,6 +54,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **`/allow <server>:` no longer lists the server again.** After descending into
+  a server in the `/allow` completion list, its own row stayed at the top of
+  the next level; now the list there is `*` and the server's tools.
 - **A plain chat no longer has project grants.** 0.12.0 offered `Allow for this
   project` and `/allow project …` to every agent, including the default
   `mode: chat`, which has no project: there the "project" was the directory

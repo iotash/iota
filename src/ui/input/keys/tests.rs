@@ -394,11 +394,11 @@ fn enter_on_a_branch_row_descends_instead_of_submitting() {
         .collect();
     assert_eq!(
         next,
-        vec!["/allow github:", "/allow github:*", "/allow github:search"],
-        "the next level, behind the branch whose line it is"
+        vec!["/allow github:*", "/allow github:search"],
+        "the next level, without the branch whose line it is"
     );
 
-    for _ in 0..3 {
+    for _ in 0..2 {
         m.handle_key(key(KeyCode::Down));
     }
     assert_eq!(m.composer.value(), "/allow github:search");
