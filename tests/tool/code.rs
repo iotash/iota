@@ -374,7 +374,11 @@ async fn a_walk_that_never_matches_stops_at_the_entry_cap() {
 
     let cancelled = "[search cancelled]";
     let real = iota::app::fs::physical(&big).expect("real big");
-    let hit = |rel: &str| format!("{}:1: HIT", real.join(rel).display());
+    // Component by component, as the walk names a hit: `real.join("d000/a.txt")` keeps its `/` on Windows.
+    let hit = |rel: &str| {
+        let file = rel.split('/').fold(real.clone(), |p, c| p.join(c));
+        format!("{}:1: HIT", file.display())
+    };
     // Cancelled with nothing found: up front, and mid-walk (a grep over 100k files takes seconds).
     let out = call_cancelled(
         &tools,

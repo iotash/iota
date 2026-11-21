@@ -54,6 +54,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **Four tests expect a shown path with the platform's separator.** Three
+  approval-dialog tests and one cancelled-`grep` test built the expected path
+  with `join("a/b")`, which keeps its `/` on Windows where iota prints `\`; they
+  now take it from iota's own resolution, or join it a component at a time.
 - **A granted directory reads `C:\…` on Windows, not `\\?\C:\…`.** A path iota
   resolves (a grant, the `grants.json` key, a root's real location) now has one
   spelling, the one the executable's already had; the three path tests that

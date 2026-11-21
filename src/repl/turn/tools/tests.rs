@@ -2492,9 +2492,10 @@ async fn a_protected_write_is_asked_every_time_and_never_granted_for_the_session
     let mut history = vec![Message::user("write")];
     fx.turn(&p, &mut history).await.outcome.expect("turn");
 
-    let real_hook = crate::app::canonical(root)
-        .expect("real root")
-        .join(".git/hooks/pre-commit");
+    // The prompt names the file as the product resolved it, so the expectation asks the product: a hand
+    // `join(".git/hooks/pre-commit")` keeps its `/` on Windows and displays a separator no prompt carries.
+    let real_hook =
+        crate::app::fs::physical(&root.join(".git/hooks/pre-commit")).expect("real hook");
     let protected = format!(
         "write_file {} (protected): git executes the files in .git/hooks on the user's next git command \
          — allow?",
@@ -2647,18 +2648,21 @@ async fn a_directory_granted_in_the_dialog_is_a_root_for_both_writers() {
     ]);
     let mut history = vec![Message::user("write")];
     fx.turn(&p, &mut history).await.outcome.expect("turn");
+    // Both lines show a path the product resolved, so `shown` is that resolution (`a/x.txt` joined by hand
+    // keeps its `/` on Windows, where the product's separator is `\`).
+    let shown = |rel: &str| {
+        crate::app::fs::physical(&real_out.join(rel))
+            .expect("real path")
+            .display()
+            .to_string()
+    };
     let title = |rel: &str| {
         format!(
             "write_file {} (outside the project root) — allow?",
-            real_out.join(rel).display()
+            shown(rel)
         )
     };
-    let item = |rel: &str| {
-        format!(
-            "Allow, and make {} writable for this session",
-            real_out.join(rel).display()
-        )
-    };
+    let item = |rel: &str| format!("Allow, and make {} writable for this session", shown(rel));
     assert_eq!(
         prompts(&fx.events()),
         [(title("a/x.txt"), item("a")), (title("b/w.txt"), item("b"))]
@@ -2806,6 +2810,8 @@ async fn the_dialog_never_offers_the_home_directory() {
     let c = CodeChat::homed(crate::tool::OutsideWrites::Ask, true, Some("home"));
     std::fs::create_dir_all(c.t.path().join("home/sub")).expect("home");
     let real_t = crate::app::canonical(c.t.path()).expect("real t");
+    // The offered directory as the product resolves it: `real_t.join("home/sub")` keeps its `/` on Windows.
+    let real_sub = crate::app::fs::physical(&real_t.join("home/sub")).expect("real sub");
     let mut script = vec![choose(1), choose(1), choose(1), choose(1)];
     script.extend(quiet(1));
     let fx = c.fx(script);
@@ -2855,17 +2861,17 @@ async fn the_dialog_never_offers_the_home_directory() {
                 "Allow once".to_owned(),
                 format!(
                     "Allow, and make {} writable for this session",
-                    real_t.join("home/sub").display()
+                    real_sub.display()
                 ),
                 format!(
                     "Allow, and make {} writable for this project",
-                    real_t.join("home/sub").display()
+                    real_sub.display()
                 ),
                 "Deny".to_owned(),
             ],
         ]
     );
-    assert_eq!(c.grants.live_dirs(), [real_t.join("home/sub")]);
+    assert_eq!(c.grants.live_dirs(), [real_sub]);
     assert!(!real_t.join("home/x.txt").exists() && !real_t.join("t.txt").exists());
 }
 
