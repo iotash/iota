@@ -49,6 +49,7 @@ fn commands(m: &mut Model, values: &[&str]) {
                 value: (*v).to_owned(),
                 label: String::new(),
                 desc: String::new(),
+                after: None,
             })
             .collect(),
     ));
@@ -353,6 +354,71 @@ fn row_2a_the_completion_list_takes_up_down_and_its_esc() {
     type_text(&mut m, "x");
     up(&mut m);
     assert_eq!(m.composer.value(), "older");
+}
+
+/// Row 2a: Enter on a highlighted BRANCH — a row whose value is another row's `after` — ends the
+/// cycle and keeps the line, so the list shows the level behind it; nothing is submitted. On a
+/// leaf Enter submits as before, and the `/skills` row, whose rows wait for `/skills ` (with the
+/// space), is a leaf: Enter on it still runs the command.
+#[test]
+fn enter_on_a_branch_row_descends_instead_of_submitting() {
+    let row = |after: Option<&str>, value: &str| Suggestion {
+        value: value.to_owned(),
+        after: after.map(str::to_owned),
+        ..Suggestion::default()
+    };
+    let mut m = test_model();
+    m.apply(UiMsg::Commands(vec![
+        row(None, "/allow"),
+        row(Some("/allow "), "/allow shell"),
+        row(Some("/allow "), "/allow github:"),
+        row(Some("/allow github:"), "/allow github:*"),
+        row(Some("/allow github:"), "/allow github:search"),
+        row(None, "/skills"),
+        row(Some("/skills "), "/skills brain-page"),
+    ]));
+    let mut reader = park(&mut m, 1);
+    type_text(&mut m, "/allow g");
+    m.handle_key(key(KeyCode::Tab));
+    assert_eq!(m.composer.value(), "/allow github:");
+    enter(&mut m);
+    assert!(
+        reader.try_recv().is_err(),
+        "Enter on a branch submits nothing"
+    );
+    assert_eq!(m.composer.value(), "/allow github:", "the line is kept");
+    assert!(m.composer.suggestion_base.is_empty(), "the cycle ended");
+    let next: Vec<_> = crate::ui::input::suggest::matches_for(&m.composer, &m.commands)
+        .iter()
+        .map(|s| s.value.clone())
+        .collect();
+    assert_eq!(
+        next,
+        vec!["/allow github:", "/allow github:*", "/allow github:search"],
+        "the next level, behind the branch whose line it is"
+    );
+
+    for _ in 0..3 {
+        m.handle_key(key(KeyCode::Down));
+    }
+    assert_eq!(m.composer.value(), "/allow github:search");
+    enter(&mut m);
+    let got = reader
+        .try_recv()
+        .expect("a leaf submits")
+        .expect("read err");
+    assert_eq!(got.text, "/allow github:search");
+
+    let mut reader = park(&mut m, 2);
+    type_text(&mut m, "/sk");
+    m.handle_key(key(KeyCode::Tab));
+    assert_eq!(m.composer.value(), "/skills");
+    enter(&mut m);
+    let got = reader
+        .try_recv()
+        .expect("/skills submits")
+        .expect("read err");
+    assert_eq!(got.text, "/skills");
 }
 
 /// Row 4: Tab cycles the matches of the prefix captured at the FIRST press, wrapping, and
@@ -1420,11 +1486,13 @@ fn a_list_key_after_a_search_leaves_it_and_acts_on_a_shown_list() {
             value: "/skills".to_owned(),
             label: String::new(),
             desc: String::new(),
+            after: None,
         },
         crate::ui::facade::Suggestion {
             value: "/skills brain-page".to_owned(),
             label: "brain-page".to_owned(),
             desc: String::new(),
+            after: Some("/skills ".to_owned()),
         },
     ]));
     type_text(&mut m, "/skills ");

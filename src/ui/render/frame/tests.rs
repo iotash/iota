@@ -242,6 +242,7 @@ fn frame_order_with_empty_composer_and_slot_swap() {
             desc: "Pick the model the agent runs on, with its context window, its effort and its \
                    temperature, then Pick a model"
                 .to_owned(),
+            after: None,
         },
         true,
         5,

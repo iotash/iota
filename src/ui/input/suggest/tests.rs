@@ -32,6 +32,7 @@ fn sug(value: &str, desc: &str) -> Suggestion {
         value: value.to_owned(),
         label: String::new(),
         desc: desc.to_owned(),
+        after: None,
     }
 }
 
@@ -71,17 +72,23 @@ fn words(n: usize) -> String {
         .join(" ")
 }
 
+/// A row of the next word, offered once the line starts with `after`.
+fn next(after: &str, value: &str) -> Suggestion {
+    Suggestion {
+        value: value.to_owned(),
+        after: Some(after.to_owned()),
+        ..Suggestion::default()
+    }
+}
+
 /// Entries whose value carries an argument stay hidden until the line has a space;
 /// whole-line prefix matching silences ordinary commands once arguments start.
 // Go: model_test.go:2079
 #[test]
 fn test_match_suggestions_argument_entries() {
-    let cmds = cmd_table(&[
-        "/file",
-        "/skills",
-        "/skills brain-page",
-        "/skills code-review",
-    ]);
+    let mut cmds = cmd_table(&["/file", "/skills"]);
+    cmds.push(next("/skills ", "/skills brain-page"));
+    cmds.push(next("/skills ", "/skills code-review"));
 
     let got = vals(&match_suggestions(&cmds, "/skill"));
     assert_eq!(got, vec!["/skills"], "before the space: {got:?}");
@@ -96,6 +103,45 @@ fn test_match_suggestions_argument_entries() {
         got.is_empty(),
         "ordinary arguments suggested {:?}",
         vals(&got)
+    );
+}
+
+/// A row waits for its `after`: at every depth it is offered only once the line starts with that
+/// prefix, and then narrowed by its value like any row — a branch's children stay out of the list
+/// while the line is still on the branch's own level, even though their values start with it.
+#[test]
+fn a_row_waits_for_its_after_prefix() {
+    let cmds = vec![
+        sug("/allow", ""),
+        next("/allow ", "/allow shell"),
+        next("/allow ", "/allow github:"),
+        next("/allow github:", "/allow github:*"),
+        next("/allow github:", "/allow github:search"),
+        next("/allow github:search ", "/allow github:search project"),
+    ];
+    let at = |line: &str| vals(&match_suggestions(&cmds, line));
+    assert_eq!(at("/allow"), vec!["/allow"], "level 0: the command alone");
+    assert_eq!(
+        at("/allow "),
+        vec!["/allow shell", "/allow github:"],
+        "level 1: not the server's tools"
+    );
+    assert_eq!(at("/allow g"), vec!["/allow github:"], "level 1, narrowed");
+    assert_eq!(
+        at("/allow github:"),
+        vec!["/allow github:", "/allow github:*", "/allow github:search"],
+        "level 2 once the line starts with the branch, behind the branch itself"
+    );
+    assert_eq!(at("/allow github:s"), vec!["/allow github:search"]);
+    assert_eq!(
+        at("/allow github:search"),
+        vec!["/allow github:search"],
+        "the scope waits for the space"
+    );
+    assert_eq!(
+        at("/allow github:search "),
+        vec!["/allow github:search project"],
+        "level 3"
     );
 }
 
@@ -390,11 +436,13 @@ fn test_skill_rows_hide_until_a_space_then_show_bare_names() {
             value: "/skills brain-page".to_owned(),
             label: "brain-page".to_owned(),
             desc: "Read and write brain pages".to_owned(),
+            after: Some("/skills ".to_owned()),
         },
         Suggestion {
             value: "/skills code-review".to_owned(),
             label: "code-review".to_owned(),
             desc: String::new(),
+            after: Some("/skills ".to_owned()),
         },
     ];
     let mut c = Composer::new();

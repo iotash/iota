@@ -359,6 +359,7 @@ fn a_click_on_a_completion_item_highlights_it() {
             value: "/alpha".to_owned(),
             label: String::new(),
             desc: String::new(),
+            after: None,
         },
         crate::ui::facade::Suggestion {
             value: "/beta".to_owned(),
@@ -366,11 +367,13 @@ fn a_click_on_a_completion_item_highlights_it() {
             desc: "a description long enough to wrap onto a second line at the seventy-two \
                    column measure the list keeps"
                 .to_owned(),
+            after: None,
         },
         crate::ui::facade::Suggestion {
             value: "/gamma".to_owned(),
             label: String::new(),
             desc: "short".to_owned(),
+            after: None,
         },
     ]));
     type_text(&mut m, "/");

@@ -103,14 +103,24 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
 
     // Row 2a: the completion list (`suggest`). While it shows, ↑/↓ move its highlight by one
     // item — the history and the queue wait until the line is no longer a command; ESC during a
-    // cycle puts the typed line back, and only a second ESC reaches the scopes. Enter needs no
-    // row of its own: the highlighted value is already the line, so row 7 submits it.
+    // cycle puts the typed line back, and only a second ESC reaches the scopes. Enter on a
+    // highlighted branch (a row with a level behind it) descends: the cycle ends, the line is
+    // kept and the list shows the next level. On any other row Enter needs no row of its own:
+    // the highlighted value is already the line, so row 7 submits it.
     if matches!(key.code, KeyCode::Up | KeyCode::Down)
         && suggest::step(&mut m.composer, &m.commands, key.code == KeyCode::Down)
     {
         return;
     }
     if key.code == KeyCode::Esc && suggest::cancel(&mut m.composer) {
+        return;
+    }
+    if key.code == KeyCode::Enter
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+        && suggest::descend(&mut m.composer, &m.commands)
+    {
         return;
     }
 

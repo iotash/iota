@@ -1532,6 +1532,7 @@ fn skill_rows() -> Vec<crate::ui::facade::Suggestion> {
         value: format!("/skills {name}"),
         label: name.to_owned(),
         desc: desc.to_owned(),
+        after: Some("/skills ".to_owned()),
     };
     vec![
         skill("brain-page", "Read and write brain pages"),
@@ -1637,6 +1638,7 @@ fn skills_model(typed: &str) -> Model {
         value: "/skills".to_owned(),
         label: String::new(),
         desc: "List skills, or run one".to_owned(),
+        after: None,
     });
     m.apply(UiMsg::Commands(commands));
     crate::ui::testutil::type_text(&mut m, typed);
@@ -1794,6 +1796,7 @@ fn a_wrapped_composer_under_the_list_sheds_in_order_and_keeps_its_cursor() {
         value: value.clone(),
         label: "wide".to_owned(),
         desc: "one item".to_owned(),
+        after: None,
     }]));
     crate::ui::testutil::type_text(&mut m, &value);
     let (first, second) = value.split_at(80);
@@ -2261,6 +2264,7 @@ fn the_completion_list_takes_the_interaction_cap() {
                 value: format!("/c{i:02}"),
                 label: String::new(),
                 desc: String::new(),
+                after: None,
             })
             .collect(),
     ));
@@ -2383,6 +2387,7 @@ mod asked_again {
             value: value.to_owned(),
             label: String::new(),
             desc: String::new(),
+            after: None,
         };
         h.tx.send(UiMsg::Commands(vec![command("/help"), command("/model")]))
             .unwrap();

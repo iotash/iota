@@ -233,11 +233,12 @@ impl CommandTable {
             out.extend(AGENT.iter().map(suggestion));
             // Registered as whole values so the list matches them by prefix like any other
             // command, labelled with the bare name: the `/skills ` part is already typed
-            // (completion.go:66-70).
+            // (completion.go:66-70), and the rows wait for it.
             out.extend(self.skills.iter().map(|sk| Suggestion {
                 value: format!("/skills {}", sk.name),
                 label: sk.name.clone(),
                 desc: sk.description.clone(),
+                after: Some("/skills ".to_owned()),
             }));
         }
         out
@@ -275,6 +276,7 @@ fn suggestion(c: &CmdSpec) -> Suggestion {
         value: c.value.to_owned(),
         label: String::new(),
         desc: c.desc.to_owned(),
+        after: None,
     }
 }
 

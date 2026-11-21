@@ -482,6 +482,7 @@ mod tests {
             value: "/model".to_owned(),
             label: String::new(),
             desc: "Pick a model".to_owned(),
+            after: None,
         }]));
         m.composer.reset();
         type_text(&mut m, "/m");

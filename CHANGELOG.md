@@ -13,6 +13,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **A completion row can wait for the word before it, and Enter on a row with a
+  level behind it opens that level.** Internal for now: `/skills` completes exactly
+  as before, and no command has such a row yet.
 - **Any terminal that reads OSC 7501 now shows iota's state, not only herdr-core.**
   At start-up iota asks its terminal once whether it reads the Program Status
   Protocol; one that answers gets `working`, `blocked`, `idle` and `error`

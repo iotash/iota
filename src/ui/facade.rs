@@ -104,6 +104,9 @@ pub struct Suggestion {
     pub label: String,
     /// The dim right column; `""` for entries that explain themselves.
     pub desc: String,
+    /// The row is offered only once the line starts with this (`None`: always) — how a row of
+    /// the next word (`/skills <name>`) waits for the word before it (`/skills `).
+    pub after: Option<String>,
 }
 
 /// Panel kinds (tabbed.go:21-32, Go iota order).

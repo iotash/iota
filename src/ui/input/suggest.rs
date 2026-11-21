@@ -7,8 +7,8 @@
 //! [`LABEL_CAP`]) — its description, word-wrapped at `min(remaining width, DESC_MEASURE)` and cut
 //! with `…` after [`DESC_LINES`] lines. The cycle is the one `Tab` has always driven: `Tab`
 //! and `↓` step forward, `↑` back, a click picks an item, and every step writes the item's value
-//! into the composer — so `Enter` commits the highlighted item by submitting the line, and `Esc`
-//! puts back what was typed. The window over the items is in WHOLE items and keeps the highlighted
+//! into the composer — so `Enter` commits the highlighted item by submitting the line (or, on a
+//! branch, keeps it and opens the next level), and `Esc` puts back what was typed. The window over the items is in WHOLE items and keeps the highlighted
 //! one fully visible; with no room for more it holds the highlighted item alone.
 
 use crate::markdown::blocks::table::word_wrap_ansi;
@@ -37,20 +37,29 @@ pub(crate) const LABEL_CAP: usize = 30;
 /// The space between the label column and the description column.
 const GAP: usize = 2;
 
-/// Filters the table by whole-line prefix (suggest.go matchSuggestions). Entries whose
-/// value carries an argument (`"/skills brain-page"`) stay hidden until the line has a
-/// space, so `"/skills"` offers the command itself rather than its whole catalog;
-/// whole-line prefix matching keeps ordinary commands quiet after their arguments
+/// Filters the table by whole-line prefix (suggest.go matchSuggestions): a row is offered when
+/// its value starts with the line and the line starts with its [`after`](Suggestion::after), so
+/// `"/skills"` offers the command itself rather than its whole catalog, whose rows wait for
+/// `"/skills "`. Whole-line prefix matching keeps ordinary commands quiet after their arguments
 /// start — nothing registered begins with `"/file some/path"`.
 pub(crate) fn match_suggestions<'a>(commands: &'a [Suggestion], line: &str) -> Vec<&'a Suggestion> {
     if !line.starts_with('/') || line.contains('\n') {
         return Vec::new();
     }
-    let typed_arg = line.contains(' ');
     commands
         .iter()
-        .filter(|c| (typed_arg || !c.value.contains(' ')) && c.value.starts_with(line))
+        .filter(|c| {
+            c.value.starts_with(line) && c.after.as_deref().is_none_or(|a| line.starts_with(a))
+        })
         .collect()
+}
+
+/// Whether `s` is a branch: its value is another row's [`after`](Suggestion::after), so the line
+/// it writes opens a further level of the list.
+fn is_branch(s: &Suggestion, commands: &[Suggestion]) -> bool {
+    commands
+        .iter()
+        .any(|r| r.after.as_deref() == Some(s.value.as_str()))
 }
 
 /// What the list filters by: the line as typed when the cycle started, else the line.
@@ -122,6 +131,25 @@ pub(crate) fn step(c: &mut Composer, commands: &[Suggestion], down: bool) -> boo
 /// A click on the list's `item`: the highlight goes there.
 pub(crate) fn choose(c: &mut Composer, commands: &[Suggestion], item: usize) -> bool {
     cycle(c, commands, |_, n| item.min(n - 1))
+}
+
+/// `Enter` during the cycle on a highlighted BRANCH: the cycle ends with the branch's value kept
+/// as the line, so the list re-filters to the level behind it and nothing is submitted. `false`
+/// (Enter goes on and submits) when there is no cycle or the highlighted row is a leaf.
+pub(crate) fn descend(c: &mut Composer, commands: &[Suggestion]) -> bool {
+    if c.suggestion_base.is_empty() {
+        return false;
+    }
+    let ms = match_suggestions(commands, &c.suggestion_base);
+    let Some(row) = c.suggestion_index.and_then(|i| ms.get(i)) else {
+        return false;
+    };
+    if !is_branch(row, commands) {
+        return false;
+    }
+    c.suggestion_base.clear();
+    c.suggestion_index = None;
+    true
 }
 
 /// `Esc` during the cycle: the line goes back to what was typed and the highlight is dropped.
