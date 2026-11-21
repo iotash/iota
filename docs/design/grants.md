@@ -36,7 +36,7 @@ through four doors:
 |---|---|---|
 | the approval dialog | a directory, an MCP tool, a built-in tool | session or project |
 | `/allow`, `/revoke` (chat) | a directory, an MCP tool or `server:*`, a built-in tool | session or project |
-| `--add-dir <dir>` (CLI) | a directory | the run (a static root, §5.3) |
+| `--allow <target>` (CLI) | a directory, a built-in tool, `server:tool`, `server:*` | the run (the static level, §5.3) |
 | `write_roots:` (config) | a directory | every run (a static root, unchanged) |
 
 Two axes, kept apart — the split every surveyed product with both has (Claude Code's
@@ -67,7 +67,7 @@ trusted (§9 Q11).
 
 | level | lifetime | where | who reads it |
 |---|---|---|---|
-| static | the process | `write_roots:` then `--add-dir`, resolved once into `ToolEnv::write_roots` | as today |
+| static | the process | `write_roots:` into `ToolEnv::write_roots`; the agent's `allow:` then `--allow` into the store's static level (docs/design/config-allow.md §4.1), each resolved once | as today |
 | project | until revoked | `~/.iota/sessions/projects/<slug>/grants.json` | every run rooted at that project, `-m` included |
 | session | the session | `meta.json` `grants` | that session: now, and every resume of it |
 
@@ -102,8 +102,8 @@ pub struct GrantSet { pub dirs: Vec<PathBuf>, pub tools: Vec<ToolKey> }
 > symmetric: every kind of grant has both levels.
 
 Every kind of grant has a session and a project level, and each also has a permanent,
-global form that is not a grant: a directory's is `write_roots:` (or `--add-dir` for one
-run), an MCP tool's is `mcp_servers.<name>.auto_run`, a built-in's is
+global form that is not a grant: a directory's is `write_roots:` or `allow:` (or `--allow` for
+one run), an MCP tool's is `mcp_servers.<name>.auto_run`, a built-in's is
 `tools.code.auto_write` / `tools.shell.auto_run`. Those keys live in the home or agent
 config and apply to EVERY project, and the repository's own `.iota.yaml` is shared and
 trust-gated, so none of them can say "in this repository, stop asking". In every case
@@ -213,8 +213,8 @@ A run without one has NO project level anywhere: no `grants.json` is read at the
 (one left there by 0.12.0 is ignored, not deleted), none is written, the dialog offers no
 `…for this project` item (§5.1), `/allow … project` is refused saying why (§5.2), and the
 `Grants` tab and `/status` — which read the store — have no project row to show. The
-session level, the directory, built-in and MCP grants at it, `write_roots:` and
-`--add-dir` are the same in every mode. A `-m` run of an agent with a project still
+session level, the directory, built-in and MCP grants at it, `write_roots:`, `allow:` and
+`--allow` are the same in every mode. A `-m` run of an agent with a project still
 inherits its grants; a `-m` run of a `mode: chat` agent inherits none.
 
 A file that does not parse as `v: 1` grants nothing and warns once (`⚠ grants: cannot
@@ -316,9 +316,9 @@ is /, the home directory or an ancestor of it, which is never a project`; withou
   - `Static` — only when the config or the command line allows something: a read-only
     view, prompt `From the config and the command line: not grants made here, so none can
     be revoked here — edit agents.<name>.allow, or drop the flag.`, one row each,
-    `write_roots:` first, then the agent's `allow:` (directories, then tools), then
-    `--add-dir` — `write_roots:  /path`, `allow:        /path`, `allow:        shell`,
-    `--add-dir     /path` (docs/design/config-allow.md). Enter there closes the surface
+    `write_roots:` first, then the agent's `allow:`, then `--allow` (each directories, then
+    tools) — `write_roots:  /path`, `allow:        /path`, `allow:        shell`,
+    `--allow       /path` (docs/design/config-allow.md). Enter there closes the surface
     and does nothing.
 
   A cancel, or a commit with nothing checked, changes nothing.
@@ -376,7 +376,7 @@ the scope goes last: /allow <target> project
 expected a directory (starting with /, ~ or .) or <server>:<tool>
 <arg> is not a directory
 <dir> is protected: <why>
-<dir> is already writable (the project root | write_roots: | --add-dir | this project | this session)
+<dir> is already writable (the project root | write_roots: | allow: | --allow | this project | this session)
 no MCP server named "<s>" is connected (connected: a, b)
 server "<s>" has no tool "<t>"
 "<s>" names <n> connected servers; add one to mcp_servers: under its own name to grant it
@@ -393,16 +393,16 @@ the revocation) is refused with `could not save …`, and nothing changes. A ses
 change that cannot be written into the bundle's meta is made in memory, and its notice is
 followed by `Warning: failed to save session: <error>`, as every failed meta write is said.
 
-### 5.3 `--add-dir`
+### 5.3 `--allow` (was `--add-dir`)
 
-`iota run|resume … --add-dir <dir>` (repeatable): the directory joins
-`ToolEnv::write_roots` after the config's entries, in flag order — `--mcp`'s rule. A
-relative value is against the working directory (it is typed in a shell), not the
-project root. It is a static root in every respect: `-m` honours it, the writers'
-descriptions, the shell's sandbox line and `<environment>` name it. It is not stored in
-the session; a resume that wants it passes it again. The unattended refusal now ends
-`…; pass --add-dir <dir>, or list its directory in the top-level `write_roots:`, to
-allow it`.
+`iota run|resume … --allow <target>` (repeatable; docs/design/config-allow.md §3.4, which
+replaced `--add-dir <dir>`): `allow:`'s targets, a `--mcp` server also named by its whole
+value, joining the store's static level after the agent's `allow:`, in flag order — `--mcp`'s
+rule. A relative directory is against the working directory (it is typed in a shell), not
+the project root. `-m` honours it, and the jail, the sandbox and `<environment>` read it
+through `Grants::roots`. It is not stored in the session; a resume that wants it passes it
+again. The unattended refusal now ends `…; pass --allow <dir>, or list its directory in the
+agent's `allow:`, to allow it`.
 
 ### 5.4 Config
 
@@ -479,8 +479,8 @@ print nothing about the grants they loaded. `/status`'s `Grants` row and the bar
   to a command's result (§9 Q6).
 - **An outside write, nobody to ask** — `path is outside the project root (<roots>):
   <arg> — writing there needs the user's approval, which this non-interactive run
-  cannot ask for; pass --add-dir <dir>, or list its directory in the top-level
-  `write_roots:`, to allow it`.
+  cannot ask for; pass --allow <dir>, or list its directory in the agent's `allow:`, to
+  allow it`.
 - **The roots clause** of every jail refusal (`the extra write roots (<e1>, <e2>)`)
   lists the static roots and the live grants, read at the call.
 - **An MCP tool, nobody to ask** — `<name> was not executed: the tools of MCP server

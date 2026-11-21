@@ -184,7 +184,7 @@ project root, a `write_roots:` entry or a live directory grant:
 | class | chat (a user to ask) | `-m`, the SDK path (nobody to ask) |
 |---|---|---|
 | INSIDE | asked unless `tools.code.auto_write` | refused unless `auto_write`, saying to set it |
-| OUTSIDE | asked ALWAYS — `auto_write` does not waive it | refused, saying to pass `--add-dir` or list the directory in `write_roots:` |
+| OUTSIDE | asked ALWAYS — `auto_write` does not waive it | refused, saying to pass `--allow <dir>` or list the directory in the agent's `allow:` |
 | PROTECTED (not the trust record or the sessions tree) | asked ALWAYS, "allow once" only | refused, saying the user can make the change |
 | the trust record; the sessions tree | refused, no prompt | refused |
 | UNVERIFIABLE | refused, no prompt | refused |

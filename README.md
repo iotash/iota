@@ -37,7 +37,8 @@ a model, a prompt, a set of tools — in one YAML file, and run them:
   `allow:` lists `/allow`'s targets — `allow: [~/scratch, shell, edit_file,
   "github:*"]` — and a bare `/allow` shows them, read-only, beside the grants
   (`write_roots:`, `tools.code.auto_write`, `tools.shell.auto_run` and an MCP
-  server's `auto_run` still work for now); `--add-dir` is the one-run form. A
+  server's `auto_run` still work for now); `--allow <target>` is the one-run
+  form, a `--mcp` server named by its whole value. A
   project's `agents.<name>` replaces the home's whole, `allow:` included. A write to git's hooks
   and config or iota's own config asks every time; the sandbox never makes
   one.

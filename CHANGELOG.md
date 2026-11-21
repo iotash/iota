@@ -13,6 +13,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   holds for every run of that agent, `-m` included. A mistake fails the load
   naming the entry; a bare `/allow` lists them read-only, `/status` counts them,
   and the trust prompt shows each one of a repository's file.
+- **`--allow <target>` allows the same for one run, and replaces `--add-dir`.**
+  `iota run|resume --allow ~/out --allow shell --allow 'npx -y @acme/mcp:*'`
+  (repeatable) takes `allow:`'s targets, and a `--mcp` server by its whole
+  value, so a `-m` run can finally call a `--mcp` server's tools; a relative
+  directory is from where you run iota, and a mistake stops the run naming the
+  flag. `--add-dir` is gone: `--allow <dir>` does what it did.
 - **iota knows it runs in rex.** Inside a rex block the model is told `host: rex`,
   the block and the session, so it can drive rex beside itself (`rex split`,
   `rex capture`); the banner says `in rex`.
@@ -109,7 +115,7 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   has project grants, and never when its project root is your home directory
   or a directory above it. Elsewhere the prompt offers `Allow once`, the
   session grant and `Deny`, and `/allow … project` says why it cannot. Session
-  grants, `write_roots:` and `--add-dir` work as before. A project grant made
+  grants and `write_roots:` work as before. A project grant made
   from a plain chat in 0.12.0 no longer applies to plain chats, and one made
   for your home directory applies to nothing.
 - **A `-m` run without a project no longer suggests a project grant.** When
