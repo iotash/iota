@@ -259,8 +259,8 @@ impl Grants {
                 .any(|s| !s.tools.is_empty())
     }
 
-    /// The write roots in force now: the static `statics` (the top-level `write_roots:`, then `--add-dir`), then
-    /// the static level's directories (`allow:`), then the live directory grants ([`Self::live_dirs`]) — what the
+    /// The write roots in force now: the static `statics` (the top-level `write_roots:`), then the static
+    /// level's directories (`allow:`, then `--allow`), then the live directory grants ([`Self::live_dirs`]) — what the
     /// code jail, the shell sandbox, the protected table and the harness's `write roots:` line read, each root
     /// once. A directory of the static level is live by the grant's rule: one replaced by a link since the
     /// assembly is left out until it comes back.

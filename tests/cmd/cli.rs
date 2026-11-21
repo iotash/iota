@@ -1303,15 +1303,17 @@ async fn cli_write_roots_open_a_directory_outside_the_project() {
     );
 }
 
-/// `--add-dir` (X-113) through the binary's own assembly: its directories join `write_roots:` after the
-/// config's, in flag order and each once — the write into a flag's directory lands, an unlisted sibling is
-/// refused naming every root in that order, and `<environment>` lists the same roots.
+/// `--allow <dir>` through the binary's own assembly: its directories join the roots after the config's
+/// `write_roots:`, in flag order and each once — the write into a flag's directory lands, an unlisted sibling is
+/// refused naming every root in that order and the flag, and `<environment>` lists the same roots.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn add_dir_opens_a_directory_after_the_configs_roots() {
+async fn allow_flag_opens_a_directory_after_the_configs_roots() {
     let (dir, home) = project();
     let outside = tempfile::tempdir().expect("outside");
+    // Real paths: a `--allow` directory is held at its real location, a `write_roots:` entry as written.
+    let outside_real = iota::app::fs::physical(outside.path()).expect("real");
     let [cfg_root, first, second, sibling] =
-        ["cfg", "first", "second", "sibling"].map(|n| outside.path().join(n));
+        ["cfg", "first", "second", "sibling"].map(|n| outside_real.join(n));
     for d in [&cfg_root, &first, &second, &sibling] {
         fs::create_dir_all(d).expect("dir");
     }
@@ -1322,7 +1324,7 @@ async fn add_dir_opens_a_directory_after_the_configs_roots() {
             calls: vec![
                 (
                     "write_file",
-                    serde_json::json!({"path": second.join("landed.txt"), "content": "via --add-dir\n"}),
+                    serde_json::json!({"path": second.join("landed.txt"), "content": "via --allow\n"}),
                 ),
                 (
                     "write_file",
@@ -1341,11 +1343,12 @@ async fn add_dir_opens_a_directory_after_the_configs_roots() {
         ),
     );
     let mut cmd = iota(dir.path(), &home);
-    cmd.args(["run", "--add-dir"])
+    cmd.args(["run", "--allow"])
         .arg(&first)
-        .arg("--add-dir")
+        .arg("--allow")
         .arg(&second)
-        .arg(format!("--add-dir={}", cfg_root.display()))
+        .arg(format!("--allow={}", cfg_root.display()))
+        .arg(format!("--allow={}", first.display()))
         .args(["-m", "go"]);
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
@@ -1353,8 +1356,8 @@ async fn add_dir_opens_a_directory_after_the_configs_roots() {
         fs::read_to_string(second.join("landed.txt"))
             .ok()
             .as_deref(),
-        Some("via --add-dir\n"),
-        "the write into the added root did not land; the model was told: {}",
+        Some("via --allow\n"),
+        "the write into the allowed directory did not land; the model was told: {}",
         out(&o)
     );
     assert!(!sibling.join("refused.txt").exists());
@@ -1372,6 +1375,7 @@ async fn add_dir_opens_a_directory_after_the_configs_roots() {
         )),
         "{reply}"
     );
+    assert!(reply.contains("pass --allow <dir>"), "{reply}");
     let requests = server.received_requests().await.expect("recorded requests");
     let first_req: serde_json::Value =
         serde_json::from_slice(&requests[0].body).expect("a JSON body");
@@ -1384,10 +1388,106 @@ async fn add_dir_opens_a_directory_after_the_configs_roots() {
     );
 }
 
-/// A relative `--add-dir` is typed in a shell, so it hangs off the working directory — here a
-/// subdirectory of the project — not the project root, as a `write_roots:` entry would.
+/// A minimal MCP server in POSIX `sh` (`tests/mcp/manager.rs`'s `SH_SERVER`): one tool `echo`, whose call
+/// answers `pong`; newline-delimited JSON-RPC over stdin/stdout, exiting on stdin EOF.
+#[cfg(unix)]
+const SH_SERVER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1.0.0"}}}' ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}' ;;
+    *'"method":"tools/call"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"content":[{"type":"text","text":"pong"}],"isError":false}}' ;;
+  esac
+done
+"#;
+
+/// `--allow` takes `allow:`'s targets — a directory, a built-in tool that asks, and here a `--mcp` server named
+/// by its whole spec — so a `-m` run of an agent whose writers ask writes into the directory and calls the
+/// flag server's tool with nobody to ask. A value that names nothing is a setup error led by `--allow: `, as
+/// the same entry in `allow:` is refused, before anything runs; a server no `--mcp` starts is no flag server.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn add_dir_is_relative_to_the_working_directory() {
+async fn allow_flag_takes_a_directory_a_tool_and_a_flag_server() {
+    let (dir, home) = project();
+    let outside = tempfile::tempdir().expect("outside");
+    let out_dir = iota::app::fs::physical(outside.path())
+        .expect("real")
+        .join("out");
+    fs::create_dir_all(&out_dir).expect("out");
+    let script = home.join("server.sh");
+    fs::write(&script, SH_SERVER).expect("the server script");
+    let spec = format!("sh {}", script.display());
+    let server = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(ToolCallsInTurn {
+            calls: vec![
+                (
+                    "write_file",
+                    serde_json::json!({"path": out_dir.join("landed.txt"), "content": "unasked\n"}),
+                ),
+                ("mcp__sh__echo", serde_json::json!({})),
+            ],
+        })
+        .mount(&server)
+        .await;
+    write_config(
+        &home,
+        &format!(
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: {{}}}}}}\n",
+            server.uri()
+        ),
+    );
+    let run = |allow: &[&str]| {
+        let mut cmd = iota(dir.path(), &home);
+        cmd.args(["--mcp", &spec]);
+        for a in allow {
+            cmd.args(["--allow", a]);
+        }
+        cmd.args(["-m", "go"]);
+        output(cmd)
+    };
+    let star = format!("{spec}:*");
+    let o = run(&[out_dir.to_str().expect("utf-8"), "write_file", &star]).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert_eq!(
+        fs::read_to_string(out_dir.join("landed.txt"))
+            .ok()
+            .as_deref(),
+        Some("unasked\n"),
+        "the model was told: {}",
+        out(&o)
+    );
+    assert!(out(&o).ends_with("\npong\n"), "{}", out(&o));
+
+    for (value, why) in [
+        (
+            "shel",
+            "--allow: no built-in tool named \"shel\" (tools that ask: shell, edit_file, write_file)",
+        ),
+        (
+            "shell",
+            "--allow: shell is not one of this agent's tools (tools.shell is not enabled)",
+        ),
+        (
+            "sh other.sh:*",
+            "--allow: no mcp_servers entry named \"sh other.sh\" (there are none)",
+        ),
+    ] {
+        let o = run(&[value]).await;
+        assert_ne!(o.status.code(), Some(0), "{value}");
+        assert!(err(&o).contains(why), "{value}: {}", err(&o));
+    }
+}
+
+/// A relative `--allow` directory is typed in a shell, so it hangs off the working directory — here a
+/// subdirectory of the project — not the project root, as an `allow:` entry would.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn allow_flag_is_relative_to_the_working_directory() {
     let (dir, home) = project();
     let proj = dir.path().join("proj");
     let sub = proj.join("sub");
@@ -1415,7 +1515,7 @@ async fn add_dir_is_relative_to_the_working_directory() {
         ),
     );
     let mut cmd = iota(&sub, &home);
-    cmd.args(["--add-dir", "../../out", "-m", "go"]);
+    cmd.args(["--allow", "../../out", "-m", "go"]);
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
     assert_eq!(
@@ -1429,14 +1529,29 @@ async fn add_dir_is_relative_to_the_working_directory() {
     let requests = server.received_requests().await.expect("recorded requests");
     let first: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("a JSON body");
     let system = first["messages"][0]["content"].as_str().unwrap_or_default();
-    // The root is named as it was resolved: the value joined to the child's own cwd and cleaned, never
-    // looked up (`ToolEnv::with_write_roots`). That cwd is the process's `getcwd` — on macOS the canonical
-    // spelling of the temp path (`/private/var/…`), on Windows the path as given — so `../../out` from
-    // `proj/sub` is `out` under the temp directory in that same spelling.
-    let seen = child_cwd(dir.path());
+    // The root is named at its real location: the value joined to the child's own cwd, cleaned and resolved
+    // (`cmd::assemble::flag_grants`).
+    let seen = iota::app::fs::physical(&dir.path().join("out")).expect("real");
     assert!(
-        system.contains(&format!("\nwrite roots: {}\n", seen.join("out").display())),
+        system.contains(&format!("\nwrite roots: {}\n", seen.display())),
         "{system}"
+    );
+}
+
+/// `--add-dir` is gone (`--allow <dir>` replaced it, docs/design/config-allow.md Q6): an old command line is
+/// clap's own refusal, before anything runs.
+#[test]
+fn add_dir_is_an_unknown_flag() {
+    let (dir, home) = project();
+    let o = iota(dir.path(), &home)
+        .args(["run", "--add-dir", "/tmp", "-m", "go"])
+        .output()
+        .expect("run iota");
+    assert_eq!(o.status.code(), Some(2), "stderr: {}", err(&o));
+    assert!(
+        err(&o).contains("unexpected argument '--add-dir'"),
+        "{}",
+        err(&o)
     );
 }
 

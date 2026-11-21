@@ -269,7 +269,7 @@ mod header_split {
 /// The headless matrix over the real `code` set (`-m`, the SDK path: no interactor): inside the root
 /// `auto_write` decides (off → the quiet refusal naming `auto_write`, on → written); outside it nothing is
 /// ever written, `auto_write` or not, and even an injected approver that allows everything is never asked
-/// — the refusal names `--add-dir` and `write_roots:`.
+/// — the refusal names `--allow` and `allow:`.
 #[tokio::test]
 async fn the_quiet_loop_never_writes_outside_the_roots() {
     use iota::tool::sets::ToolsConfig;
@@ -343,7 +343,7 @@ async fn the_quiet_loop_never_writes_outside_the_roots() {
                     );
                     assert!(result.is_error(), "{at}");
                     let want = format!(
-                        "path is outside the project root ({}): ../out.txt — writing there needs the user's approval, which this non-interactive run cannot ask for; pass --add-dir <dir>, or list its directory in the top-level `write_roots:`, to allow it",
+                        "path is outside the project root ({}): ../out.txt — writing there needs the user's approval, which this non-interactive run cannot ask for; pass --allow <dir>, or list its directory in the agent's `allow:`, to allow it",
                         root.display()
                     );
                     assert_eq!(result.content, want, "{at}");
@@ -353,21 +353,30 @@ async fn the_quiet_loop_never_writes_outside_the_roots() {
     }
 }
 
-/// `--add-dir` (X-113) is a static root like a `write_roots:` entry, so an unattended run (`-m`, the SDK
-/// path: nobody to ask) writes into it unasked — resolved against the working directory, not the project
-/// root — while a sibling outside it is still refused.
+/// `--allow <dir>` is the static level of the run's store, resolved as the assembly resolves it — against the
+/// working directory, not the project root — so an unattended run (`-m`, the SDK path: nobody to ask) writes
+/// into it unasked, while a sibling outside it is refused with the sentence that names the flag.
 #[tokio::test]
-async fn add_dir_admits_an_unattended_write() {
+async fn an_outside_write_names_the_allow_flag() {
     use iota::app::HostDirs;
-    use iota::tool::sets::ToolsConfig;
+    use iota::cmd::{Config, flag_grants};
+    use iota::tool::grants::{GrantSet, Grants};
     use iota::tool::{Registry, ToolEnv};
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path().join("proj");
+    let real = iota::app::fs::physical(dir.path()).expect("real");
+    let root = real.join("proj");
     let cwd = root.join("sub");
     std::fs::create_dir_all(&cwd).expect("cwd");
-    let added = dir.path().join("added");
+    let added = real.join("added");
     std::fs::create_dir(&added).expect("added");
+    let cfg = Config::parse(
+        b"agents:\n  coder:\n    tools: {code: {auto_write: true}}\n",
+        &iota::app::env::Env::default(),
+        &mut |_| {},
+    )
+    .expect("the config loads");
+    let agent = &cfg.agents["coder"];
     let env = ToolEnv {
         project_root: Some(root.clone()),
         dirs: HostDirs {
@@ -375,14 +384,24 @@ async fn add_dir_admits_an_unattended_write() {
             ..HostDirs::default()
         },
         ..ToolEnv::default()
-    }
-    .with_write_roots(&[], &["../../added".to_owned()]);
-    let raw: ToolsConfig = serde_norway::from_str("code: {auto_write: true}\n").expect("tools");
-    let d = Arc::new(Registry::build(&env, &raw, &mut |w| panic!("{w}")));
-    for (target, lands) in [
-        (added.join("in.txt"), true),
-        (dir.path().join("out.txt"), false),
-    ] {
+    };
+    let fixed = flag_grants(
+        &cfg,
+        agent,
+        &["../../added".to_owned()],
+        &[],
+        &GrantSet::default(),
+        &env,
+    )
+    .expect("resolves");
+    assert_eq!(fixed.dirs, std::slice::from_ref(&added));
+    let env = ToolEnv {
+        grants: Arc::new(Grants::with_static(fixed)),
+        ..env
+    };
+    let d = Arc::new(Registry::build(&env, &agent.tools, &mut |w| panic!("{w}")));
+    let outside = real.join("out.txt");
+    for (target, lands) in [(added.join("in.txt"), true), (outside.clone(), false)] {
         let mut args = JsonObject::new();
         args.insert("path".to_owned(), target.display().to_string().into());
         args.insert("content".to_owned(), "x".into());
@@ -410,6 +429,19 @@ async fn add_dir_admits_an_unattended_write() {
             history[2].content
         );
         assert_eq!(history[2].is_error(), !lands, "{}", history[2].content);
+        if !lands {
+            assert_eq!(
+                history[2].content,
+                format!(
+                    "path is outside the project root ({}) and the extra write roots ({}): {} — writing there \
+                     needs the user's approval, which this non-interactive run cannot ask for; pass --allow <dir>, \
+                     or list its directory in the agent's `allow:`, to allow it",
+                    root.display(),
+                    added.display(),
+                    outside.display()
+                )
+            );
+        }
     }
 }
 
@@ -753,10 +785,10 @@ async fn a_project_mcp_grant_runs_unattended() {
     manager.close().await;
 }
 
-/// Calls `mcp__gh__echo` once, then answers with the text of the tool result it was sent — so a real `-m`
-/// run prints what the model was told.
+/// Calls the tool it names (a wire name) once, then answers with the text of the tool result it was sent — so a
+/// real `-m` run prints what the model was told.
 #[cfg(unix)]
-struct EchoTheToolResult;
+struct EchoTheToolResult(&'static str);
 
 #[cfg(unix)]
 impl wiremock::Respond for EchoTheToolResult {
@@ -772,7 +804,7 @@ impl wiremock::Respond for EchoTheToolResult {
                 serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
             ],
             None => vec![
-                serde_json::json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": "mcp__gh__echo", "arguments": "{}"}}]}}]}),
+                serde_json::json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": self.0, "arguments": "{}"}}]}}]}),
                 serde_json::json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
             ],
         };
@@ -798,7 +830,7 @@ async fn the_unattended_mcp_refusal_follows_the_mode() {
     let server = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/chat/completions"))
-        .respond_with(EchoTheToolResult)
+        .respond_with(EchoTheToolResult("mcp__gh__echo"))
         .mount(&server)
         .await;
     let home = tempfile::tempdir().expect("home");
@@ -841,5 +873,59 @@ async fn the_unattended_mcp_refusal_follows_the_mode() {
         );
         assert_eq!(o.status.code(), Some(0), "mode: {mode}, stderr: {err}");
         assert_eq!(out, format!("{head}{tail}\n"), "mode: {mode}");
+    }
+}
+
+/// A `--mcp` server can run unattended: `--allow '<spec>:<tool>'` names it by the flag's whole value — the key a
+/// chat grant of it has (`ServerId::Flag`) — so a real `-m` run calls its tool with nobody to ask and prints
+/// what the tool said; the same run without the value is refused.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_allow_flag_runs_a_flag_server_unattended() {
+    use std::process::{Command, Stdio};
+
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(EchoTheToolResult("mcp__sh__echo"))
+        .mount(&server)
+        .await;
+    let home = tempfile::tempdir().expect("home");
+    let project = tempfile::tempdir().expect("project");
+    let script = home.path().join("server.sh");
+    std::fs::write(&script, SH_SERVER).expect("the server script");
+    std::fs::write(
+        home.path().join(".iota.yaml"),
+        format!(
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\n\
+             agents:\n  default: {{model: m}}\n",
+            server.uri()
+        ),
+    )
+    .expect("config");
+    let spec = format!("sh {}", script.display());
+    for (allow, ran) in [(Some(format!("{spec}:echo")), true), (None, false)] {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
+        crate::common_child::cleared_env(&mut cmd, home.path())
+            .current_dir(project.path())
+            .stdin(Stdio::null())
+            .args(["--mcp", &spec]);
+        if let Some(allow) = &allow {
+            cmd.args(["--allow", allow]);
+        }
+        cmd.args(["-m", "go"]);
+        let o = tokio::task::spawn_blocking(move || cmd.output().expect("run iota"))
+            .await
+            .expect("child join");
+        let (out, err) = (
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr),
+        );
+        assert_eq!(o.status.code(), Some(0), "{allow:?}, stderr: {err}");
+        if ran {
+            assert_eq!(out, "pong\n", "stderr: {err}");
+        } else {
+            assert!(out.starts_with("mcp__sh__echo was not executed: "), "{out}");
+        }
     }
 }

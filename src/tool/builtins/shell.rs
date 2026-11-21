@@ -112,7 +112,7 @@ pub(crate) struct ShellTool {
     /// defaults to `root`).
     cwd: PathBuf,
     sandboxed: bool,
-    /// `ToolEnv::static_roots`, the STATIC roots: writable inside the sandbox beside the root and the temp/cache
+    /// `ToolEnv::write_roots`, the STATIC roots: writable inside the sandbox beside the root and the temp/cache
     /// dirs. The live directory grants join them at every call ([`Self::writable`]).
     write_roots: Vec<PathBuf>,
     /// The run's grant store (`ToolEnv::grants`): its live directory grants are sandbox roots too, read per
@@ -177,7 +177,7 @@ pub fn new_shell_set(
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default(),
         sandboxed,
-        write_roots: env.static_roots(),
+        write_roots: env.write_roots.clone(),
         grants: Arc::clone(&env.grants),
         exe: env.dirs.exe.clone(),
         dirs: env.dirs.clone(),

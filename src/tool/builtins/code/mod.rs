@@ -108,7 +108,7 @@ pub(crate) enum Write {
 /// can be asked and the read ledger.
 pub(crate) struct CodeSet {
     root: Root,
-    /// `ToolEnv::static_roots`: further roots the write jail accepts, fixed at assembly. Relative arguments and
+    /// `ToolEnv::write_roots`: further roots the write jail accepts, fixed at assembly. Relative arguments and
     /// every display stay anchored on `root`.
     extra: Vec<Root>,
     /// The run's grant store: its live directory grants are roots too, read at every call
@@ -302,8 +302,8 @@ impl CodeSet {
                 let refusal = format!("path is outside the project root ({roots}): {arg}");
                 let why = if !self.attended {
                     " — writing there needs the user's approval, which this \
-                    non-interactive run cannot ask for; pass --add-dir <dir>, or list its \
-                    directory in the top-level `write_roots:`, to allow it"
+                    non-interactive run cannot ask for; pass --allow <dir>, or list its \
+                    directory in the agent's `allow:`, to allow it"
                         .to_owned()
                 } else if cx.approved.as_ref() == Some(&Approved::Once(real.clone())) {
                     return Ok((path, real));
@@ -489,7 +489,7 @@ pub fn new_code_set(env: &ToolEnv, node: Option<&RawNode>) -> Result<Vec<Arc<dyn
     let root = env.root().unwrap_or_else(|_| PathBuf::from("."));
     let cs = CodeSet::new(
         root,
-        env.static_roots(),
+        env.write_roots.clone(),
         cfg.auto_write,
         env.interactor.is_some(),
         env.dirs.home.clone(),
@@ -601,7 +601,7 @@ mod tests {
     use crate::tool::context::RunCtx;
 
     /// What follows a refused outside path in a run with nobody to ask: how to allow it.
-    pub(crate) const UNATTENDED: &str = " — writing there needs the user's approval, which this non-interactive run cannot ask for; pass --add-dir <dir>, or list its directory in the top-level `write_roots:`, to allow it";
+    pub(crate) const UNATTENDED: &str = " — writing there needs the user's approval, which this non-interactive run cannot ask for; pass --allow <dir>, or list its directory in the agent's `allow:`, to allow it";
 
     /// What a writer's call is told about `arg` with no approval: the cleaned path, or the refusal.
     pub(crate) fn jail(cs: &CodeSet, arg: &str) -> Result<PathBuf, ToolOutput> {

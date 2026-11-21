@@ -18,7 +18,7 @@
 //! The BARE `/allow` grants nothing: it opens a tabbed surface that lists and takes back. `Grants` is a
 //! multi-select of every grant in effect, by level, and committing it takes each checked grant back from every
 //! level that holds it; `Static`, shown only when there is one, is a read-only view of what the config and the
-//! command line allow — not grants made here (`write_roots:`, the agent's `allow:`, `--add-dir`). With neither, no surface opens: one line says how to grant. This
+//! command line allow — not grants made here (`write_roots:`, the agent's `allow:`, `--allow`). With neither, no surface opens: one line says how to grant. This
 //! file parses and words; every change is kept by the grants service, [`Door::apply`] (`repl::grants`), as the
 //! dialog's and `/save`'s are.
 //!
@@ -160,7 +160,7 @@ async fn panel(repl: &Repl) {
 
 /// The `Static` tab: a read-only view of what the config and the command line allow — not grants, so nothing
 /// here is taken back — each row labelled with its source (the labels padded to one width): `write_roots:`,
-/// then the agent's `allow:` (its directories, then its tools), then `--add-dir`. `None` when there is none:
+/// then the agent's `allow:`, then `--allow` (each its directories, then its tools). `None` when there is none:
 /// the surface then has `Grants` alone.
 fn static_tab(footing: &Footing) -> Option<Panel> {
     let shown = |p: &PathBuf| p.display().to_string();
@@ -168,13 +168,14 @@ fn static_tab(footing: &Footing) -> Option<Panel> {
         .write_roots
         .iter()
         .map(|r| ("write_roots:", shown(r)));
-    let dirs = footing.config.dirs.iter().map(|d| ("allow:", shown(d)));
-    let tools = footing.config.tools.iter().map(|k| ("allow:", label(k)));
-    let a = footing.added_dirs.iter().map(|r| ("--add-dir", shown(r)));
+    let of = |from: &'static str, set: &grants::GrantSet| -> Vec<(&'static str, String)> {
+        let dirs = set.dirs.iter().map(|d| (from, shown(d)));
+        dirs.chain(set.tools.iter().map(|k| (from, label(k))))
+            .collect()
+    };
     let rows: Vec<String> = w
-        .chain(dirs)
-        .chain(tools)
-        .chain(a)
+        .chain(of("allow:", &footing.config))
+        .chain(of("--allow", &footing.flag))
         .map(|(from, what)| format!("{from:<12}  {what}"))
         .collect();
     (!rows.is_empty())
@@ -227,7 +228,7 @@ fn allow(
     }
     let names = servers.map(Manager::connected_names).unwrap_or_default();
     if let Some((server, tool)) = named_server(target, &names) {
-        return allow_tool(door, servers, level, server, tool);
+        return allow_tool(door, footing, servers, level, server, tool);
     }
     if typed_path(footing, home, target).is_some() {
         if target != arg && typed_path(footing, home, arg).is_some_and(|p| p.is_dir()) {
@@ -242,10 +243,10 @@ fn allow(
         return allow_dir(door, footing, home, level, target);
     }
     if !target.contains(':') {
-        return allow_builtin(door, tools, level, target);
+        return allow_builtin(door, footing, tools, level, target);
     }
     let (server, tool) = server_tool(target).ok_or_else(|| EXPECTED.to_owned())?;
-    allow_tool(door, servers, level, server, tool)
+    allow_tool(door, footing, servers, level, server, tool)
 }
 
 /// The level and the target of the trimmed `arg`: a last word `project` is the project level, the target what
@@ -486,6 +487,7 @@ fn cleaned(text: &str) -> String {
 /// never asks, is refused naming those that do ([`asking`]).
 fn allow_builtin(
     door: &Door,
+    footing: &Footing,
     tools: &dyn Dispatcher,
     level: Level,
     name: &str,
@@ -505,7 +507,13 @@ fn allow_builtin(
             format!("no built-in tool named \"{name}\" ({those})")
         });
     }
-    grant_tool(door, level, ToolKey::Builtin(name.to_owned()), name)
+    grant_tool(
+        door,
+        footing,
+        level,
+        ToolKey::Builtin(name.to_owned()),
+        name,
+    )
 }
 
 /// Grants the directory `arg` (spelled as one: [`typed_path`]) at `level`: the notice line, or why not.
@@ -527,7 +535,7 @@ fn allow_dir(
 
     // The table beats every root: a protected directory is refused before "already writable" is asked.
     let root = &footing.root;
-    let table = protected::table(root, &door.grants.roots(&footing.static_roots()), home);
+    let table = protected::table(root, &door.grants.roots(&footing.write_roots), home);
     if let Some(why) = protected::why_protected(&table, &real) {
         return Err(format!("{shown} is protected: {}", why.reason()));
     }
@@ -592,6 +600,7 @@ fn server_tool(arg: &str) -> Option<(&str, &str)> {
 /// and must not be `auto_run`; a named tool must be one it lists now.
 fn allow_tool(
     door: &Door,
+    footing: &Footing,
     servers: Option<&Manager>,
     level: Level,
     server: &str,
@@ -641,16 +650,25 @@ fn allow_tool(
         } => format!("every tool of {server}"),
         _ => label(&key),
     };
-    grant_tool(door, level, key, &what)
+    grant_tool(door, footing, level, key, &what)
 }
 
 /// Grants the tool `key` at `level`, the notice naming it `what`: the notice line, or why not — it is refused
-/// when the config's `allow:` already covers it (the static level), when a project grant does, or (for a
-/// session grant) a session one.
-fn grant_tool(door: &Door, level: Level, key: ToolKey, what: &str) -> Result<Done, String> {
+/// when the static level already covers it — the config's `allow:` or `--allow` ([`Footing`] says which) —
+/// when a project grant does, or (for a session grant) a session one.
+fn grant_tool(
+    door: &Door,
+    footing: &Footing,
+    level: Level,
+    key: ToolKey,
+    what: &str,
+) -> Result<Done, String> {
     let shown = label(&key);
-    if door.grants.statics().allows(&key) {
+    if footing.config.allows(&key) {
         return Err(format!("{shown} already runs without asking (allow:)"));
+    }
+    if footing.flag.allows(&key) {
+        return Err(format!("{shown} already runs without asking (--allow)"));
     }
     let held = |l: Level| door.grants.snapshot(l).allows(&key);
     if held(Level::Project) {
@@ -680,7 +698,7 @@ fn grant_tool(door: &Door, level: Level, key: ToolKey, what: &str) -> Result<Don
 }
 
 /// What already makes the real directory `real` writable for a grant at `level`, if anything: the project
-/// root, a `write_roots:` entry, a live directory of the agent's `allow:`, an `--add-dir` value, or a grant that
+/// root, a `write_roots:` entry, a live directory of the agent's `allow:` or of `--allow`, or a grant that
 /// covers it — of this project at either
 /// level, of this session only for another session grant (a project grant is what a session grant becomes when
 /// it should last).
@@ -705,8 +723,13 @@ fn writable_by(
     {
         return Some("allow:");
     }
-    if footing.added_dirs.iter().any(|r| under(r)) {
-        return Some("--add-dir");
+    if footing
+        .flag
+        .dirs
+        .iter()
+        .any(|d| grants::is_live(d) && paths::within(d, real))
+    {
+        return Some("--allow");
     }
     let covers = |l: Level| {
         grants
@@ -910,8 +933,7 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, dir).expect("link in its place");
     }
 
-    /// A chat's grants over `root`, its project file in the temp dir, `write_roots:` and `--add-dir` as given,
-    /// and no bundle.
+    /// A chat's grants over `root`, its project file in the temp dir, `write_roots:` as given, and no bundle.
     struct Chat {
         door: Door,
         footing: Footing,
@@ -925,12 +947,7 @@ mod tests {
     }
 
     impl Chat {
-        fn new(
-            t: &tempfile::TempDir,
-            root: &std::path::Path,
-            write_roots: &[PathBuf],
-            added_dirs: &[PathBuf],
-        ) -> Self {
+        fn new(t: &tempfile::TempDir, root: &std::path::Path, write_roots: &[PathBuf]) -> Self {
             let project = ProjectFile {
                 store: SessionStore::new(t.path().join("sessions")),
                 root: root.to_path_buf(),
@@ -945,8 +962,8 @@ mod tests {
                     root: root.to_path_buf(),
                     project: Some(project),
                     write_roots: write_roots.to_vec(),
-                    added_dirs: added_dirs.to_vec(),
                     config: grants::GrantSet::default(),
+                    flag: grants::GrantSet::default(),
                     agent: "coder".to_owned(),
                 },
                 tools: tools(),
@@ -956,10 +973,26 @@ mod tests {
             }
         }
 
-        /// The same chat with the agent's `allow:` resolved to `config`: the store's static level and the footing's.
+        /// The same chat with the agent's `allow:` resolved to `config`: the store's static level beside the
+        /// footing's `--allow`, and the footing's.
         fn with_config(mut self, config: grants::GrantSet) -> Self {
-            self.door.grants = Arc::new(Grants::with_static(config.clone()));
             self.footing.config = config;
+            self.fix()
+        }
+
+        /// The same chat with `--allow` resolved to `flag`: the static level after the footing's `allow:`, and
+        /// the footing's.
+        fn with_flag(mut self, flag: grants::GrantSet) -> Self {
+            self.footing.flag = flag;
+            self.fix()
+        }
+
+        /// The store's static level as the assembly builds it: the footing's `allow:`, then its `--allow`.
+        fn fix(mut self) -> Self {
+            let mut fixed = self.footing.config.clone();
+            fixed.dirs.extend(self.footing.flag.dirs.iter().cloned());
+            fixed.tools.extend(self.footing.flag.tools.iter().cloned());
+            self.door.grants = Arc::new(Grants::with_static(fixed));
             self
         }
 
@@ -1068,7 +1101,10 @@ mod tests {
         let added = t.path().join("added");
         std::fs::create_dir(&added).unwrap();
         let added = crate::app::canonical(&added).unwrap();
-        let c = Chat::new(&t, &root, &[out.join("sub")], std::slice::from_ref(&added));
+        let c = Chat::new(&t, &root, &[out.join("sub")]).with_flag(grants::GrantSet {
+            dirs: vec![added.clone()],
+            tools: Vec::new(),
+        });
         assert_eq!(
             c.allow("./.git/hooks").unwrap_err(),
             format!(
@@ -1087,7 +1123,7 @@ mod tests {
         );
         assert_eq!(
             c.allow(added.to_str().unwrap()).unwrap_err(),
-            format!("{} is already writable (--add-dir)", added.display())
+            format!("{} is already writable (--allow)", added.display())
         );
         assert_eq!(
             c.allow("../out").unwrap(),
@@ -1113,7 +1149,7 @@ mod tests {
     fn allow_project_is_refused_in_chat_mode_and_granted_in_agent_mode() {
         const WHY: &str = "this run has no project (mode: chat); an agent with mode: agent has one";
         let (t, root, out) = fixture();
-        let chat = Chat::new(&t, &root, &[], &[]).without_project(false, None);
+        let chat = Chat::new(&t, &root, &[]).without_project(false, None);
         for arg in ["../out project", "shell project", "srv:push project"] {
             assert_eq!(chat.allow(arg).unwrap_err(), WHY, "{arg}");
         }
@@ -1129,7 +1165,7 @@ mod tests {
             [Ok(format!("✓ revoked {} (this session)", out.display()))]
         );
 
-        let agent = Chat::new(&t, &root, &[], &[]);
+        let agent = Chat::new(&t, &root, &[]);
         assert_eq!(
             agent.allow("../out project").unwrap(),
             format!(
@@ -1152,7 +1188,7 @@ mod tests {
     fn allow_project_is_refused_at_the_home_directory_or_above() {
         let (t, root, out) = fixture();
         for home in [root.clone(), root.join("users/me")] {
-            let c = Chat::new(&t, &root, &[], &[]).without_project(true, Some(home.clone()));
+            let c = Chat::new(&t, &root, &[]).without_project(true, Some(home.clone()));
             for arg in ["../out project", "shell project"] {
                 assert_eq!(
                     c.allow(arg).unwrap_err(),
@@ -1170,7 +1206,7 @@ mod tests {
                 format!("✓ {} is writable for this session", out.display())
             );
         }
-        let c = Chat::new(&t, &root, &[], &[]).without_project(true, None);
+        let c = Chat::new(&t, &root, &[]).without_project(true, None);
         assert_eq!(
             c.allow("../out project").unwrap_err(),
             "this run has no project (no home directory to keep its grants in)"
@@ -1183,7 +1219,7 @@ mod tests {
     #[test]
     fn allow_project_reaches_the_file_and_revoke_every_level() {
         let (t, root, out) = fixture();
-        let c = Chat::new(&t, &root, &[], &[]);
+        let c = Chat::new(&t, &root, &[]);
         let (g, pf) = (c.g(), c.pf());
         assert_eq!(
             c.allow("../out").unwrap(),
@@ -1284,7 +1320,7 @@ mod tests {
     #[test]
     fn the_grants_tab_revokes_exactly_the_checked_rows_at_both_levels() {
         let (t, root, out) = fixture();
-        let c = Chat::new(&t, &root, &[], &[]);
+        let c = Chat::new(&t, &root, &[]);
         let (g, pf) = (c.g(), c.pf());
         assert!(c.rows().is_empty());
         let gone = stale_to_be(&t, "gone");
@@ -1362,7 +1398,7 @@ mod tests {
         use crate::ui::testutil::{Surf, ch};
 
         let (t, root, out) = fixture();
-        let c = Chat::new(&t, &root, &[], &[]);
+        let c = Chat::new(&t, &root, &[]);
         let gone = stale_to_be(&t, "gone");
         let flag = ToolKey::Mcp {
             server: ServerId::Flag("npx -y @acme/mcp".to_owned()),
@@ -1430,7 +1466,7 @@ mod tests {
     #[test]
     fn allow_grants_a_builtin_tool_and_refuses_one_that_never_asks() {
         let (t, root, _out) = fixture();
-        let c = Chat::new(&t, &root, &[], &[]);
+        let c = Chat::new(&t, &root, &[]);
         let (g, pf) = (c.g(), c.pf());
         let shell = ToolKey::Builtin("shell".to_owned());
         assert_eq!(
@@ -1471,18 +1507,16 @@ mod tests {
         assert_eq!(g.snapshot(Level::Session).len(), 1);
     }
 
-    /// The `Static` tab lists `write_roots:` then `--add-dir`, each with its source, the labels aligned; with
+    /// The `Static` tab lists `write_roots:` then `--allow`, each with its source, the labels aligned; with
     /// neither, it has no rows and the surface keeps its two tabs.
     #[test]
     fn the_static_tab_lists_the_roots_by_source_and_is_absent_without_them() {
         let (t, root, out) = fixture();
         let add = PathBuf::from("/tmp/out");
-        let c = Chat::new(
-            &t,
-            &root,
-            std::slice::from_ref(&out),
-            std::slice::from_ref(&add),
-        );
+        let c = Chat::new(&t, &root, std::slice::from_ref(&out)).with_flag(grants::GrantSet {
+            dirs: vec![add],
+            tools: Vec::new(),
+        });
         let (title, prompt, rows) = c.fixed().expect("the tab is shown");
         assert_eq!(title, "Static");
         assert_eq!(prompt, super::static_prompt("coder"));
@@ -1490,14 +1524,15 @@ mod tests {
             rows,
             [
                 format!("write_roots:  {}", out.display()),
-                "--add-dir     /tmp/out".to_owned(),
+                "--allow       /tmp/out".to_owned(),
             ]
         );
-        assert!(Chat::new(&t, &root, &[], &[]).fixed().is_none());
+        assert!(Chat::new(&t, &root, &[]).fixed().is_none());
     }
 
-    /// The `Static` tab lists the agent's `allow:` beside the old static roots — its directories, then its tools
-    /// — each labelled with its source, and says where it is taken back: the file, not here.
+    /// The `Static` tab lists the agent's `allow:` and `--allow` beside the old static roots — each its
+    /// directories, then its tools — each labelled with its source, and says where it is taken back: the file or
+    /// the command line, not here; a tool `--allow` gives is refused naming the flag.
     #[test]
     fn the_static_tab_lists_tools_and_directories_by_source() {
         let (t, root, out) = fixture();
@@ -1507,16 +1542,15 @@ mod tests {
             server: ServerId::Config("gh".to_owned()),
             tool: McpTool::Any,
         };
-        let c = Chat::new(
-            &t,
-            &root,
-            std::slice::from_ref(&out),
-            std::slice::from_ref(&add),
-        )
-        .with_config(grants::GrantSet {
-            dirs: vec![lib.clone()],
-            tools: vec![ToolKey::Builtin("shell".to_owned()), gh],
-        });
+        let c = Chat::new(&t, &root, std::slice::from_ref(&out))
+            .with_flag(grants::GrantSet {
+                dirs: vec![add],
+                tools: vec![ToolKey::Builtin("write_file".to_owned())],
+            })
+            .with_config(grants::GrantSet {
+                dirs: vec![lib.clone()],
+                tools: vec![ToolKey::Builtin("shell".to_owned()), gh],
+            });
         let (title, prompt, rows) = c.fixed().expect("the tab is shown");
         assert_eq!(title, "Static");
         assert_eq!(
@@ -1530,12 +1564,17 @@ mod tests {
                 format!("allow:        {}", lib.display()),
                 "allow:        shell".to_owned(),
                 "allow:        gh:*".to_owned(),
-                "--add-dir     /tmp/out".to_owned(),
+                "--allow       /tmp/out".to_owned(),
+                "--allow       write_file".to_owned(),
             ]
         );
         assert!(c.rows().is_empty(), "the Grants tab holds none of it");
+        assert_eq!(
+            c.allow("write_file").unwrap_err(),
+            "write_file already runs without asking (--allow)"
+        );
 
-        let only = Chat::new(&t, &root, &[], &[]).with_config(grants::GrantSet {
+        let only = Chat::new(&t, &root, &[]).with_config(grants::GrantSet {
             dirs: Vec::new(),
             tools: vec![ToolKey::Builtin("write_file".to_owned())],
         });
@@ -1552,7 +1591,7 @@ mod tests {
             (entry("gh", false), &[("search", "")]),
             (entry("lin", false), &[("list", "")]),
         ]);
-        let c = Chat::new(&t, &root, &[], &[])
+        let c = Chat::new(&t, &root, &[])
             .with_servers(m)
             .with_config(grants::GrantSet {
                 dirs: vec![out.clone()],
@@ -1616,7 +1655,7 @@ mod tests {
     #[test]
     fn the_scope_is_the_last_word() {
         let (t, root, out) = fixture();
-        let c = Chat::new(&t, &root, &[], &[]);
+        let c = Chat::new(&t, &root, &[]);
         let shown = root.display();
         assert_eq!(
             c.allow("shell").unwrap(),
@@ -1649,8 +1688,8 @@ mod tests {
     #[test]
     fn project_first_is_refused_and_grants_nothing() {
         let (t, root, _out) = fixture();
-        let with = Chat::new(&t, &root, &[], &[]);
-        let without = Chat::new(&t, &root, &[], &[]).without_project(false, None);
+        let with = Chat::new(&t, &root, &[]);
+        let without = Chat::new(&t, &root, &[]).without_project(false, None);
         for c in [&with, &without] {
             for (arg, why) in [
                 ("project", "the scope goes last: /allow <target> project"),
@@ -1680,7 +1719,7 @@ mod tests {
             std::fs::create_dir(t.path().join(d)).unwrap();
         }
         let real = |d: &str| crate::app::canonical(&t.path().join(d)).unwrap();
-        let c = Chat::new(&t, &root, &[], &[]);
+        let c = Chat::new(&t, &root, &[]);
         let shown = root.display();
         assert_eq!(
             c.allow("../my project").unwrap_err(),
@@ -1756,7 +1795,7 @@ mod tests {
     #[test]
     fn the_rows_are_the_lines_that_would_grant() {
         let (t, root, _out) = fixture();
-        let c = Chat::new(&t, &root, &[], &[]);
+        let c = Chat::new(&t, &root, &[]);
         let all = [
             builtin_rows("shell", &root, true),
             builtin_rows("write_file", &root, true),
@@ -1771,12 +1810,12 @@ mod tests {
         assert!(rows_of(&c).is_empty(), "all granted, nothing left to offer");
 
         let (t, root, _out) = fixture();
-        let c = Chat::new(&t, &root, &[], &[]);
+        let c = Chat::new(&t, &root, &[]);
         c.allow("shell project").unwrap();
         assert_eq!(rows_of(&c), builtin_rows("write_file", &root, true));
 
         let (t, root, _out) = fixture();
-        let c = Chat::new(&t, &root, &[], &[]).without_project(false, None);
+        let c = Chat::new(&t, &root, &[]).without_project(false, None);
         let values: Vec<String> = rows_of(&c).into_iter().map(|r| r.0).collect();
         assert_eq!(values, ["/allow shell", "/allow write_file"]);
     }
@@ -1786,7 +1825,7 @@ mod tests {
     #[test]
     fn a_session_grant_keeps_the_scope_row() {
         let (t, root, _out) = fixture();
-        let c = Chat::new(&t, &root, &[], &[]);
+        let c = Chat::new(&t, &root, &[]);
         c.allow("shell").unwrap();
         assert_eq!(
             rows_of(&c),
@@ -1839,7 +1878,7 @@ mod tests {
                 ),
                 (entry("lin", false), &[("list", "")]),
             ]);
-            let c = Chat::new(&t, &root, &[], &[]).with_servers(m);
+            let c = Chat::new(&t, &root, &[]).with_servers(m);
             (t, root, c)
         };
         let (_t, root, c) = chat();
@@ -1917,7 +1956,7 @@ mod tests {
 
         let (t, root, _out) = fixture();
         let m = crate::mcp::testutil::serving(vec![(entry("gh", false), &[("search", "")])]);
-        let c = Chat::new(&t, &root, &[], &[]).with_servers(m);
+        let c = Chat::new(&t, &root, &[]).with_servers(m);
         c.allow("gh:*").unwrap();
         let values: Vec<String> = rows_of(&c).into_iter().map(|r| r.0).collect();
         assert_eq!(
@@ -1946,7 +1985,7 @@ mod tests {
             (flag("npx -y @other/mcp"), &[("pull", "")]),
             (entry("gh", false), &[("search", "")]),
         ]);
-        let c = Chat::new(&t, &root, &[], &[])
+        let c = Chat::new(&t, &root, &[])
             .without_project(false, None)
             .with_servers(m);
         assert!(c.allow("auto:push").is_err());
@@ -1974,7 +2013,7 @@ mod tests {
             server: ServerId::Config(server.to_owned()),
             tool: McpTool::parse(tool),
         };
-        let c = Chat::new(&t, &root, &[], &[])
+        let c = Chat::new(&t, &root, &[])
             .with_servers(Arc::clone(&m))
             .with_config(grants::GrantSet {
                 dirs: Vec::new(),
@@ -2008,7 +2047,7 @@ mod tests {
             ),
             (entry("my server", false), &[("push", "")]),
         ]);
-        let c = Chat::new(&t, &root, &[], &[])
+        let c = Chat::new(&t, &root, &[])
             .without_project(false, None)
             .with_servers(m);
         assert_eq!(

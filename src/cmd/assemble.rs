@@ -235,7 +235,10 @@ pub fn static_grants(
         };
         match parse(written, &servers).map_err(refused)? {
             Entry::Dir(dir) => {
-                set.add_dir(static_dir(&dir, env).map_err(refused)?);
+                let root = env
+                    .root()
+                    .map_err(|_| refused(format!("cannot work out where {dir} is")))?;
+                set.add_dir(static_dir(&dir, &root, env).map_err(refused)?);
             }
             Entry::Builtin(tool) => {
                 set.add_tool(ToolKey::Builtin(tool));
@@ -251,13 +254,78 @@ pub fn static_grants(
     Ok(set)
 }
 
-/// One `allow:` directory, as written, at its real location: `~` the home, a relative one off the run's root.
-fn static_dir(dir: &str, env: &ToolEnv) -> Result<std::path::PathBuf, String> {
+/// The `--allow` values (docs/design/config-allow.md §3.4): the targets of the agent's `allow:`, read the same
+/// way and refused the same way ([`Config::read_allow`](crate::config::Config)), with two differences — a
+/// server may also be a `--mcp` value `mcp`, named whole (keyed `ServerId::Flag`, as a chat grant of it is),
+/// and a relative directory hangs off the working directory, as it is typed in a shell. A value the agent's
+/// resolved `allow:` (`config`) already holds is left to it, a repeat kept once. Each refusal is a setup error
+/// led by `--allow: `.
+pub fn flag_grants(
+    cfg: &Config,
+    agent: &AgentConfig,
+    values: &[String],
+    mcp: &[String],
+    config: &crate::tool::grants::GrantSet,
+    env: &ToolEnv,
+) -> Result<crate::tool::grants::GrantSet, crate::config::ConfigError> {
+    use crate::config::allow::Entry;
+    use crate::tool::grants::{GrantSet, ServerId, ToolKey};
+    let flags: Vec<String> = mcp.iter().map(|s| s.trim().to_owned()).collect();
+    let servers = cfg.servers_of(agent);
+    let mut held = config.clone();
+    let mut set = GrantSet::default();
+    for value in values {
+        let refused = |message: String| crate::config::ConfigError::Key {
+            at: "--allow".to_owned(),
+            message,
+        };
+        let entry = cfg
+            .read_allow(agent, value, &flags, env.dirs.home.as_deref())
+            .map_err(refused)?;
+        match entry {
+            Entry::Dir(dir) => {
+                let cwd = env
+                    .dirs
+                    .cwd
+                    .clone()
+                    .map_or_else(std::env::current_dir, Ok)
+                    .and_then(std::path::absolute)
+                    .map_err(|_| refused(format!("cannot work out where {dir} is")))?;
+                let real = static_dir(&dir, &cwd, env).map_err(refused)?;
+                if held.add_dir(real.clone()) {
+                    set.add_dir(real);
+                }
+            }
+            Entry::Builtin(tool) => {
+                let key = ToolKey::Builtin(tool);
+                if held.add_tool(key.clone()) {
+                    set.add_tool(key);
+                }
+            }
+            Entry::Mcp { server, tool } => {
+                let server = if servers.contains(&server) {
+                    ServerId::Config(server)
+                } else {
+                    ServerId::Flag(server)
+                };
+                let key = ToolKey::Mcp { server, tool };
+                if held.add_tool(key.clone()) {
+                    set.add_tool(key);
+                }
+            }
+        }
+    }
+    Ok(set)
+}
+
+/// One static directory, as written, at its real location: `~` the home, a relative one off `base` — the run's
+/// root for an `allow:` entry, the working directory for a `--allow` value.
+fn static_dir(dir: &str, base: &Path, env: &ToolEnv) -> Result<std::path::PathBuf, String> {
     let home = env.dirs.home.as_deref();
     let root = env
         .root()
         .map_err(|_| format!("cannot work out where {dir} is"))?;
-    let typed = crate::app::paths::clean(&root.join(crate::tool::expand_home(dir, home)));
+    let typed = crate::app::paths::clean(&base.join(crate::tool::expand_home(dir, home)));
     if typed.exists() && !typed.is_dir() {
         return Err(format!("{dir} is not a directory"));
     }

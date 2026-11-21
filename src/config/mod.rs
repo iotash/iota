@@ -519,7 +519,7 @@ impl Config {
                 self.check_ref(name, "choices", r)?;
             }
             for (i, entry) in a.allow.iter().enumerate() {
-                self.check_allow(a, entry, env)
+                self.read_allow(a, entry, &[], env.home())
                     .map_err(|message| ConfigError::Key {
                         at: format!("agents.{name}.allow[{i}]"),
                         message,
@@ -548,22 +548,32 @@ impl Config {
             .unwrap_or_else(|| self.mcp_servers.keys().cloned().collect())
     }
 
-    /// One `allow:` entry of `agent` (docs/design/config-allow.md §3.3), read against the servers it
-    /// loads: its grammar ([`allow::parse`]), then whether it names something this agent has — a `~` a home
-    /// expands, a built-in of an enabled set, a server it loads. Every agent's entries are read at the load,
-    /// so a mistake in one nobody ran today is still found; what needs the run's filesystem is the assembly's.
-    fn check_allow(&self, agent: &AgentConfig, entry: &str, env: &Env) -> Result<(), String> {
+    /// One `allow:` target of `agent` (docs/design/config-allow.md §3.3), read against the servers it loads
+    /// and, for a `--allow` value (§3.4), the run's `--mcp` specs `flags` (trimmed; a config entry has none):
+    /// its grammar ([`allow::parse`]), then whether it names something this agent has — a `~` the `home`
+    /// expands, a built-in of an enabled set, a server it loads or a flag starts. Every agent's entries are read
+    /// at the load, so a mistake in one nobody ran today is still found; what needs the run's filesystem is the
+    /// assembly's.
+    pub(crate) fn read_allow(
+        &self,
+        agent: &AgentConfig,
+        entry: &str,
+        flags: &[String],
+        home: Option<&Path>,
+    ) -> Result<allow::Entry, String> {
         let servers = self.servers_of(agent);
-        match allow::parse(entry, &servers)? {
+        let named: Vec<String> = servers.iter().chain(flags).cloned().collect();
+        let read = allow::parse(entry, &named)?;
+        match &read {
             allow::Entry::Dir(dir) => {
                 if (dir == "~" || dir.starts_with("~/"))
-                    && env.home().is_none_or(|h| h.as_os_str().is_empty())
+                    && home.is_none_or(|h| h.as_os_str().is_empty())
                 {
                     return Err("\"~\" needs a home directory, and this run has none".to_owned());
                 }
             }
             allow::Entry::Builtin(tool) => {
-                let set = crate::tool::builtins::set_of(&tool);
+                let set = crate::tool::builtins::set_of(tool);
                 let node = agent.tools.get(set);
                 if node.is_none_or(crate::tool::yaml11::is_false_scalar) {
                     return Err(format!(
@@ -576,8 +586,10 @@ impl Config {
                     ));
                 }
             }
-            allow::Entry::Mcp { server, .. } => {
-                if !self.mcp_servers.contains_key(&server) {
+            allow::Entry::Mcp { server, .. }
+                if !servers.contains(server) && !flags.contains(server) =>
+            {
+                if !self.mcp_servers.contains_key(server) {
                     let entries: Vec<&str> = self.mcp_servers.keys().map(String::as_str).collect();
                     let entries = if entries.is_empty() {
                         "there are none".to_owned()
@@ -588,19 +600,18 @@ impl Config {
                         "no mcp_servers entry named \"{server}\" ({entries})"
                     ));
                 }
-                if !servers.contains(&server) {
-                    let loads = if servers.is_empty() {
-                        "it loads none".to_owned()
-                    } else {
-                        format!("it loads: {}", servers.join(", "))
-                    };
-                    return Err(format!(
-                        "\"{server}\" is not one of this agent's mcp_servers ({loads})"
-                    ));
-                }
+                let loads = if servers.is_empty() {
+                    "it loads none".to_owned()
+                } else {
+                    format!("it loads: {}", servers.join(", "))
+                };
+                return Err(format!(
+                    "\"{server}\" is not one of this agent's mcp_servers ({loads})"
+                ));
             }
+            allow::Entry::Mcp { .. } => {}
         }
-        Ok(())
+        Ok(read)
     }
 
     /// One reference written under `agents.<name>.<key>` points at something the config knows.
@@ -828,8 +839,8 @@ fn ordered_models<'de, D: serde::Deserializer<'de>>(
     d.deserialize_any(OrderedModels)
 }
 
-/// A write root named `at` (`write_roots[i]`, `--add-dir`): refuses a blank entry or a `~` with no home (typos that would quietly mean the project root or a directory called `~`) — at the load for the config's entries, because only the load knows both the entry's position and the home, and at the run's assembly for the flag's.
-pub(crate) fn check_write_root(at: String, entry: &str, env: &Env) -> Result<(), ConfigError> {
+/// A write root named `at` (`write_roots[i]`): refuses a blank entry or a `~` with no home (typos that would quietly mean the project root or a directory called `~`) — at the load, because only the load knows both the entry's position and the home.
+fn check_write_root(at: String, entry: &str, env: &Env) -> Result<(), ConfigError> {
     let entry = entry.trim();
     let message = if entry.is_empty() {
         "an empty entry names no directory".to_owned()

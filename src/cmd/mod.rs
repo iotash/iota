@@ -27,7 +27,7 @@ pub use args::{
     Cli, Command, ConfigAction, Invocation, ListWhat, McpAction, McpAddCmd, McpAuthArg, McpCmd,
     McpListCmd, McpListScope, McpScope, Resume, RunArgs,
 };
-pub use assemble::static_grants;
+pub use assemble::{flag_grants, static_grants};
 pub use error::{ArgsError, CliError, RunError, SetupError};
 pub use resolve::{RunSettings, resolve_run};
 
@@ -95,6 +95,11 @@ pub(crate) struct ToolAssembly {
     pub(crate) mcp_defers: Vec<DeferredGroup>,
     /// The tool environment (its `interactor` is bound to the live facade by the interactive branch).
     pub(crate) tool_env: ToolEnv,
+    /// The agent's `allow:`, resolved: the first part of the store's static level, kept apart for the
+    /// `Static` tab and `/allow`'s refusals (`repl::Footing::config`).
+    pub(crate) config_allow: crate::tool::grants::GrantSet,
+    /// The `--allow` values beyond it, resolved: the rest of the static level (`repl::Footing::flag`).
+    pub(crate) flag_allow: crate::tool::grants::GrantSet,
     /// The ask-seam bridge, created UNBOUND (the dispatcher is built long before the UI exists); `None`
     /// headlessly, so `new_ask_set` contributes no tools and the model never sees them (root.go:221-232).
     pub(crate) interactor: Option<Arc<crate::repl::Interactor>>,
@@ -479,11 +484,6 @@ fn assemble_tools(
     io: &mut io::Streams,
 ) -> Result<ToolAssembly, CliError> {
     let dirs = &ctx.env.dirs;
-    // `--add-dir` (X-113): a value that names no directory is the config's write-root refusal, before
-    // anything starts.
-    for dir in &inv.args.add_dir {
-        crate::config::check_write_root("--add-dir".to_owned(), dir, &ctx.env)?;
-    }
     // root.go:187-194
     let (mcp_configs, mcp_defers) =
         assemble::build_mcp_configs(cfg, &settings.resolved.agent, &inv.args.mcp, &mut |w| {
@@ -557,18 +557,29 @@ fn assemble_tools(
         ),
         ..ToolEnv::default()
     }
-    .with_write_roots(&cfg.write_roots, &inv.args.add_dir);
+    .with_write_roots(&cfg.write_roots);
     // The static level (docs/design/config-allow.md §4.1): the agent's `allow:`, resolved once against the root
-    // and the home, before any tool, the harness or a door reads the store. A directory that cannot be one
-    // refuses the run here, naming its entry.
-    tool_env.grants = Arc::new(crate::tool::grants::Grants::with_static(
-        assemble::static_grants(
-            cfg,
-            &settings.resolved.agent_name,
-            &settings.resolved.agent,
-            &tool_env,
-        )?,
-    ));
+    // and the home, then the `--allow` values (§3.4), against the working directory and with the `--mcp` servers
+    // nameable — before any tool, the harness or a door reads the store. A target that cannot be one refuses
+    // the run here, naming its entry or the flag.
+    let config_allow = assemble::static_grants(
+        cfg,
+        &settings.resolved.agent_name,
+        &settings.resolved.agent,
+        &tool_env,
+    )?;
+    let flag_allow = assemble::flag_grants(
+        cfg,
+        &settings.resolved.agent,
+        &inv.args.allow,
+        &inv.args.mcp,
+        &config_allow,
+        &tool_env,
+    )?;
+    let mut fixed = config_allow.clone();
+    fixed.dirs.extend(flag_allow.dirs.iter().cloned());
+    fixed.tools.extend(flag_allow.tools.iter().cloned());
+    tool_env.grants = Arc::new(crate::tool::grants::Grants::with_static(fixed));
     // The project's grants (docs/design/grants.md §4.2), of a run that has a project and before any tool or the
     // harness reads the store: what the user granted for this project holds from the first call — in `-m` too,
     // which has no door of its own, and so in a child `iota run … -m` of the same agent in the same project.
@@ -590,7 +601,7 @@ fn assemble_tools(
     // its hosts are detected: they have facts for `<environment>` too.
     let harness = crate::agents::harness::HarnessInputs {
         env: crate::agents::harness::Environment {
-            write_roots: tool_env.static_roots(),
+            write_roots: tool_env.write_roots.clone(),
             ..assemble::harness_environment(
                 dirs,
                 project_root.as_deref(),
@@ -611,6 +622,8 @@ fn assemble_tools(
         mcp_configs,
         mcp_defers,
         tool_env,
+        config_allow,
+        flag_allow,
         interactor,
         jobs,
         host,
@@ -721,6 +734,8 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         mcp_configs,
         mcp_defers,
         tool_env,
+        config_allow: _,
+        flag_allow: _,
         interactor: _,
         jobs,
         host,

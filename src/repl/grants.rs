@@ -75,7 +75,7 @@ pub(crate) fn enter(
 }
 
 /// What a chat's grant doors stand on, resolved ONCE at assembly beside the project load (`cmd`): the root, the
-/// project's file, the static write roots and the agent's `allow:`, kept apart by where they were declared so `/allow` can say which
+/// project's file, the static write roots, the agent's `allow:` and `--allow`, kept apart by where they were declared so `/allow` can say which
 /// one already covers a directory.
 #[derive(Clone, Debug)]
 pub struct Footing {
@@ -85,20 +85,14 @@ pub struct Footing {
     pub project: Option<ProjectFile>,
     /// The top-level `write_roots:`, resolved (`ToolEnv::write_roots`).
     pub write_roots: Vec<PathBuf>,
-    /// The `--add-dir` values, resolved (`ToolEnv::added_dirs`).
-    pub added_dirs: Vec<PathBuf>,
-    /// The agent's `allow:`, resolved — the store's static level (`Grants::statics`), kept here with its source
-    /// so the `Static` tab and `/allow`'s refusals can say it is the config's.
+    /// The agent's `allow:`, resolved — the first part of the store's static level (`Grants::statics`), kept
+    /// here with its source so the `Static` tab and `/allow`'s refusals can say it is the config's.
     pub config: GrantSet,
+    /// The `--allow` values, resolved (`cmd::assemble::flag_grants`) — the rest of the static level: what the
+    /// command line allows beyond [`config`](Self::config).
+    pub flag: GrantSet,
     /// The agent's `agents:` name (`""` for none): where the `Static` tab says to edit `allow:`.
     pub agent: String,
-}
-
-impl Footing {
-    /// Both static lists, `write_roots:` first — as the tools hold them (`ToolEnv::static_roots`).
-    pub(crate) fn static_roots(&self) -> Vec<PathBuf> {
-        [self.write_roots.as_slice(), self.added_dirs.as_slice()].concat()
-    }
 }
 
 /// The chat's door-side service: the store, the session's bundle and the project's file — the one path from a

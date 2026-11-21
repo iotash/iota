@@ -39,7 +39,7 @@ pub struct Environment {
     /// The config files this run reads.
     pub configs: ConfigFiles,
     /// The roots beyond the project root the code tools reach and a sandboxed shell writes: the STATIC ones —
-    /// the top-level `write_roots:`, then `--add-dir`, as the tools hold them (`ToolEnv::static_roots`, resolved
+    /// the top-level `write_roots:`, as the tools hold them (`ToolEnv::write_roots`, resolved
     /// once at assembly) — and, in a composition through [`HarnessInputs::compose`], the roots in force now. Empty
     /// prints no line, so a config without the key and a run without a grant keep the block's bytes.
     pub write_roots: Vec<PathBuf>,

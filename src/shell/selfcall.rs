@@ -10,11 +10,12 @@
 //! protected-path table exists to refuse — `~/.iota/trusted.json`, `~/.iota.yaml`, `<root>/.iota.yaml` — and the
 //! next run would start the config the model wrote. Kept in, the write fails and the model asks the user.
 //!
-//! And the lines that CHOOSE what the child loads or starts: a line carrying `-c`/`--config`, `--mcp` or
-//! `--add-dir` is never a self-call either (DIVERGENCES X-44, amended). Let out, `iota -c scratch.yaml run a -m …`
-//! would start a config the model wrote inside the project — `sandbox: off`, `auto_run: true`, any
-//! `write_roots` — `iota run a --mcp 'sh -c "…"' -m …` an arbitrary command as a server, and
-//! `iota run a --add-dir ~ -m …` a child that writes wherever the model chose, all outside the sandbox.
+//! And the lines that CHOOSE what the child loads, starts or may do unasked: a line carrying `-c`/`--config`,
+//! `--mcp` or `--allow` is never a self-call either (DIVERGENCES X-44, amended). Let out, `iota -c scratch.yaml
+//! run a -m …` would start a config the model wrote inside the project — `sandbox: off`, `auto_run: true`, any
+//! `write_roots` — `iota run a --mcp 'sh -c "…"' -m …` an arbitrary command as a server, `iota run a --allow ~
+//! -m …` a child that writes wherever the model chose, and `iota run a --allow shell -m …` a child with an
+//! unconfined shell nobody is asked about, all outside the sandbox.
 //!
 //! The answer is conservative by construction:
 //!
@@ -28,7 +29,7 @@
 //! - the writers are recognised by their verb words in order — `config` then `trust`/`untrust`/`init`, `mcp`
 //!   then `add`/`remove` — anywhere among the arguments, so no spelling of the global flags (`-c f`, `--config=f`, before or
 //!   after the verb) hides one. A line that merely mentions both words outside those commands stays in too;
-//! - the choosing flags are recognised as whole words anywhere among the arguments: `--config`/`--mcp`/`--add-dir` alone
+//! - the choosing flags are recognised as whole words anywhere among the arguments: `--config`/`--mcp`/`--allow` alone
 //!   or with `=value`, and `-c` alone, attached (`-cf.yaml`) or with `=` (`-c=f.yaml`) — clap takes all three
 //!   for a short flag with a value. A `-c` inside a quoted `-m` message is inside that word and is not one.
 //!
@@ -68,7 +69,7 @@ pub fn self_invocation_with(
 
 /// The long flags that choose what the child loads or starts: the config it reads, a server it starts, a
 /// directory it may write.
-const CHOOSING_LONG: &[&str] = &["--config", "--mcp", "--add-dir"];
+const CHOOSING_LONG: &[&str] = &["--config", "--mcp", "--allow"];
 
 /// The short flags among them, each one taking a value.
 const CHOOSING_SHORT: &[&str] = &["-c"];
@@ -448,10 +449,11 @@ mod tests {
         assert!(is("iota run a --configure -m hi"));
     }
 
-    /// `--add-dir` chooses where the child may write, so a line that carries it (the word or its `=` form,
-    /// on any verb) stays in; the word inside a message, or a longer flag sharing its prefix, does not count.
+    /// `--allow` chooses what the child may do unasked — write a directory, run a shell, call a server's tools
+    /// — so a line that carries it (the word or its `=` form, on any verb) stays in; the word inside a message,
+    /// or a longer flag sharing its prefix, does not count.
     #[test]
-    fn a_line_that_adds_a_root_stays_in() {
+    fn a_line_that_allows_stays_in() {
         let dir = tempfile::tempdir().expect("tempdir");
         let iota = dir.path().join("iota");
         std::fs::write(&iota, b"#!/bin/sh\n").expect("fake iota");
@@ -460,18 +462,19 @@ mod tests {
         let is = |cmd: &str| self_invocation_with(cmd, &exe, &look_path);
 
         for line in [
-            "iota run a --add-dir ~ -m hi",
-            "iota run a --add-dir=/etc -m hi",
-            "iota --add-dir /tmp/x -m hi",
-            "iota resume abc --add-dir .. -m hi",
-            "iota run a -m hi --add-dir /tmp/x 2>&1",
-            "iota 'run' \"--add-dir\" /tmp/x -m hi",
+            "iota run a --allow ~ -m hi",
+            "iota run a --allow shell -m hi",
+            "iota run a --allow=/etc -m hi",
+            "iota --allow 'npx -y @acme/mcp:*' -m hi",
+            "iota resume abc --allow .. -m hi",
+            "iota run a -m hi --allow write_file 2>&1",
+            "iota 'run' \"--allow\" /tmp/x -m hi",
         ] {
             assert!(!is(line), "{line:?} must stay in the sandbox");
         }
 
-        assert!(is("iota run a -m 'pass --add-dir /tmp/x'"));
-        assert!(is("iota run a --add-dirs -m hi"));
+        assert!(is("iota run a -m 'pass --allow shell'"));
+        assert!(is("iota run a --allowed -m hi"));
     }
 
     /// Without a known executable nothing is ever let out.

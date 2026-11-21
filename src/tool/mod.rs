@@ -387,15 +387,11 @@ pub struct ToolEnv {
     /// Some only for a bot's own session (docs/design/bot-mode.md §3.3): the `memory` set's `remember`
     /// writes into it, and the chat loop records the writes it announces.
     pub memory: Option<crate::agents::memory::BotMemory>,
-    /// The top-level `write_roots:`, absolute ([`ToolEnv::with_write_roots`]): with
-    /// [`added_dirs`](Self::added_dirs), the STATIC roots beyond the project root that the `code` jail accepts
-    /// and the `shell` sandbox lets writes into — one list for both ([`ToolEnv::static_roots`]). Empty is the
-    /// project root alone. Both read the live directory grants of [`grants`](Self::grants) beside them at every
-    /// call ([`grants::Grants::roots`]).
+    /// The top-level `write_roots:`, absolute ([`ToolEnv::with_write_roots`]): the STATIC roots beyond the
+    /// project root that the `code` jail accepts and the `shell` sandbox lets writes into — one list for both.
+    /// Empty is the project root alone. Both read the directories of [`grants`](Self::grants) beside them at
+    /// every call ([`grants::Grants::roots`]) — the static level's (`allow:`, `--allow`) and the live grants.
     pub write_roots: Vec<PathBuf>,
-    /// The `--add-dir` values, absolute, after [`write_roots`](Self::write_roots) and none of them: kept apart
-    /// so a door can say which declaration already covers a directory.
-    pub added_dirs: Vec<PathBuf>,
     /// The run's ONE grant store ([`grants::Grants`]): the `code` set reads its directory grants at every call,
     /// beside the static [`write_roots`](Self::write_roots); the walks read and write it through
     /// [`approval::gate`]. `Default` is an empty store.
@@ -427,42 +423,23 @@ impl ToolEnv {
         std::path::absolute(root).map(|p| crate::app::paths::clean(&p))
     }
 
-    /// `self` with [`write_roots`](Self::write_roots) and [`added_dirs`](Self::added_dirs) resolved, once: the
-    /// config's `entries`, then the `--add-dir` values in flag order (`added`, DIVERGENCES X-113). Each one is trimmed, a leading `~`
-    /// expanded (`expand_home`), a relative one joined to its base — a config entry to [`root`](Self::root),
-    /// a flag value to the working directory (`dirs.cwd`, else the process's), since it is typed in a shell;
-    /// `.` when the base cannot be read, as `new_code_set` falls back — then cleaned, and a root that cleans
-    /// to one already listed (`~/a` beside `/home/u/a`) kept once, first spelling first. The config load and
-    /// the run's assembly have already refused a blank entry and a `~` with no home to expand it to.
+    /// `self` with [`write_roots`](Self::write_roots) resolved, once, from the config's `entries`: each one
+    /// trimmed, a leading `~` expanded (`expand_home`), a relative one joined to [`root`](Self::root) (`.` when
+    /// it cannot be read, as `new_code_set` falls back), then cleaned, and a root that cleans to one already
+    /// listed (`~/a` beside `/home/u/a`) kept once, first spelling first. The config load has already refused a
+    /// blank entry and a `~` with no home to expand it to.
     #[must_use]
-    pub fn with_write_roots(mut self, entries: &[String], added: &[String]) -> Self {
-        let dot = || PathBuf::from(".");
-        let root = self.root().unwrap_or_else(|_| dot());
-        let cwd = match &self.dirs.cwd {
-            Some(c) => std::path::absolute(c).unwrap_or_else(|_| dot()),
-            None => std::env::current_dir().unwrap_or_else(|_| dot()),
-        };
+    pub fn with_write_roots(mut self, entries: &[String]) -> Self {
+        let root = self.root().unwrap_or_else(|_| PathBuf::from("."));
         self.write_roots.clear();
-        self.added_dirs.clear();
-        for (base, list, added) in [(&root, entries, false), (&cwd, added, true)] {
-            for e in list {
-                let p = expand_home(e.trim(), self.dirs.home.as_deref());
-                let p = crate::app::paths::clean(&base.join(p));
-                if !self.write_roots.contains(&p) && !self.added_dirs.contains(&p) {
-                    if added {
-                        self.added_dirs.push(p);
-                    } else {
-                        self.write_roots.push(p);
-                    }
-                }
+        for e in entries {
+            let p = expand_home(e.trim(), self.dirs.home.as_deref());
+            let p = crate::app::paths::clean(&root.join(p));
+            if !self.write_roots.contains(&p) {
+                self.write_roots.push(p);
             }
         }
         self
-    }
-
-    /// The static roots: [`write_roots`](Self::write_roots), then [`added_dirs`](Self::added_dirs).
-    pub fn static_roots(&self) -> Vec<PathBuf> {
-        [self.write_roots.as_slice(), self.added_dirs.as_slice()].concat()
     }
 }
 
@@ -518,19 +495,16 @@ mod tests {
             },
             ..ToolEnv::default()
         }
-        .with_write_roots(
-            &[
-                "~/scratch".to_owned(),
-                "../sibling/./x".to_owned(),
-                " vendor ".to_owned(),
-                abs("/opt/data/").display().to_string(),
-                // Repeats are compared once cleaned: the same three directories, spelled otherwise.
-                abs("/home/u/scratch/").display().to_string(),
-                "vendor/../vendor".to_owned(),
-                abs("/opt/./data").display().to_string(),
-            ],
-            &[],
-        );
+        .with_write_roots(&[
+            "~/scratch".to_owned(),
+            "../sibling/./x".to_owned(),
+            " vendor ".to_owned(),
+            abs("/opt/data/").display().to_string(),
+            // Repeats are compared once cleaned: the same three directories, spelled otherwise.
+            abs("/home/u/scratch/").display().to_string(),
+            "vendor/../vendor".to_owned(),
+            abs("/opt/./data").display().to_string(),
+        ]);
         assert_eq!(
             env.write_roots,
             [
@@ -542,7 +516,7 @@ mod tests {
         );
         assert!(
             ToolEnv::default()
-                .with_write_roots(&[], &[])
+                .with_write_roots(&[])
                 .write_roots
                 .is_empty()
         );

@@ -131,7 +131,7 @@ async fn outside_writes_are_refused_headlessly(cfg: &str) {
         .collect();
     let outside = dir.path().join("outside.txt");
     fs::write(&outside, "secret").expect("write outside");
-    let hint = " — writing there needs the user's approval, which this non-interactive run cannot ask for; pass --add-dir <dir>, or list its directory in the top-level `write_roots:`, to allow it";
+    let hint = " — writing there needs the user's approval, which this non-interactive run cannot ask for; pass --allow <dir>, or list its directory in the agent's `allow:`, to allow it";
 
     for path in [
         outside.to_string_lossy().into_owned(),
