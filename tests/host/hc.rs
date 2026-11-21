@@ -263,7 +263,7 @@ impl Drop for Core {
     }
 }
 
-/// The config every run uses: the mock provider, and the `shell` set unsandboxed without `auto_run` —
+/// The config every run uses: the mock provider, and the `shell` set unsandboxed and not in `allow:` —
 /// the configuration that ASKS before a call.
 fn config(port: u16) -> String {
     format!(

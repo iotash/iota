@@ -6,7 +6,7 @@
 # `tests/repl/commands.rs`: the rows arriving when the server connects); what only a real terminal shows is the
 # walk itself, through the real composer and its list:
 #
-#   55.1 `/allow ` lists the built-ins that ask (`shell`: the agent has the toolset, not `auto_run`) and the
+#   55.1 `/allow ` lists the built-ins that ask (`shell`: the agent has the toolset, not in its `allow:`) and the
 #        server, `github:` and its count (once it has connected);
 #   55.2 `g` leaves `github:` alone; Tab writes `/allow github:`;
 #   55.3 Enter on that branch row submits nothing: the list shows level 2, `*` and the server's tool;

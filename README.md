@@ -29,15 +29,14 @@ a model, a prompt, a set of tools — in one YAML file, and run them:
 - **Tools that ask.** A `shell` under an OS sandbox, `code` tools that read
   anywhere and write in the project and the directories made writable, MCP
   servers with OAuth login — every file edit, every unsandboxed command and
-  every MCP tool call asks for confirmation unless the config waives it. An
+  every MCP tool call asks for confirmation unless the config allows it. An
   answer can be kept for this session or — for an agent with `mode: agent` —
   for this project: allow a built-in tool or an MCP tool, or make the
   directory of a write outside them writable. `/allow` grants the same by hand, and a bare `/allow` shows what
   is in force and takes it back. The config is the permanent form: an agent's
   `allow:` lists `/allow`'s targets — `allow: [~/scratch, shell, edit_file,
   "github:*"]` — and a bare `/allow` shows them, read-only, beside the grants
-  (`tools.code.auto_write`, `tools.shell.auto_run` and an MCP
-  server's `auto_run` still work for now); `--allow <target>` is the one-run
+  (an MCP server's `auto_run` still works for now); `--allow <target>` is the one-run
   form, a `--mcp` server named by its whole value. A
   project's `agents.<name>` replaces the home's whole, `allow:` included. A write to git's hooks
   and config or iota's own config asks every time; the sandbox never makes
@@ -96,9 +95,8 @@ you trust it:
   before anything of it runs: for each MCP server, the command it runs (or
   the url it connects to), its `env`, any `headers` or `client_secret` value
   holding a `${…}`, and its `auto_run`; a provider's `url` and a `${…}` key;
-  an agent's `system_file`, its tools' `sandbox` (other than `auto`),
-  `auto_run`, `network` and `auto_write`, and each entry of its `allow:`, with
-  what it does. Trust it, or skip it
+  an agent's `system_file`, its shell's `sandbox` (other than `auto`) and
+  `network`, and each entry of its `allow:`, with what it does. Trust it, or skip it
   for this run.
 - Without a terminal (`-m`, a script, a bot), iota never asks: it skips the
   file with one warning and runs on `~/.iota.yaml`. `iota mcp list --probe`

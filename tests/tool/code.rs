@@ -9,8 +9,10 @@ use std::{
 };
 
 use iota::provider::model::JsonObject;
+use iota::tool::approval::{Gate, gate};
 use iota::tool::builtins::code::{CODE_MAX_OUTPUT, new_code_set};
 use iota::tool::context::RunCtx;
+use iota::tool::grants::{GrantSet, Grants, ToolKey};
 use iota::tool::sets::{RawNode, ToolsConfig};
 use iota::tool::{Dispatcher, Presentation, Tool, ToolEnv, ToolOutput};
 use iota::tool::{Registry, merge};
@@ -113,18 +115,28 @@ fn set_mtime(path: &Path, when: SystemTime) {
 }
 /// Reads are open: an absolute path and a `..` escape both read a file outside the project, while a
 /// write to the very same paths lands nothing in a run with nobody to ask (no interactor: `-m`, the SDK
-/// path), `auto_write` or not, and the refusal says how to allow it.
+/// path), whether the store holds the writers (`allow: [edit_file, write_file]`) or not, and the refusal says how
+/// to allow it.
 #[tokio::test]
 async fn reads_reach_outside_the_project_root_and_writes_do_not() {
-    for auto_write in ["auto_write: true\n", ""] {
-        outside_writes_are_refused_headlessly(auto_write).await;
+    for writers in [true, false] {
+        outside_writes_are_refused_headlessly(writers).await;
     }
 }
 
-async fn outside_writes_are_refused_headlessly(cfg: &str) {
-    let (dir, root, _) = code_project(&[("a.txt", "hello\n")], cfg);
-    let env = env_at(&root);
-    let tools: Tools = new_code_set(&env, node(cfg).as_ref())
+async fn outside_writes_are_refused_headlessly(writers: bool) {
+    let (dir, root, _) = code_project(&[("a.txt", "hello\n")], "");
+    let mut fixed = GrantSet::default();
+    if writers {
+        for tool in ["edit_file", "write_file"] {
+            fixed.add_tool(ToolKey::Builtin(tool.to_owned()));
+        }
+    }
+    let env = ToolEnv {
+        grants: Arc::new(Grants::with_static(fixed)),
+        ..env_at(&root)
+    };
+    let tools: Tools = new_code_set(&env, None)
         .expect("code set")
         .into_iter()
         .map(|t| (t.def().name, t))
@@ -138,7 +150,7 @@ async fn outside_writes_are_refused_headlessly(cfg: &str) {
         "../outside.txt".to_owned(),
         "a/../../outside.txt".to_owned(),
     ] {
-        let at = format!("{cfg:?} {path:?}");
+        let at = format!("writers={writers} {path:?}");
         let out = call(&tools, "read_file", json!({ "path": path })).await;
         assert_eq!(out, ToolOutput::ok("     1\tsecret"), "read {at}");
         let refused = ToolOutput::err(format!(
@@ -944,7 +956,7 @@ async fn write_file_creates_parents_and_overwrites() {
     );
 }
 #[tokio::test]
-async fn mutating_code_tools_need_approval_unless_auto_write() {
+async fn mutating_code_tools_need_approval_unless_allowed() {
     let (_dir, root, _tools) = code_project(&[], "");
     let reg = registry(&root, "code:\n");
     for (name, want) in [
@@ -962,11 +974,30 @@ async fn mutating_code_tools_need_approval_unless_auto_write() {
         );
     }
 
-    let auto = registry(&root, "code:\n  auto_write: true\n");
-    assert!(
-        !auto.requires_approval("write_file", None) && !auto.requires_approval("edit_file", None),
-        "auto_write should waive approval"
-    );
+    // The writers' tool grant (`allow: [edit_file, write_file]`) is what runs an inside write unasked: the probe
+    // still asks — it is a fact of the call — and the gate answers it from the store.
+    let mut fixed = GrantSet::default();
+    for tool in ["edit_file", "write_file"] {
+        fixed.add_tool(ToolKey::Builtin(tool.to_owned()));
+    }
+    let allowed = Grants::with_static(fixed);
+    let inside = json!({ "path": "x.txt", "content": "x", "old_string": "a", "new_string": "b" });
+    let inside = inside.as_object().expect("object");
+    for name in ["edit_file", "write_file"] {
+        assert!(reg.requires_approval(name, Some(inside)), "{name}");
+        assert_eq!(
+            gate(&reg, &allowed, name, inside),
+            Gate::Run,
+            "allow: runs {name} unasked"
+        );
+        assert!(
+            matches!(
+                gate(&reg, &Grants::default(), name, inside),
+                Gate::Ask { subject: None, .. }
+            ),
+            "without allow: {name} is asked"
+        );
+    }
 
     // The capability routes through Merge, and unknown tools never require it.
     let merged = merge(vec![Arc::new(reg) as Arc<dyn Dispatcher>]);
@@ -997,18 +1028,6 @@ async fn a_read_only_code_set_offers_no_mutating_tool() {
             "{name} survives read_only but is not parallel-safe"
         );
     }
-}
-#[test]
-fn read_only_and_auto_write_contradict_each_other() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let cfg = node("read_only: true\nauto_write: true\n");
-    let Err(err) = new_code_set(&env_at(dir.path()), cfg.as_ref()) else {
-        panic!("read_only + auto_write must be rejected");
-    };
-    assert_eq!(
-        err.to_string(),
-        "read_only and auto_write contradict each other: auto_write approves writes the set does not offer"
-    );
 }
 
 // WP09).

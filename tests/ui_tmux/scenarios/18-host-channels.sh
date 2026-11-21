@@ -6,7 +6,7 @@
 # notification that is gated on focus, and a quit straight out of a turn. All three are bytes
 # on `pipe-pane`:
 #
-#   * an unsandboxed `shell` call without `auto_run` asks first, and asking is
+#   * an unsandboxed `shell` call the agent does not `allow:` asks first, and asking is
 #     `State::NeedsInput` → `OSC 9;4;4;100` (`repl/turn/approval.rs`, `host/ansi.rs`);
 #   * "tmux never blurs a pane" is true of tmux's own client, but the loop reads focus off the
 #     same input bytes any terminal would send: `ESC [ O` (lost) and `ESC [ I` (gained), which
@@ -16,7 +16,7 @@
 #   * Ctrl+C mid-stream cancels the turn (bar cleared, `OSC 9;4;0`) and the next one exits with
 #     focus reporting turned off — the mid-turn quit of §7.1, in the only shape it can take.
 #
-# The agent enables the `shell` set with the sandbox off and NO auto_run — the one
+# The agent enables the `shell` set with the sandbox off and NO `allow: [shell]` — the one
 # configuration that asks. §7.3 (`notify: false`) and §7.4 (cmux) stay where they were.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"

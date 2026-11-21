@@ -642,8 +642,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         })
     };
     let title_provider = title_provider.map(|p| Arc::new(tokio::sync::Mutex::new(p)));
-    // The hold's trigger is the dispatcher's own answer — one truth with the approvals it waives — or a tool
-    // grant in the store, asked per message.
+    // The hold's trigger is a tool grant in the store (a built-in's `allow:` included), asked per message, or
+    // the dispatcher's own answer — an MCP server's `auto_run`, the one switch it still reads.
     let inbound_hold =
         crate::repl::inbound::Hold::new(dispatch.waives_approval(), Arc::clone(&grants));
     let mut repl = Repl {

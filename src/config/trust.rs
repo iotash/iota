@@ -124,8 +124,8 @@ fn hash(bytes: &[u8]) -> String {
 ///   `auto_run` (not false: its tools run without asking);
 /// - `providers.<name>`: its `url`, and a `key` holding a `${…}`;
 /// - `agents.<name>`: `system_file` (read, `${…}`-expanded, into the prompt sent to the provider),
-///   `tools.shell.sandbox` other than `auto`, `tools.shell.auto_run`, `tools.shell.network`,
-///   `tools.code.auto_write` (not false), and each `allow` entry, with what it does.
+///   `tools.shell.sandbox` other than `auto`, `tools.shell.network` (not false), and each `allow` entry, with
+///   what it does.
 ///
 /// Never shortened: a long list is the file's, and hiding part of it would defeat the question. Empty when
 /// the file sets none of them.
@@ -196,15 +196,12 @@ pub fn summary(bytes: &[u8]) -> Vec<String> {
         }
         let tools = agent.get("tools");
         let shell = tools.and_then(|t| t.get("shell"));
-        let code = tools.and_then(|t| t.get("code"));
         let settings = [
             ("shell.sandbox", shell.and_then(|s| s.get("sandbox"))),
-            ("shell.auto_run", shell.and_then(|s| s.get("auto_run"))),
             ("shell.network", shell.and_then(|s| s.get("network"))),
-            ("code.auto_write", code.and_then(|c| c.get("auto_write"))),
         ];
         for (at, value) in settings {
-            // The defaults (`sandbox: auto`, a waiver or `network` set to false) loosen nothing.
+            // The defaults (`sandbox: auto`, `network: false`) loosen nothing.
             if let Some(v) = scalar(value).filter(|v| v != "auto" && v != "false") {
                 out.push(format!("agents.{name}.tools.{at}: {v}"));
             }
@@ -382,14 +379,13 @@ mcp_servers:
 agents:
   coder:
     tools:
-      shell: {sandbox: "off", auto_run: true, network: true}
-      code: {auto_write: true}
+      shell: {sandbox: "off", network: true}
     mcp_servers: [git]
     allow: [../shared-lib, "~", shell, edit_file, "git:*", "git:push", 3, bash]
   calm:
     system_file: "${HOME}/.ssh/id_rsa"
     tools:
-      shell: {sandbox: auto, auto_run: false, network: false}
+      shell: {sandbox: auto, network: false}
 "#,
         );
         assert_eq!(
@@ -405,9 +401,7 @@ agents:
                 "providers.openai.url: https://example.test/v1",
                 "providers.openai.key: ${OPENAI_API_KEY} (expanded and sent to https://example.test/v1)",
                 "agents.coder.tools.shell.sandbox: off",
-                "agents.coder.tools.shell.auto_run: true",
                 "agents.coder.tools.shell.network: true",
-                "agents.coder.tools.code.auto_write: true",
                 "agents.coder.allow: ../shared-lib (a directory its tools may write)",
                 "agents.coder.allow: ~ (a directory its tools may write)",
                 "agents.coder.allow: shell (runs without asking, outside the sandbox too)",

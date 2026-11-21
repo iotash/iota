@@ -133,6 +133,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   directory every agent may write is written in each agent's `allow:` (or
   `--allow <dir>` for one run). A config that still sets the key, at the top
   level or under an agent, fails to load and says what to write instead.
+- **`tools.code.auto_write` and `tools.shell.auto_run` are gone: list the tools
+  in the agent's `allow:`.** `allow: [edit_file, write_file, shell]` (or
+  `--allow shell` for one run) lets them run without asking; a config that still
+  sets either key, even to `false`, fails to load and says what to write, and a
+  mistyped key under `tools.shell` or `tools.code` now fails the load too.
 
 ## 0.12.0 - 2026-11-20
 

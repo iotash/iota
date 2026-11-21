@@ -74,7 +74,8 @@ into each of its tools.
 
 - **built-in** — `allow::asking(dispatch)`, unchanged: the dispatcher's tools whose
   `grant_key` is `Builtin` and whose `requires_approval(name, None)` is true. Today:
-  `shell` without `auto_run`, `edit_file`/`write_file` without `auto_write`.
+  `shell`, `edit_file`, `write_file` (the probe asks whatever the config says; a row is absent
+  when any level, the static one included, already holds it).
 - **MCP** — for each name of `Manager::connected_names()`, `connected_named(name)` must be
   exactly ONE server and not `auto_run` (the command's two refusals); then every tool it
   lists, and `*`. A server that is connecting, failed, down or waiting for a login has no

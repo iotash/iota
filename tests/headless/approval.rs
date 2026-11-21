@@ -10,6 +10,15 @@ use iota::testing::{FakeProvider, GatedDispatch, Round, lock};
 use iota::tool::context::RunCtx;
 use iota::tool::{Approval, Dispatcher};
 
+/// A store whose static level holds the built-in `tools` — what an agent's `allow:` gives a run.
+fn allowing(tools: &[&str]) -> Arc<iota::tool::grants::Grants> {
+    let mut fixed = iota::tool::grants::GrantSet::default();
+    for t in tools {
+        fixed.add_tool(iota::tool::grants::ToolKey::Builtin((*t).to_owned()));
+    }
+    Arc::new(iota::tool::grants::Grants::with_static(fixed))
+}
+
 /// Asks for `write_file` (with `args`) once, then answers `saw: ` + the last history entry's content — so a
 /// test can assert on what the model was actually told.
 fn writing(args: JsonObject) -> FakeProvider {
@@ -67,7 +76,7 @@ async fn the_quiet_loop_refuses_when_there_is_nobody_to_ask() {
     let (reply, d, history) = run_gated(&mut host).await;
     assert_eq!(d.ran(), 0, "a gated tool ran with no approval");
     assert!(
-        reply.contains("auto_write"),
+        reply.contains("--allow write_file"),
         "the refusal must name the way to enable it, got {reply:?}"
     );
     assert_eq!(reply, format!("saw: {}", refusal_text("write_file")));
@@ -144,7 +153,7 @@ fn the_quiet_host_answers_approval_from_its_approver_or_refuses() {
     assert_eq!(why, refusal_text("edit_file"));
     assert_eq!(
         why,
-        "edit_file was not executed: it requires interactive approval, which is unavailable in this non-interactive run. Set the toolset's auto-approve option (tools.code.auto_write / tools.shell.auto_run) to permit it here."
+        "edit_file was not executed: it needs the user's approval, which this non-interactive run cannot ask for; pass --allow edit_file, or list it in the agent's `allow:`, to permit it here."
     );
     // The dispatcher's own refusal (an MCP server's, naming its `auto_run`) replaces the generic text.
     assert_eq!(
@@ -266,32 +275,37 @@ mod header_split {
     }
 }
 
-/// The headless matrix over the real `code` set (`-m`, the SDK path: no interactor): inside the root
-/// `auto_write` decides (off → the quiet refusal naming `auto_write`, on → written); outside it nothing is
-/// ever written, `auto_write` or not, and even an injected approver that allows everything is never asked
+/// The headless matrix over the real `code` set (`-m`, the SDK path: no interactor): inside the root the
+/// writers' `allow:` decides (absent → the quiet refusal naming `--allow`, present → written); outside it
+/// nothing is ever written, allowed or not, and even an injected approver that allows everything is never asked
 /// — the refusal names `--allow` and `allow:`.
 #[tokio::test]
 async fn the_quiet_loop_never_writes_outside_the_roots() {
     use iota::tool::sets::ToolsConfig;
     use iota::tool::{Registry, ToolEnv};
 
-    for auto_write in [false, true] {
+    for writers in [false, true] {
         for approver in [false, true] {
-            let at = format!("auto_write={auto_write} approver={approver}");
+            let at = format!("writers={writers} approver={approver}");
             let dir = tempfile::tempdir().expect("tempdir");
             let root = dir.path().join("proj");
             std::fs::create_dir(&root).expect("root");
+            let grants = allowing(if writers {
+                &["edit_file", "write_file"]
+            } else {
+                &[]
+            });
             let env = ToolEnv {
                 project_root: Some(root.clone()),
+                grants: Arc::clone(&grants),
                 ..ToolEnv::default()
             };
-            let raw: ToolsConfig =
-                serde_norway::from_str(&format!("code: {{auto_write: {auto_write}}}\n"))
-                    .expect("tools");
+            let raw: ToolsConfig = serde_norway::from_str("code:\n").expect("tools");
             let d = Arc::new(Registry::build(&env, &raw, &mut |w| panic!("{w}")));
             let asked = Arc::new(Mutex::new(0_usize));
             let seen = Arc::clone(&asked);
             let mut host = QuietHost {
+                grants,
                 approve: approver.then(|| {
                     Box::new(move |_: &ToolCall, _: &str| {
                         *lock(&seen) += 1;
@@ -328,9 +342,9 @@ async fn the_quiet_loop_never_writes_outside_the_roots() {
                     dir.path().join("out.txt")
                 };
                 if inside {
-                    let written = auto_write || approver;
+                    let written = writers || approver;
                     assert_eq!(landed.exists(), written, "{at} {path}");
-                    assert_eq!(*lock(&asked), usize::from(!auto_write && approver), "{at}");
+                    assert_eq!(*lock(&asked), usize::from(!writers && approver), "{at}");
                     if !written {
                         assert_eq!(result.content, refusal_text("write_file"), "{at}");
                     }
@@ -359,7 +373,7 @@ async fn the_quiet_loop_never_writes_outside_the_roots() {
 #[tokio::test]
 async fn an_outside_write_names_the_allow_flag() {
     use iota::app::HostDirs;
-    use iota::cmd::{Config, flag_grants};
+    use iota::cmd::{Config, flag_grants, static_grants};
     use iota::tool::grants::{GrantSet, Grants};
     use iota::tool::{Registry, ToolEnv};
 
@@ -371,7 +385,7 @@ async fn an_outside_write_names_the_allow_flag() {
     let added = real.join("added");
     std::fs::create_dir(&added).expect("added");
     let cfg = Config::parse(
-        b"agents:\n  coder:\n    tools: {code: {auto_write: true}}\n",
+        b"agents:\n  coder:\n    tools: {code: }\n    allow: [edit_file, write_file]\n",
         &iota::app::env::Env::default(),
         &mut |_| {},
     )
@@ -385,18 +399,15 @@ async fn an_outside_write_names_the_allow_flag() {
         },
         ..ToolEnv::default()
     };
-    let fixed = flag_grants(
-        &cfg,
-        agent,
-        &["../../added".to_owned()],
-        &[],
-        &GrantSet::default(),
-        &env,
-    )
-    .expect("resolves");
-    assert_eq!(fixed.dirs, std::slice::from_ref(&added));
+    let config = static_grants(&cfg, "coder", agent, &env).expect("resolves");
+    let flag = flag_grants(&cfg, agent, &["../../added".to_owned()], &[], &config, &env)
+        .expect("resolves");
+    assert_eq!(flag.dirs, std::slice::from_ref(&added));
+    let mut fixed: GrantSet = config;
+    fixed.dirs.extend(flag.dirs);
+    let grants = Arc::new(Grants::with_static(fixed));
     let env = ToolEnv {
-        grants: Arc::new(Grants::with_static(fixed)),
+        grants: Arc::clone(&grants),
         ..env
     };
     let d = Arc::new(Registry::build(&env, &agent.tools, &mut |w| panic!("{w}")));
@@ -417,7 +428,10 @@ async fn an_outside_write_names_the_allow_flag() {
                 max_turns: None,
             },
             &mut history,
-            &mut QuietHost::new(),
+            &mut QuietHost {
+                grants: Arc::clone(&grants),
+                ..QuietHost::new()
+            },
         )
         .await
         .expect("loop");
@@ -452,7 +466,6 @@ async fn an_outside_write_names_the_allow_flag() {
 #[tokio::test]
 async fn a_project_grant_runs_unattended() {
     use iota::session::SessionStore;
-    use iota::tool::grants::Grants;
     use iota::tool::sets::ToolsConfig;
     use iota::tool::{Registry, ToolEnv};
 
@@ -470,14 +483,15 @@ async fn a_project_grant_runs_unattended() {
         .expect("a project grant");
 
     let run = |project: &std::path::Path, path: std::path::PathBuf| {
-        let grants = Arc::new(Grants::default());
+        // `allow: [edit_file, write_file]`: the project's directory grant is the one thing under test.
+        let grants = allowing(&["edit_file", "write_file"]);
         grants.replace_project(store.project_grants(project).expect("read"));
         let env = ToolEnv {
             project_root: Some(project.to_path_buf()),
-            grants,
+            grants: Arc::clone(&grants),
             ..ToolEnv::default()
         };
-        let raw: ToolsConfig = serde_norway::from_str("code: {auto_write: true}\n").expect("tools");
+        let raw: ToolsConfig = serde_norway::from_str("code:\n").expect("tools");
         let d = Arc::new(Registry::build(&env, &raw, &mut |w| panic!("{w}")));
         let mut args = JsonObject::new();
         args.insert("path".to_owned(), path.to_str().expect("utf-8").into());
@@ -495,7 +509,10 @@ async fn a_project_grant_runs_unattended() {
                     max_turns: None,
                 },
                 &mut history,
-                &mut QuietHost::new(),
+                &mut QuietHost {
+                    grants,
+                    ..QuietHost::new()
+                },
             )
             .await
             .expect("loop");
@@ -517,8 +534,8 @@ async fn a_project_grant_runs_unattended() {
 }
 
 /// A built-in tool's project grant is inherited by an unattended run: `{"builtin": "write_file"}` in the project's
-/// `grants.json`, loaded into the run's store, lets the `-m` loop make an inside write that `auto_write` would
-/// otherwise put to the user — while a project without the grant is refused, and the grant never answers an
+/// `grants.json`, loaded into the run's store, lets the `-m` loop make an inside write that would otherwise be
+/// put to the user — while a project without the grant is refused, and the grant never answers an
 /// outside write.
 #[tokio::test]
 async fn a_project_builtin_grant_runs_unattended() {
@@ -668,6 +685,80 @@ async fn a_config_allow_runs_unattended() {
     let result = run("[]", root.join("z.txt")).await;
     assert!(result.is_error(), "without allow: an inside write asks");
     assert!(!root.join("z.txt").exists());
+}
+
+/// A built-in the run has nobody to ask about is refused with §8's sentence (docs/design/config-allow.md), which
+/// names the two ways to permit it — and the first, `--allow <name>`, does: the same call through the same
+/// agent, the flag resolved as the assembly resolves it, runs and lands.
+#[tokio::test]
+async fn a_builtin_refusal_names_the_allow_flag() {
+    use iota::cmd::{Config, flag_grants, static_grants};
+    use iota::tool::grants::Grants;
+    use iota::tool::{Registry, ToolEnv};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = iota::app::fs::physical(dir.path()).expect("real");
+    let cfg = Config::parse(
+        b"agents:\n  coder:\n    tools: {code: }\n",
+        &iota::app::env::Env::default(),
+        &mut |_| {},
+    )
+    .expect("the config loads");
+    let agent = &cfg.agents["coder"];
+    for flag in [false, true] {
+        let env = ToolEnv {
+            project_root: Some(root.clone()),
+            ..ToolEnv::default()
+        };
+        let config = static_grants(&cfg, "coder", agent, &env).expect("resolves");
+        let values = if flag {
+            vec!["write_file".to_owned()]
+        } else {
+            Vec::new()
+        };
+        let mut fixed = flag_grants(&cfg, agent, &values, &[], &config, &env).expect("resolves");
+        fixed.tools.extend(config.tools);
+        let grants = Arc::new(Grants::with_static(fixed));
+        let env = ToolEnv {
+            grants: Arc::clone(&grants),
+            ..env
+        };
+        let d = Arc::new(Registry::build(&env, &agent.tools, &mut |w| panic!("{w}")));
+        let target = root.join(format!("flag-{flag}.txt"));
+        let mut args = JsonObject::new();
+        args.insert("path".to_owned(), target.to_str().expect("utf-8").into());
+        args.insert("content".to_owned(), "x".into());
+        let mut history = vec![Message::user("go")];
+        execute_with_tools(
+            TurnParams {
+                cx: &RunCtx::default(),
+                tp: &writing(args),
+                dispatch: d.clone(),
+                tools: d.tools(),
+                harness: "",
+                overlay: "",
+                max_turns: None,
+            },
+            &mut history,
+            &mut QuietHost {
+                grants,
+                ..QuietHost::new()
+            },
+        )
+        .await
+        .expect("loop");
+        let result = &history[2];
+        assert_eq!(target.exists(), flag, "{}", result.content);
+        if flag {
+            assert!(!result.is_error(), "{}", result.content);
+        } else {
+            assert!(result.is_error());
+            assert_eq!(
+                result.content,
+                "write_file was not executed: it needs the user's approval, which this non-interactive run cannot ask for; pass --allow write_file, or list it in the agent's `allow:`, to permit it here."
+            );
+        }
+    }
 }
 
 /// A minimal MCP server in POSIX `sh`: `initialize`, `tools/list` (one tool `echo`) and `tools/call`

@@ -3,7 +3,7 @@
 //!
 //! - a **directory grant** — WHERE: a write root added at run time, the real directory and its subtree. The
 //!   code writers' jail reads [`Grants::roots`] at every call, so a write under a granted directory is INSIDE
-//!   (asked or not by `auto_write`, like one in the project root);
+//!   (asked or not by the writers' tool grant, like one in the project root);
 //! - a **tool grant** — WHETHER: the question is not asked again for that tool. It never answers a call bound
 //!   to a location ([`crate::tool::approval::gate`]).
 //!
@@ -36,8 +36,8 @@ pub enum Level {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(from = "KeyRepr", into = "KeyRepr")]
 pub enum ToolKey {
-    /// A built-in tool by its wire name, at either level: the project level is the per-repository answer the
-    /// config's `auto_write`/`auto_run` (every project's) cannot give.
+    /// A built-in tool by its wire name, at any level: the static one is the agent's `allow:` (every project's),
+    /// the project level the per-repository answer it cannot give.
     Builtin(String),
     /// One MCP tool, or every tool of the server.
     Mcp {
@@ -326,7 +326,7 @@ mod tests {
     }
 
     fn jail(root: &Path, grants: &Arc<Grants>) -> Arc<CodeSet> {
-        CodeSet::new(root.to_path_buf(), true, true, None, Arc::clone(grants)).expect("set")
+        CodeSet::new(root.to_path_buf(), true, None, Arc::clone(grants)).expect("set")
     }
 
     /// The hold's trigger: a tool grant at either level waives, a directory grant does not, and a revoke takes

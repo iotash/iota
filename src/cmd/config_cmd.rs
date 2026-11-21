@@ -55,15 +55,16 @@ agents:
       shell:                  # shell commands, with a sandbox by default
     # mode: agent             # AGENTS.md overlay, skills, project-scoped sessions
   # A bot (`iota run coder`): one conversation that never ends, with a memory of its own. By default it
-  # stops at every approval gate and waits for you; the two `auto_` keys below are what let it carry on
-  # unattended. They are an opt-in, and only sensible with the sandbox on — where no sandbox is available,
-  # `auto_run` runs every command unconfined without asking.
+  # stops at every approval gate and waits for you; its `allow:` list is what lets it carry on unattended.
+  # It is an opt-in, and only sensible with the sandbox on — where no sandbox is available, allowing
+  # `shell` runs every command unconfined without asking.
   # coder:
   #   mode: bot
   #   model: gpt
   #   tools:
-  #     code: { auto_write: true }                  # writes and edits land without a yes
-  #     shell: { sandbox: auto, auto_run: true }    # commands run confined, none waits for a yes
+  #     code:
+  #     shell: { sandbox: auto }
+  #   allow: [edit_file, write_file, shell]   # writes, edits and commands run without a yes
 
 # MCP servers go under a top-level `mcp_servers:` block, which `iota mcp add <name> -- <command>`
 # (or `--url <url>`) writes and `iota mcp remove <name>` edits for you.
@@ -327,9 +328,25 @@ mod tests {
         assert_eq!(cfg.agents["coder"].mode, crate::config::AgentMode::Bot);
         assert_eq!(cfg.agents["default"].mode, crate::config::AgentMode::Chat);
         let tools = serde_json::to_value(&cfg.agents["coder"].tools).expect("json");
-        assert_eq!(tools["code"]["auto_write"], true, "{tools}");
-        assert_eq!(tools["shell"]["auto_run"], true, "{tools}");
         assert_eq!(tools["shell"]["sandbox"], "auto", "{tools}");
+        assert_eq!(
+            cfg.agents["coder"].allow,
+            ["edit_file", "write_file", "shell"],
+            "the bot carries on unattended by its `allow:`"
+        );
+    }
+
+    /// The template spells "do not ask" the one way there is: an `allow:` list, never a set's switch — not even
+    /// in a comment the user might uncomment.
+    #[test]
+    fn the_template_allows_instead_of_switching() {
+        for retired in ["auto_write", "auto_run", "auto_"] {
+            assert!(!STARTER.contains(retired), "the template names {retired}");
+        }
+        assert!(
+            STARTER.contains("  #   allow: [edit_file, write_file, shell]"),
+            "{STARTER}"
+        );
     }
 
     /// The commented `mode:` line is one the user can uncomment as it stands.

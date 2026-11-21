@@ -30,7 +30,7 @@
 #                         The tap starts after startup: an idle start emits no OSC 9;4 at all
 #                         (scenario 14), so every state in it is this scenario's.
 #
-# The agent runs `shell` with the sandbox off and `auto_run: true`, so no approval prompt sits between
+# The agent runs `shell` with the sandbox off and `allow: [shell]`, so no approval prompt sits between
 # the call and the yield.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
@@ -46,7 +46,8 @@ agents:
   default:
     model: m
     choices: [m, \"mock:*\"]
-    tools: {shell: {sandbox: off, auto_run: true}}"
+    tools: {shell: {sandbox: off}}
+    allow: [shell]"
 export CONFIG_BODY
 
 # Twenty-five seconds: the page is opened and closed, a second job started and killed, and the list

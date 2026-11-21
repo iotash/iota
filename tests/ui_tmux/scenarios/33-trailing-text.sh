@@ -27,7 +27,8 @@ agents:
   default:
     model: m
     choices: [m, \"mock:*\"]
-    tools: {shell: {sandbox: off, auto_run: true}}"
+    tools: {shell: {sandbox: off}}
+    allow: [shell]"
 export CONFIG_BODY
 
 # A spinner glyph: an alternation, never a bracket expression (the C-locale note on `norm`).

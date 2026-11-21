@@ -809,7 +809,7 @@ async fn cli_headless_run_sends_the_harness_for_an_agent_with_tools() {
     // code + shell: every block.
     fs::write(
         &user_config,
-        config(", tools: {code: , shell: {sandbox: off, auto_run: true}}"),
+        config(", tools: {code: , shell: {sandbox: off}}, allow: [shell]"),
     )
     .expect("user config");
     let mut cmd = iota(&cwd, &home);
@@ -1270,7 +1270,7 @@ async fn cli_allow_opens_a_directory_outside_the_project() {
     write_config(
         &home,
         &format!(
-            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: {{auto_write: true}}}}, allow: ['{}']}}\n",
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: }}, allow: [edit_file, write_file, '{}']}}\n",
             server.uri(),
             extra.display(),
         ),
@@ -1339,7 +1339,7 @@ async fn allow_flag_opens_a_directory_after_the_configs_roots() {
     write_config(
         &home,
         &format!(
-            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: {{auto_write: true}}}}, allow: ['{}']}}\n",
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: }}, allow: [edit_file, write_file, '{}']}}\n",
             server.uri(),
             cfg_root.display(),
         ),
@@ -1512,7 +1512,7 @@ async fn allow_flag_is_relative_to_the_working_directory() {
     write_config(
         &home,
         &format!(
-            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: {{auto_write: true}}}}}}\n",
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: }}, allow: [edit_file, write_file]}}\n",
             server.uri()
         ),
     );
@@ -1635,7 +1635,7 @@ async fn cli_children_inside_herdr_are_spawned_without_herdr_env() {
     write_config(
         &home,
         &format!(
-            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{shell: {{sandbox: off, auto_run: true}}}}}}\n",
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{shell: {{sandbox: off}}}}, allow: [shell]}}\n",
             server.uri()
         ),
     );
@@ -1693,7 +1693,7 @@ async fn cli_children_outside_herdr_inherit_everything() {
     write_config(
         &home,
         &format!(
-            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{shell: {{sandbox: off, auto_run: true}}}}}}\n",
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{shell: {{sandbox: off}}}}, allow: [shell]}}\n",
             server.uri()
         ),
     );
@@ -1740,7 +1740,7 @@ async fn cli_children_carry_the_status_session() {
     write_config(
         &home,
         &format!(
-            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{shell: {{sandbox: off, auto_run: true}}}}}}\n",
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{shell: {{sandbox: off}}}}, allow: [shell]}}\n",
             server.uri()
         ),
     );
@@ -1938,7 +1938,7 @@ async fn an_ephemeral_chat_still_writes_a_project_grant() {
     write_config(
         &home,
         &format!(
-            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{mode: agent, model: m, tools: {{code: {{auto_write: true}}}}}}\n",
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{mode: agent, model: m, tools: {{code: }}, allow: [edit_file, write_file]}}\n",
             server.uri()
         ),
     );

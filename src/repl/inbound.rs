@@ -20,10 +20,10 @@
 //! connection closes without a receipt.
 //!
 //! **The hold** (docs/design/agent-messaging.md §4): a chat whose tools act without asking would let whoever
-//! can write the socket make the model act. `Hold` says whether it does — the dispatcher's switches
-//! (`Dispatcher::waives_approval`: `tools.shell.auto_run`, `tools.code.auto_write`,
-//! `mcp_servers.<name>.auto_run`, a bot's usual setup) or any tool grant in force ([`Grants::waives`]: a
-//! `/allow shell`, a project's `github:*`; a directory grant alone is not a waiver) — asked afresh for EVERY
+//! can write the socket make the model act. `Hold` says whether it does — the dispatcher's one remaining switch
+//! (`Dispatcher::waives_approval`: an MCP server's `mcp_servers.<name>.auto_run`) or any tool grant in force
+//! ([`Grants::waives`]: an agent's `allow: [shell]` or `--allow shell`, a bot's usual setup; a `/allow shell`,
+//! a project's `github:*`; a directory grant alone is not a waiver) — asked afresh for EVERY
 //! message, since a grant can be made mid-session. There, a message is delivered as usual but HELD, and the
 //! receipt says `held`: a round boundary leaves it out of the turn (`Steerer`), and the idle loop asks the user
 //! before the model reads it, with the chat at `NeedsInput` meanwhile.
@@ -78,7 +78,8 @@ impl Messaging {
 /// Whether a message from another process is held for the user (the module doc), asked when one arrives.
 #[derive(Clone)]
 pub(crate) struct Hold {
-    /// The dispatcher's switches (`Dispatcher::waives_approval`), fixed when the run was assembled.
+    /// The dispatcher's switch (`Dispatcher::waives_approval`: an MCP server's `auto_run` — no built-in set
+    /// answers it), fixed when the run was assembled.
     waived: bool,
     /// The run's grant store: a tool grant made at any point holds the next message.
     grants: Arc<Grants>,

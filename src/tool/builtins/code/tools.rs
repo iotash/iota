@@ -282,15 +282,10 @@ impl Tool for EditFile {
         Box::pin(async move { Ok(edit_file_call(&self.0, cx, args)) })
     }
 
-    /// Inside the roots `!auto_write`; outside them always when the run has somebody to ask (see
-    /// [`CodeSet::write_asks`]).
+    /// Inside the roots always; outside them, or to an approvable protected path, when the run has somebody
+    /// to ask (see [`CodeSet::write_asks`]).
     fn requires_approval(&self, args: Option<&JsonObject>) -> bool {
         self.0.write_asks(args)
-    }
-
-    /// `auto_write` — it waives the approval of writes inside the roots only ([`CodeSet::waives`]).
-    fn waives_approval(&self) -> bool {
-        self.0.waives()
     }
 
     /// Writers are expanded.
@@ -346,15 +341,10 @@ impl Tool for WriteFile {
         Box::pin(async move { Ok(write_file_call(&self.0, cx, args)) })
     }
 
-    /// Inside the roots `!auto_write`; outside them always when the run has somebody to ask (see
-    /// [`CodeSet::write_asks`]).
+    /// Inside the roots always; outside them, or to an approvable protected path, when the run has somebody
+    /// to ask (see [`CodeSet::write_asks`]).
     fn requires_approval(&self, args: Option<&JsonObject>) -> bool {
         self.0.write_asks(args)
-    }
-
-    /// `auto_write` — it waives the approval of writes inside the roots only ([`CodeSet::waives`]).
-    fn waives_approval(&self) -> bool {
-        self.0.waives()
     }
 
     /// Writers are expanded.
@@ -1012,11 +1002,38 @@ mod tests {
 
     /// A store whose static level holds `dirs` (each at its real location, as the assembly stores it).
     fn statics(dirs: &[std::path::PathBuf]) -> std::sync::Arc<crate::tool::grants::Grants> {
+        allowing(dirs, false)
+    }
+
+    /// [`statics`], the writers' tool grants too when `writers` — what `allow: [<dirs>, edit_file, write_file]`
+    /// gives a run.
+    fn allowing(
+        dirs: &[std::path::PathBuf],
+        writers: bool,
+    ) -> std::sync::Arc<crate::tool::grants::Grants> {
         let mut fixed = crate::tool::grants::GrantSet::default();
         for d in dirs {
             fixed.add_dir(crate::app::fs::physical(d).expect("real"));
         }
+        if writers {
+            for tool in ["edit_file", "write_file"] {
+                fixed.add_tool(crate::tool::grants::ToolKey::Builtin(tool.to_owned()));
+            }
+        }
         std::sync::Arc::new(crate::tool::grants::Grants::with_static(fixed))
+    }
+
+    /// A registry of the writers over `cs`, for [`crate::tool::approval::gate`].
+    #[cfg(unix)]
+    fn writers(cs: &std::sync::Arc<super::super::CodeSet>) -> crate::tool::Registry {
+        let mut reg = crate::tool::Registry::default();
+        reg.add(std::sync::Arc::new(super::WriteFile(
+            std::sync::Arc::clone(cs),
+        )));
+        reg.add(std::sync::Arc::new(super::EditFile(std::sync::Arc::clone(
+            cs,
+        ))));
+        reg
     }
     use crate::tool::ToolOutput;
     use serde_json::json;
@@ -1163,8 +1180,7 @@ mod tests {
         let (_t, root, out) = jail_fixture();
         symlink(out.join("secret.txt"), root.join("escape")).expect("link");
         symlink(&out, root.join("outdir")).expect("link");
-        let cs =
-            CodeSet::new(root.clone(), true, false, None, std::sync::Arc::default()).expect("set");
+        let cs = CodeSet::new(root.clone(), false, None, std::sync::Arc::default()).expect("set");
         let cx = RunCtx::default();
         let refused = |arg: &str| {
             ToolOutput::err(format!(
@@ -1265,8 +1281,7 @@ mod tests {
         symlink(&out, root.join("outdir")).expect("link");
         symlink("dir/kept.txt", root.join("alias")).expect("link");
         plant_overlong(&root, &out);
-        let cs =
-            CodeSet::new(root.clone(), false, false, None, std::sync::Arc::default()).expect("set");
+        let cs = CodeSet::new(root.clone(), false, None, std::sync::Arc::default()).expect("set");
 
         let grep = grep_call(
             &cs,
@@ -1294,9 +1309,7 @@ mod tests {
     /// A set with somebody to ask (the interactive case), over the jail fixture with
     /// `root/outdir -> out` and `out2/` beside it.
     #[cfg(unix)]
-    fn asking_set(
-        auto_write: bool,
-    ) -> (
+    fn asking_set() -> (
         tempfile::TempDir,
         std::path::PathBuf,
         std::path::PathBuf,
@@ -1305,14 +1318,8 @@ mod tests {
         use super::super::tests::jail_fixture;
         let (t, root, out) = jail_fixture();
         std::os::unix::fs::symlink(&out, root.join("outdir")).expect("link");
-        let cs = super::super::CodeSet::new(
-            root.clone(),
-            auto_write,
-            true,
-            None,
-            std::sync::Arc::default(),
-        )
-        .expect("set");
+        let cs = super::super::CodeSet::new(root.clone(), true, None, std::sync::Arc::default())
+            .expect("set");
         (t, root, out, cs)
     }
 
@@ -1354,7 +1361,7 @@ mod tests {
     /// THE INVARIANT: an outside write needs THIS call's approval, carried in `RunCtx::approved`, and that
     /// approval must cover the real location as it is at call time. A call no gate approved — what a parallel
     /// batch, a headless loop or any future caller that skips the gate hands the tool — never writes, even
-    /// with `auto_write`. (Under the rejected design, "`*_call` admits OUTSIDE because every caller gates",
+    /// with a tool grant. (Under the rejected design, "`*_call` admits OUTSIDE because every caller gates",
     /// the first assertion fails: the file would be created.)
     #[cfg(unix)]
     #[test]
@@ -1363,7 +1370,7 @@ mod tests {
         use crate::tool::ApprovalSubject;
         use crate::tool::context::{Approved, RunCtx};
 
-        let (t, root, out, cs) = asking_set(true);
+        let (t, root, out, cs) = asking_set();
         let real_out = crate::app::canonical(&out).expect("real out");
         let w = args(json!({"path": "outdir/new.txt", "content": "x"}));
         assert_eq!(
@@ -1473,7 +1480,7 @@ mod tests {
         use super::{write_file_call, writer_subject, writer_summary};
         use crate::tool::context::RunCtx;
 
-        let (t, root, out, cs) = asking_set(true);
+        let (t, root, out, cs) = asking_set();
         let out2 = t.path().join("out2");
         std::fs::create_dir(&out2).expect("out2");
         let w = args(json!({"path": "outdir/x.txt", "content": "x"}));
@@ -1507,7 +1514,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_target_without_a_parent_offers_no_root() {
-        let (_t, _root, _out, cs) = asking_set(true);
+        let (_t, _root, _out, cs) = asking_set();
         let s = super::writer_subject(&cs, &args(json!({"path": "/"}))).expect("subject");
         assert_eq!(s.scope, None);
         assert_eq!(s.target, std::path::PathBuf::from("/"));
@@ -1523,7 +1530,7 @@ mod tests {
         use crate::tool::{Dispatcher, Registry};
         use std::sync::Arc;
 
-        let (_t, _root, out, cs) = asking_set(true);
+        let (_t, _root, out, cs) = asking_set();
         let mut reg = Registry::default();
         reg.add(Arc::new(super::WriteFile(Arc::clone(&cs))));
         reg.add(Arc::new(super::EditFile(cs)));
@@ -1548,7 +1555,7 @@ mod tests {
     }
 
     /// The protected table (X-95) under the writers. Each protected path is its own class: asked when the run
-    /// has a user — whatever `auto_write` says, whether `allow:` names `.git` or the root again — with a
+    /// has a user — whatever tool grant the store holds, whether `allow:` names `.git` or the root again — with a
     /// prompt that names the file and why and offers no session grant; refused with nobody to ask,
     /// saying why and that the user can make the change. Without "allow once" for exactly that
     /// file nothing lands: not with no approval, not with a session grant for the root or for the file's own
@@ -1580,23 +1587,35 @@ mod tests {
         let snapshot = || protected.map(|(p, _)| std::fs::read(root.join(p)).ok());
         let before = snapshot();
         let extras = [vec![], vec![root.join(".git")], vec![root.clone()]];
-        for auto_write in [false, true] {
+        for granted in [false, true] {
             for extra in &extras {
                 for attended in [true, false] {
-                    let at = format!("auto_write={auto_write} extra={extra:?} attended={attended}");
+                    let at = format!("granted={granted} extra={extra:?} attended={attended}");
                     let cs = CodeSet::new(
                         root.clone(),
-                        auto_write,
                         attended,
                         Some(user_home.clone()),
-                        statics(extra),
+                        allowing(extra, granted),
                     )
                     .expect("set");
                     let tool = super::WriteFile(std::sync::Arc::clone(&cs));
+                    let reg = writers(&cs);
                     for (path, why) in protected {
                         let real = root.join(path);
                         let a = args(json!({"path": path, "content": "x"}));
                         assert_eq!(tool.requires_approval(Some(&a)), attended, "{at} {path}");
+                        // A tool grant never answers it: with a user it is asked, about this file.
+                        assert_eq!(
+                            matches!(
+                                crate::tool::approval::gate(&reg, &cs.grants, "write_file", &a),
+                                crate::tool::approval::Gate::Ask {
+                                    subject: Some(_),
+                                    ..
+                                }
+                            ),
+                            attended,
+                            "{at} {path}"
+                        );
                         assert_eq!(
                             tool.approval_subject(&a),
                             attended.then(|| ApprovalSubject {
@@ -1663,7 +1682,6 @@ mod tests {
         // reading first, as anywhere).
         let cs = CodeSet::new(
             root.clone(),
-            true,
             true,
             Some(user_home),
             std::sync::Arc::default(),
@@ -1732,7 +1750,6 @@ mod tests {
         ];
         let cs = CodeSet::new(
             root.clone(),
-            true,
             false,
             Some(home.clone()),
             statics(std::slice::from_ref(&other)),
@@ -1796,17 +1813,16 @@ mod tests {
         let elsewhere = crate::app::canonical(&elsewhere).expect("real");
         for root in [elsewhere, home.clone()] {
             for extra in [vec![], vec![home.clone()], vec![sessions.clone()]] {
-                for auto_write in [false, true] {
+                for granted in [false, true] {
                     for attended in [true, false] {
                         let at = format!(
-                            "root={root:?} extra={extra:?} auto_write={auto_write} attended={attended}"
+                            "root={root:?} extra={extra:?} granted={granted} attended={attended}"
                         );
                         let cs = CodeSet::new(
                             root.clone(),
-                            auto_write,
                             attended,
                             Some(home.clone()),
-                            statics(&extra),
+                            allowing(&extra, granted),
                         )
                         .expect("set");
                         cs.grants.update(crate::tool::grants::Level::Session, |s| {
@@ -1859,15 +1875,17 @@ mod tests {
         }
     }
 
-    /// Who asks, per call: inside the roots `!auto_write`; outside them always when the run has a user,
-    /// never otherwise (refused at the call); an unverifiable path never (refused at the call). The session
-    /// grant of an outside write is its real directory.
+    /// Who asks, per call: inside the roots always, and the writers' tool grant (`allow: [edit_file,
+    /// write_file]`) runs it unasked; outside them when the run has a user — granted or not — never otherwise
+    /// (refused at the call); an unverifiable path never (refused at the call). The session grant of an
+    /// outside write is its real directory.
     #[cfg(unix)]
     #[test]
     fn the_writers_ask_matrix() {
         use super::super::CodeSet;
         use super::super::tests::jail_fixture;
         use crate::tool::Tool;
+        use crate::tool::approval::{Gate, gate};
 
         let (_t, root, out) = jail_fixture();
         std::os::unix::fs::symlink("lb", root.join("la")).expect("la");
@@ -1876,34 +1894,36 @@ mod tests {
         let inside = args(json!({"path": "dir/x.txt"}));
         let outside = args(json!({"path": format!("{}/deep/x.txt", out.display())}));
         let looped = args(json!({"path": "la/x.txt"}));
-        for auto_write in [false, true] {
+        for granted in [false, true] {
             for attended in [true, false] {
-                let cs = CodeSet::new(
-                    root.clone(),
-                    auto_write,
-                    attended,
-                    None,
-                    std::sync::Arc::default(),
-                )
-                .expect("set");
-                let at = format!("auto_write={auto_write} attended={attended}");
+                let cs = CodeSet::new(root.clone(), attended, None, allowing(&[], granted))
+                    .expect("set");
+                let reg = writers(&cs);
+                let at = format!("granted={granted} attended={attended}");
                 for tool in [
                     std::sync::Arc::new(super::WriteFile(std::sync::Arc::clone(&cs)))
                         as std::sync::Arc<dyn Tool>,
                     std::sync::Arc::new(super::EditFile(std::sync::Arc::clone(&cs))),
                 ] {
+                    let name = tool.def().name;
+                    assert!(tool.requires_approval(Some(&inside)), "{at} inside");
+                    assert!(tool.requires_approval(None), "{at} the probe");
                     assert_eq!(
-                        tool.requires_approval(Some(&inside)),
-                        !auto_write,
-                        "{at} inside"
+                        gate(&reg, &cs.grants, &name, &inside) == Gate::Run,
+                        granted,
+                        "{at} inside, through the gate"
                     );
                     assert_eq!(
                         tool.requires_approval(Some(&outside)),
                         attended,
                         "{at} outside"
                     );
+                    assert_eq!(
+                        gate(&reg, &cs.grants, &name, &outside) == Gate::Run,
+                        !attended,
+                        "{at} outside, through the gate: asked with a user, refused at the call without"
+                    );
                     assert!(!tool.requires_approval(Some(&looped)), "{at} unverifiable");
-                    assert_eq!(tool.waives_approval(), auto_write, "{at} waives");
                     assert_eq!(tool.approval_subject(&inside), None, "{at}");
                     assert_eq!(
                         tool.approval_subject(&outside).and_then(|s| s.scope),
@@ -1933,7 +1953,6 @@ mod tests {
         for attended in [true, false] {
             let cs = CodeSet::new(
                 std::path::PathBuf::from("/proj"),
-                false,
                 attended,
                 None,
                 std::sync::Arc::default(),

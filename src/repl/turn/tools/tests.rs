@@ -970,15 +970,17 @@ async fn parallel_batch_keeps_one_widget_and_call_order() {
 async fn shell_calls_share_one_parallel_batch() {
     use std::time::{Duration, Instant};
 
-    // `sandbox: off` + `auto_run: true`: no gate to answer and no sandbox to depend on, so
+    // `sandbox: off` + `allow: [shell]`: no gate to answer and no sandbox to depend on, so
     // the test measures the batch and nothing else.
     let node: crate::tool::sets::RawNode =
-        serde_norway::from_str("sandbox: off\nauto_run: true\n").expect("shell config");
+        serde_norway::from_str("sandbox: off\n").expect("shell config");
     let mut cfg = crate::tool::sets::ToolsConfig::new();
     cfg.insert("shell".to_owned(), node);
     let dir = tempfile::tempdir().expect("tempdir");
+    let grants = allowing(&["shell"]);
     let env = crate::tool::ToolEnv {
         jobs: Some(crate::shell::jobs::Jobs::new(dir.path())),
+        grants: Arc::clone(&grants),
         ..crate::tool::ToolEnv::default()
     };
     let registry =
@@ -991,7 +993,7 @@ async fn shell_calls_share_one_parallel_batch() {
 
     let mut script = Vec::new();
     script.extend(quiet(1));
-    let fx = Fx::new(dispatch, script);
+    let fx = Fx::new(dispatch, script).granting(&grants);
     let p = stream(vec![
         Round::calls(vec![
             call("b1", "shell", serde_json::json!({"command": "sleep 1"})),
@@ -1033,7 +1035,7 @@ async fn shell_calls_share_one_parallel_batch() {
 }
 
 // The batch has no approval gate, so a call the gate would ask is never in one (DIVERGENCES X-05): two
-// `shell` calls of an UNSANDBOXED set without `auto_run` — every call asks — are put to the user one by one,
+// `shell` calls of an UNSANDBOXED set the store does not hold `shell` for — every call asks — are put to the user one by one,
 // and the denied commands never run. Before the walk checked `gate`, the shell's own `supports_parallel`
 // said yes for them and the pair ran unasked as a batch.
 #[tokio::test]
@@ -2340,6 +2342,15 @@ async fn a_closed_facade_during_approval_ends_the_loop() {
 // code writes outside every root, through the real walk and gate
 // ---------------------------------------------------------------------------
 
+/// A store whose static level holds the built-in `tools` — what an agent's `allow:` gives a run.
+fn allowing(tools: &[&str]) -> Arc<crate::tool::grants::Grants> {
+    let mut fixed = crate::tool::grants::GrantSet::default();
+    for t in tools {
+        fixed.add_tool(crate::tool::grants::ToolKey::Builtin((*t).to_owned()));
+    }
+    Arc::new(crate::tool::grants::Grants::with_static(fixed))
+}
+
 /// A chat over the real `code` set (an interactor bound, as in a chat): the project `<t>/proj` and `<t>/out`
 /// beside it, `out`'s real location (macOS: `/private/var/…`), and a turn wired to the set's grant store.
 struct CodeChat {
@@ -2351,19 +2362,24 @@ struct CodeChat {
 }
 
 impl CodeChat {
-    /// The chat under `auto_write`, with no home directory.
-    fn new(auto_write: bool) -> Self {
-        Self::homed(auto_write, None)
+    /// The chat, its agent's `allow:` naming the writers when `writers` (`allow: [edit_file, write_file]`), with
+    /// no home directory.
+    fn new(writers: bool) -> Self {
+        Self::homed(writers, None)
     }
 
     /// [`Self::new`] with `home` (relative to `<t>`) as the user's home directory.
-    fn homed(auto_write: bool, home: Option<&str>) -> Self {
+    fn homed(writers: bool, home: Option<&str>) -> Self {
         let t = tempfile::tempdir().expect("tempdir");
         let root = t.path().join("proj");
         std::fs::create_dir_all(&root).expect("root");
         std::fs::create_dir_all(t.path().join("out")).expect("out");
         let real_out = crate::app::canonical(&t.path().join("out")).expect("real out");
-        let grants = Arc::new(crate::tool::grants::Grants::default());
+        let grants = allowing(if writers {
+            &["edit_file", "write_file"]
+        } else {
+            &[]
+        });
         let env = crate::tool::ToolEnv {
             project_root: Some(root.clone()),
             dirs: crate::app::HostDirs {
@@ -2374,9 +2390,7 @@ impl CodeChat {
             grants: Arc::clone(&grants),
             ..crate::tool::ToolEnv::default()
         };
-        let raw: crate::tool::sets::ToolsConfig =
-            serde_norway::from_str(&format!("code: {{auto_write: {auto_write}}}\n"))
-                .expect("tools");
+        let raw: crate::tool::sets::ToolsConfig = serde_norway::from_str("code:\n").expect("tools");
         let reg = crate::tool::Registry::build(&env, &raw, &mut |w| panic!("{w}"));
         Self {
             t,
@@ -2414,16 +2428,16 @@ fn prompts(events: &[UiEvent]) -> Vec<(String, String)> {
         .collect()
 }
 
-// The interactive matrix: inside the root `auto_write` decides whether the user is asked; outside it the
-// user is asked ALWAYS — `auto_write` or not — with the resolved real path, marked, and the write lands there
+// The interactive matrix: inside the root the writers' `allow:` decides whether the user is asked; outside it
+// the user is asked ALWAYS — allowed or not — with the resolved real path, marked, and the write lands there
 // once allowed.
 #[tokio::test]
 async fn an_outside_write_is_asked_always_and_lands_where_the_prompt_said() {
-    for auto_write in [false, true] {
-        let at = format!("auto_write={auto_write}");
-        let c = CodeChat::new(auto_write);
+    for writers in [false, true] {
+        let at = format!("writers={writers}");
+        let c = CodeChat::new(writers);
         let (root, real_out) = (&c.root, &c.real_out);
-        let asks = usize::from(!auto_write) + 1;
+        let asks = usize::from(!writers) + 1;
         let mut script: Vec<Reply> = (0..asks).map(|_| choose(0)).collect();
         script.extend(quiet(1));
         let fx = c.fx(script);
@@ -2446,7 +2460,7 @@ async fn an_outside_write_is_asked_always_and_lands_where_the_prompt_said() {
         fx.turn(&p, &mut history).await.outcome.expect("turn");
 
         let mut want = Vec::new();
-        if !auto_write {
+        if !writers {
             want.push((
                 "write_file in.txt — allow?".to_owned(),
                 "Allow for this session".to_owned(),
@@ -2639,7 +2653,7 @@ async fn a_builtin_tool_granted_for_the_project_is_kept_in_its_file() {
 
 // The dialog's directory item makes the write's real parent a ROOT, for both writers: the call it answered
 // runs, and every later write under that directory — in a subdirectory too, through `edit_file` too — is an
-// inside write, asked or not by `auto_write` alone. A directory beside it is still outside and asked; an
+// inside write, asked or not by the writers' tool grant alone. A directory beside it is still outside and asked; an
 // inside grant (the tool's) never covers an outside write.
 #[tokio::test]
 async fn a_directory_granted_in_the_dialog_is_a_root_for_both_writers() {
@@ -2706,7 +2720,7 @@ async fn a_directory_granted_in_the_dialog_is_a_root_for_both_writers() {
     assert_eq!(read("a/deep/z.txt").as_deref(), Some("z"));
     assert_eq!(read("b/w.txt"), None, "a denied write landed");
 
-    // Without `auto_write`, a write under the granted directory is asked like any inside write — the tool's
+    // Without the writers' `allow:`, a write under the granted directory is asked like any inside write — the tool's
     // question, whose session item is the tool grant — and a tool grant then never covers an outside write.
     let c = CodeChat::new(false);
     let real_out = &c.real_out;
@@ -3058,8 +3072,8 @@ impl Dispatcher for Flipping {
 }
 
 // A granted directory is a root by its real location, re-checked at every call: `out2` is made writable in the
-// dialog; then `proj/outdir` points into `out2` while the gate decides (an inside write, `auto_write`: nobody
-// is asked) and at `out` when the call runs. The call resolves its target again, finds it outside every root
+// dialog; then `proj/outdir` points into `out2` while the gate decides (an inside write, the writers allowed:
+// nobody is asked) and at `out` when the call runs. The call resolves its target again, finds it outside every root
 // with no approval of its own, and writes nothing — not in `out`, which nobody granted, nor in `out2`.
 #[cfg(unix)]
 #[tokio::test]

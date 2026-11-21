@@ -348,7 +348,7 @@ two arrivals are covered at the REPL level (`tests/repl/jobs.rs`), and since 202
 L4 mock emits a `shell` tool call (`run:<cmd>`, `tests/ui_tmux/mock.rs`), so scenario 19
 starts real jobs and reads the five arrivals below off the terminal.
 
-Set up once: an agent with `tools: {shell: {sandbox: off, auto_run: true}}`, and ask the model
+Set up once: an agent with `tools: {shell: {sandbox: off}}` and `allow: [shell]`, and ask the model
 to run something slow in the background (`sleep 20; echo done`).
 
 - [x] 自动化：scenario 19 **8.1 Idle wake-up.** With the job running, sit at the prompt and type NOTHING. When the

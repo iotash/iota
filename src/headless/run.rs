@@ -61,10 +61,11 @@ impl QuietHost {
     }
 }
 
-/// The model-facing text of a refused tool call (byte-equal to Go; `name` is the WIRE name).
+/// The model-facing text of a refused built-in call (docs/design/config-allow.md §8; `name` is the WIRE name,
+/// which is also the `--allow` target and the `allow:` entry that permits it).
 pub fn refusal_text(name: &str) -> String {
     format!(
-        "{name} was not executed: it requires interactive approval, which is unavailable in this non-interactive run. Set the toolset's auto-approve option (tools.code.auto_write / tools.shell.auto_run) to permit it here."
+        "{name} was not executed: it needs the user's approval, which this non-interactive run cannot ask for; pass --allow {name}, or list it in the agent's `allow:`, to permit it here."
     )
 }
 
@@ -447,16 +448,16 @@ mod tests {
     #[test]
     fn refusal_names_the_wire_name() {
         let tc = ToolCall {
-            name: "mcp__srv__edit".to_owned(),
+            name: "shell".to_owned(),
             ..ToolCall::default()
         };
         let Approval::Deny(why) = QuietHost::new().ask_approval(&tc, "ignored", None) else {
             panic!("a headless host must refuse")
         };
-        assert_eq!(why, refusal_text("mcp__srv__edit"));
-        assert!(
-            why.starts_with("mcp__srv__edit was not executed: it requires interactive approval, ")
+        assert_eq!(why, refusal_text("shell"));
+        assert_eq!(
+            why,
+            "shell was not executed: it needs the user's approval, which this non-interactive run cannot ask for; pass --allow shell, or list it in the agent's `allow:`, to permit it here."
         );
-        assert!(why.ends_with("(tools.code.auto_write / tools.shell.auto_run) to permit it here."));
     }
 }

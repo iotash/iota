@@ -60,9 +60,6 @@ pub const PROTECTED_MARK: &str = "(protected)";
 #[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(default)]
 pub(crate) struct CodeConfig {
-    /// Whether `edit_file`/`write_file` run without approval.
-    #[serde(deserialize_with = "yaml11::deserialize_bool")]
-    pub(crate) auto_write: bool,
     /// Whether the writers are left out entirely.
     #[serde(deserialize_with = "yaml11::deserialize_bool")]
     pub(crate) read_only: bool,
@@ -92,7 +89,7 @@ pub(crate) enum Write {
     /// (the read ledger's key), `real` where the write would land — what the prompt names and what is opened.
     Outside { path: PathBuf, real: PathBuf },
     /// On the protected table ([`protected::table`]), inside a root or not: never written without the
-    /// user's approval of this one file, whatever `auto_write`, `allow:` or a grant says, and the
+    /// user's approval of this one file, whatever `allow:` or a grant says, and the
     /// trust record and the sessions tree never at all ([`Why::approvable`]). `path` and `real` as for
     /// [`Write::Outside`].
     Protected {
@@ -116,7 +113,6 @@ pub(crate) struct CodeSet {
     /// The process working directory — the display anchor of the header-path ladder
     /// (captured at set construction), not an execution dir.
     cwd: PathBuf,
-    auto_write: bool,
     /// Whether the run has somebody to ask (an interactor is bound). A write outside every root, or to an
     /// approvable protected path, is put to the user when there is one, every time; with nobody to ask (`-m`,
     /// the SDK path) it is refused, saying how to allow it.
@@ -134,7 +130,6 @@ impl CodeSet {
     /// run's store, whose directories the jail reads per call.
     pub(crate) fn new(
         root: PathBuf,
-        auto_write: bool,
         attended: bool,
         home: Option<PathBuf>,
         grants: Arc<Grants>,
@@ -144,7 +139,6 @@ impl CodeSet {
             root,
             grants,
             cwd: std::env::current_dir().unwrap_or_default(),
-            auto_write,
             attended,
             home,
             reads: Mutex::new(HashMap::new()),
@@ -349,27 +343,22 @@ impl CodeSet {
         }
     }
 
-    /// Whether the writers' calls are put to the user: inside the roots unless `auto_write`, outside
-    /// them always when the run has somebody to ask; an unverifiable or empty path never
-    /// (it is refused at the call). `None` (the argument-less probe) is `!auto_write`: whether an inside
-    /// write asks — the one a tool grant answers.
+    /// Whether the writers' calls are of a kind that asks — a fact of the call, not of the config: inside the
+    /// roots always (a tool grant — `allow:`, `--allow`, `/allow` — is what runs it unasked), outside them or
+    /// to an approvable protected path when the run has somebody to ask (no tool grant answers those; with
+    /// nobody to ask they are refused at the call); an unverifiable or empty path never (refused at the call).
+    /// `None` (the argument-less probe) is `true`: an inside write asks — the one a tool grant answers.
     pub(crate) fn write_asks(&self, args: Option<&crate::provider::model::JsonObject>) -> bool {
         let Some(args) = args else {
-            return !self.auto_write;
+            return true;
         };
         let arg = crate::tool::args::str_arg(args, "path");
         match self.write_path(arg) {
-            Ok(Write::Inside(_)) => !self.auto_write,
+            Ok(Write::Inside(_)) => true,
             Ok(Write::Outside { .. }) => self.attended,
             Ok(Write::Protected { why, .. }) => why.approvable() && self.attended,
             Ok(Write::Unverifiable) | Err(_) => false,
         }
-    }
-
-    /// `auto_write`: what the writers waive is the approval of writes INSIDE the roots. A write outside
-    /// them, or to a protected path, is still asked (or refused when nobody can be asked), never waived.
-    pub(crate) fn waives(&self) -> bool {
-        self.auto_write
     }
 
     /// The writers' description sentence on writes outside the roots: in a run with somebody to ask, that
@@ -455,20 +444,16 @@ impl CodeSet {
 }
 
 /// Order `glob`, `grep`, `list_dir`, `read_file`, [`edit_file`, `write_file` unless `read_only`]. Errors: `CodeConfig`,
-/// `CodeContradiction`.
+/// `CodeRoot`.
 ///
 /// An unreadable working directory is swallowed: the root falls back to `.` (only reachable when the
 /// process has no working directory and no root was configured).
 pub fn new_code_set(env: &ToolEnv, node: Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError> {
     let cfg: CodeConfig =
         yaml11::decode_mapping(node).map_err(|e| SetError::CodeConfig(e.to_string()))?;
-    if cfg.read_only && cfg.auto_write {
-        return Err(SetError::CodeContradiction);
-    }
     let root = env.root().unwrap_or_else(|_| PathBuf::from("."));
     let cs = CodeSet::new(
         root,
-        cfg.auto_write,
         env.interactor.is_some(),
         env.dirs.home.clone(),
         Arc::clone(&env.grants),
@@ -616,7 +601,6 @@ mod tests {
         let cs = CodeSet::new(
             PathBuf::from("/proj"),
             false,
-            false,
             None,
             std::sync::Arc::default(),
         )
@@ -701,8 +685,7 @@ mod tests {
         symlink("lb", root.join("la")).expect("la");
         symlink("la", root.join("lb")).expect("lb");
         let real_out = crate::app::canonical(&out).expect("real out");
-        let cs =
-            CodeSet::new(root.clone(), false, true, None, std::sync::Arc::default()).expect("set");
+        let cs = CodeSet::new(root.clone(), true, None, std::sync::Arc::default()).expect("set");
         assert_eq!(
             cs.write_path("dir/x"),
             Ok(Write::Inside(root.join("dir/x")))
@@ -748,14 +731,7 @@ mod tests {
             ..RunCtx::default()
         };
         let set = |attended| {
-            CodeSet::new(
-                root.clone(),
-                true,
-                attended,
-                None,
-                std::sync::Arc::default(),
-            )
-            .expect("set")
+            CodeSet::new(root.clone(), attended, None, std::sync::Arc::default()).expect("set")
         };
 
         let attended = set(true);
@@ -763,7 +739,7 @@ mod tests {
         args.insert("path".to_owned(), arg.into());
         assert!(
             attended.write_asks(Some(&args)),
-            "asked, `auto_write` or not"
+            "asked, a tool grant or not"
         );
         assert_eq!(
             attended.approvable(arg),
@@ -816,7 +792,6 @@ mod tests {
         fixed.add_dir(real(&missing));
         let cs = CodeSet::new(
             root.clone(),
-            false,
             false,
             None,
             std::sync::Arc::new(crate::tool::grants::Grants::with_static(fixed)),
@@ -882,8 +857,7 @@ mod tests {
         symlink("s/../secret.txt", root.join("trick")).expect("link");
         // The same through the dangling-link branch: the link text is walked again, physically.
         symlink("s/../missing.txt", root.join("trick_dangling")).expect("link");
-        let cs =
-            CodeSet::new(root.clone(), false, false, None, std::sync::Arc::default()).expect("set");
+        let cs = CodeSet::new(root.clone(), false, None, std::sync::Arc::default()).expect("set");
         for arg in [
             "escape",
             "outdir",
@@ -906,8 +880,7 @@ mod tests {
         symlink(root.join("a.txt"), root.join("alias")).expect("link");
         symlink("dir", root.join("subdir")).expect("link");
         symlink("dir/later.txt", root.join("dangling_inside")).expect("link");
-        let cs =
-            CodeSet::new(root.clone(), false, false, None, std::sync::Arc::default()).expect("set");
+        let cs = CodeSet::new(root.clone(), false, None, std::sync::Arc::default()).expect("set");
         // The returned path is the lexical one, links and all.
         for arg in [
             "alias",
@@ -928,8 +901,7 @@ mod tests {
         let via = t.path().join("via");
         symlink(&root, &via).expect("link");
         let real = crate::app::canonical(&root).expect("canonical root");
-        let cs =
-            CodeSet::new(via.clone(), false, false, None, std::sync::Arc::default()).expect("set");
+        let cs = CodeSet::new(via.clone(), false, None, std::sync::Arc::default()).expect("set");
         assert_eq!(jail(&cs, "new.txt"), Ok(via.join("new.txt")));
         let abs = real.join("new.txt");
         let abs = abs.to_str().expect("utf-8");
@@ -941,7 +913,6 @@ mod tests {
         let tmp = tempfile::tempdir_in("/tmp").expect("tempdir in /tmp");
         let cs = CodeSet::new(
             tmp.path().to_path_buf(),
-            false,
             false,
             None,
             std::sync::Arc::default(),
@@ -966,8 +937,7 @@ mod tests {
         symlink(&root, &via).expect("via");
         symlink("dir", root.join("subdir")).expect("subdir");
         symlink(&out, root.join("outdir")).expect("outdir");
-        let cs =
-            CodeSet::new(via.clone(), false, false, None, std::sync::Arc::default()).expect("set");
+        let cs = CodeSet::new(via.clone(), false, None, std::sync::Arc::default()).expect("set");
         let real_out = crate::app::canonical(&out).expect("real out");
         for (base, want) in [
             (via.clone(), via.clone()),
@@ -1027,8 +997,7 @@ mod tests {
         // A link loop is ELOOP, not "missing".
         symlink("lb", root.join("la")).expect("la");
         symlink("la", root.join("lb")).expect("lb");
-        let cs =
-            CodeSet::new(root.clone(), false, false, None, std::sync::Arc::default()).expect("set");
+        let cs = CodeSet::new(root.clone(), false, None, std::sync::Arc::default()).expect("set");
         for arg in ["L/S/secret.txt", "L/S/planted.txt", "L2"] {
             // Linux resolves the long prefix and finds it outside; macOS cannot resolve it at all.
             let want = if cfg!(target_os = "macos") {
@@ -1049,7 +1018,7 @@ mod tests {
         grants.update(crate::tool::grants::Level::Session, |s| {
             s.add_dir(real_t.clone())
         });
-        let asking = CodeSet::new(root.clone(), true, true, None, grants).expect("set");
+        let asking = CodeSet::new(root.clone(), true, None, grants).expect("set");
         let mut unknown = vec!["la", "la/new.txt"];
         if cfg!(target_os = "macos") {
             unknown.extend(["L/S/secret.txt", "L/S/planted.txt", "L2"]);
@@ -1090,14 +1059,7 @@ mod tests {
         let looped = t.path().join("looped");
         symlink(&looped, &looped).expect("self link");
         assert_eq!(
-            CodeSet::new(
-                looped.clone(),
-                false,
-                false,
-                None,
-                std::sync::Arc::default()
-            )
-            .err(),
+            CodeSet::new(looped.clone(), false, None, std::sync::Arc::default()).err(),
             Some(crate::tool::sets::SetError::CodeRoot(looped))
         );
     }

@@ -32,7 +32,7 @@ pub struct StaticDispatcher {
     pub parallel: HashSet<String>,
     /// Names that report `requires_approval`.
     pub approval: HashSet<String>,
-    /// What `waives_approval` answers: the tools act without asking (`auto_run` / `auto_write`).
+    /// What `waives_approval` answers: the tools act without asking (an MCP server's `auto_run`).
     pub waives: bool,
 }
 

@@ -72,7 +72,7 @@ impl Why {
 
     /// Whether a write here can be approved at all ("allow once" for that file). The trust record and the
     /// grants are written by iota itself and by nothing else: no tool is ever asked about them, and nothing —
-    /// not "allow once", a directory grant or `auto_write` — admits a write there.
+    /// not "allow once", a directory grant or a tool grant — admits a write there.
     pub fn approvable(self) -> bool {
         !matches!(self, Self::Trust | Self::Grants)
     }

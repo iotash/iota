@@ -99,7 +99,7 @@ pushes `git commit` out of the sandbox), not shell rc files.
 
 A protected write is its own class (`Write::Protected`):
 
-- **Never silent.** `auto_write` does not waive it; `allow:` cannot
+- **Never silent.** The writers' tool grant does not answer it; `allow:` cannot
   admit it (listing `<root>/.git` or `<root>/.git/hooks` there is accepted
   and opens the rest of `.git`, but not the table's paths); no grant
   covers it — neither the writer's tool grant nor a directory grant over it
@@ -116,7 +116,7 @@ A protected write is its own class (`Write::Protected`):
   for; ask the user to make the change themselves`.
 - **The trust record and the sessions tree are never written**
   (`Why::approvable` is false for both): no prompt, no approval path — not
-  "allow once", a directory grant or `auto_write` — `… no tool may write it;
+  "allow once", a directory grant or a tool grant — `… no tool may write it;
   the user trusts a project config by running `iota config trust`
   themselves`, and for the sessions tree `… no tool may write it; iota alone
   writes the sessions and the grants they hold`. `~/.iota` being an entry is
@@ -184,8 +184,8 @@ project root, a static directory (`allow:`, `--allow`) or a live directory grant
 
 | class | chat (a user to ask) | `-m`, the SDK path (nobody to ask) |
 |---|---|---|
-| INSIDE | asked unless `tools.code.auto_write` | refused unless `auto_write`, saying to set it |
-| OUTSIDE | asked ALWAYS — `auto_write` does not waive it | refused, saying to pass `--allow <dir>` or list the directory in the agent's `allow:` |
+| INSIDE | asked unless the store holds the writer (`allow: [edit_file, write_file]`, `--allow`, `/allow`) | refused unless the store holds it, saying to pass `--allow <name>` or list it in the agent's `allow:` |
+| OUTSIDE | asked ALWAYS — a tool grant does not answer it | refused, saying to pass `--allow <dir>` or list the directory in the agent's `allow:` |
 | PROTECTED (not the trust record or the sessions tree) | asked ALWAYS, "allow once" only | refused, saying the user can make the change |
 | the trust record; the sessions tree | refused, no prompt | refused |
 | UNVERIFIABLE | refused, no prompt | refused |
@@ -209,7 +209,7 @@ project root, a static directory (`allow:`, `--allow`) or a live directory grant
   its subtree, for both writers, read by the jail at every call with the
   static directories (`Grants::roots`: `admits_real`, the protected table's
   extra roots, the refusal's roots clause). A write there is thereafter INSIDE — asked
-  or not by `auto_write`, like one in the project root. The grant is the
+  or not by the writer's tool grant, like one in the project root. The grant is the
   real path resolved when it was made, and LIVE only while that path is
   still its own real location: a granted directory replaced by a symlink
   admits nothing until it comes back. The item is not offered when `<dir>`
@@ -245,9 +245,10 @@ project root, a static directory (`allow:`, `--allow`) or a live directory grant
   silently, in every mode — is to list it in the agent's `allow:` (or pass
   `--allow <dir>`), read when the tools are assembled; a running chat gains a root only through the dialog's
   directory grant.
-- **The hold** (`waives_approval`, docs/design/agent-messaging.md §4) still
-  reads `auto_write`: it waives writes inside the roots, which then run
-  unasked; an outside write is asked or refused, never waived.
+- **The hold** (docs/design/agent-messaging.md §4) reads the store
+  (`Grants::waives`): a writer's tool grant runs writes inside the roots
+  unasked, so such a chat holds; an outside write is asked or refused, never
+  waived.
 
 ## Config
 
@@ -257,9 +258,10 @@ agents:
     allow:               # this agent's directories; shared with the shell sandbox
       - ~/scratch        # `~` is home
       - ../shared-lib    # relative = against the project root
+      # - edit_file      # skip confirmations inside the roots (and allow them in -m)
+      # - write_file
     tools:
       code:              # empty = writes inside the roots confirmed
-        # auto_write: true # skip confirmations inside the roots (and allow them in -m)
 ```
 
 The store's directories are ONE list for both questions "where may the code
@@ -301,7 +303,7 @@ claims a jail, the writers name the roots); glob depth default, gitignore exclus
 order; grep format, include filter, context, binary skip, bad regex;
 list_dir; read_file numbering/window/binary/empty; edit_file read-gate,
 uniqueness, replace_all, staleness, snippet; write_file create/parents,
-overwrite gate, ledger refresh by writes; approval matrix incl. auto_write
+overwrite gate, ledger refresh by writes; approval matrix incl. the writers' tool grant
 and Merge routing; outside writes: the three classes
 (`write_path_classifies_inside_outside_and_unverifiable`, unverifiable kept
 refused under `ask` in `write_path_refuses_what_it_cannot_resolve`), who

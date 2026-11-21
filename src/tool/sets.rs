@@ -41,7 +41,7 @@ pub fn set_factory(name: &str) -> Option<SetFactory> {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SetError {
     /// `tools.shell` is not a mapping (or fails to decode).
-    #[error("config must be a mapping (sandbox, network, auto_run): {0}")]
+    #[error("config must be a mapping (sandbox, network): {0}")]
     ShellConfig(String),
     /// `tools.shell.write` — retired: the sandbox's extra writable roots are the agent's `allow:` directories,
     /// which the code tools share.
@@ -60,13 +60,8 @@ pub enum SetError {
     #[error("sandbox must be \"auto\" or \"off\", got {0:?}")]
     BadSandbox(String),
     /// `tools.code` is not a mapping (or fails to decode).
-    #[error("config must be a mapping (auto_write, read_only): {0}")]
+    #[error("config must be a mapping (read_only): {0}")]
     CodeConfig(String),
-    /// `tools.code` sets both `read_only` and `auto_write`.
-    #[error(
-        "read_only and auto_write contradict each other: auto_write approves writes the set does not offer"
-    )]
-    CodeContradiction,
     /// The project root's real location cannot be worked out (an unreadable or overlong
     /// ancestor, a link loop), so the code tools have nothing to jail paths to.
     #[error("cannot resolve the project root {}", .0.display())]
@@ -87,56 +82,33 @@ mod tests {
         assert!(set_factory("nope").is_none());
     }
 
-    /// C13: whether a chat holds a message from another process is the BUILT dispatcher's answer — the same
-    /// setting each tool's `requires_approval` reads — not a second reading of the YAML. The policy is pinned
-    /// as it stands: `auto_run` and `auto_write` waive; a sandboxed shell without `auto_run` does NOT, though
-    /// its confined commands run unasked (docs/design/agent-messaging.md §7: open, for the owner).
+    /// C13: whether a chat holds a message from another process is the store's answer for a built-in
+    /// ([`crate::tool::grants::Grants::waives`]: a tool grant at any level, `allow: [shell]` included) — never a
+    /// built set's: no built-in set has a switch to waive with, whatever its config, and the sandbox is not a
+    /// waiver (docs/design/agent-messaging.md §7: open, for the owner).
     #[test]
-    fn the_dispatcher_says_whether_approval_is_waived() {
+    fn a_built_in_set_never_waives() {
         use crate::tool::{Dispatcher, ToolEnv};
-        let built = |yaml: &str| {
-            let tools: super::ToolsConfig = serde_norway::from_str(yaml).expect("yaml");
+        for interactive in [false, true] {
             let tmp = std::env::temp_dir();
             let env = ToolEnv {
                 jobs: Some(crate::shell::jobs::Jobs::new(&tmp)),
-                ..ToolEnv::default()
-            };
-            crate::tool::Registry::build(&env, &tools, &mut |w| panic!("{w}"))
-        };
-        assert!(built("shell: {auto_run: true}").waives_approval());
-        assert!(built("code: {auto_write: true}").waives_approval());
-        assert!(!built("code:\nask:").waives_approval());
-        assert!(!built("code: {auto_write: false}").waives_approval());
-        assert!(
-            !built("shell: {sandbox: auto}").waives_approval(),
-            "the sandbox is not a waiver — the open question, pinned as decided today"
-        );
-        assert!(!built("shell: {sandbox: \"off\"}").waives_approval());
-        assert!(!built("shell: false\ncode: false").waives_approval());
-
-        // Whether the run has somebody to ask changes nothing here: `auto_write` waives the approval of writes
-        // INSIDE the roots, which then run unasked — so such a chat holds — while a write outside them is still
-        // asked (with a user) or refused; it is never waived, and a chat without `auto_write` acts on nothing
-        // unasked.
-        for interactive in [false, true] {
-            let env = ToolEnv {
                 interactor: interactive.then(|| {
                     crate::repl::Interactor::new() as std::sync::Arc<dyn crate::tool::Interactor>
                 }),
                 ..ToolEnv::default()
             };
-            let with_user = |yaml: &str| {
+            for yaml in [
+                "code:\nask:",
+                "shell: {sandbox: auto}",
+                "shell: {sandbox: \"off\"}",
+                "code: {read_only: true}\nshell: {network: true}",
+                "shell: false\ncode: false",
+            ] {
                 let tools: super::ToolsConfig = serde_norway::from_str(yaml).expect("yaml");
-                crate::tool::Registry::build(&env, &tools, &mut |w| panic!("{w}"))
-            };
-            assert!(
-                with_user("code: {auto_write: true}").waives_approval(),
-                "interactive: {interactive}"
-            );
-            assert!(
-                !with_user("code: {auto_write: false}").waives_approval(),
-                "interactive: {interactive}"
-            );
+                let built = crate::tool::Registry::build(&env, &tools, &mut |w| panic!("{w}"));
+                assert!(!built.waives_approval(), "{yaml} interactive={interactive}");
+            }
         }
     }
 }

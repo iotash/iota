@@ -46,7 +46,7 @@ policy, Copilot's allowed directory list vs its tool approvals):
 - **WHERE** — a *directory grant* is a write root added at run time. It widens the one
   boundary the code writers' jail and the shell sandbox share, exactly as a
   `write_roots:` entry does, and changes nothing else: inside it a code write is asked
-  or not by `tools.code.auto_write` and the writer's own grant, like a write in the
+  or not by the writer's own tool grant (`allow:`, `--allow`, `/allow`), like a write in the
   project root.
 - **WHETHER** — a *tool grant* removes the question for one tool: a built-in
   (`edit_file`, `write_file`, an unsandboxed `shell`), an MCP tool (`server:tool`) or
@@ -58,8 +58,8 @@ union of both, plus the static roots.
 
 What does NOT change: `outside_writes:` stays a config key and `refuse` still means no
 prompt; the protected table still beats every root and every grant; an unverifiable
-location is still refused; `auto_write`/`auto_run` keep their meaning; nothing new is
-trusted (§9 Q11).
+location is still refused; `auto_write`/`auto_run` keep their meaning (until X-117
+retires them for `allow:`); nothing new is trusted (§9 Q11).
 
 ## 3. The grant model
 
@@ -103,8 +103,8 @@ pub struct GrantSet { pub dirs: Vec<PathBuf>, pub tools: Vec<ToolKey> }
 
 Every kind of grant has a session and a project level, and each also has a permanent,
 global form that is not a grant: a directory's is `write_roots:` or `allow:` (or `--allow` for
-one run), an MCP tool's is `mcp_servers.<name>.auto_run`, a built-in's is
-`tools.code.auto_write` / `tools.shell.auto_run`. Those keys live in the home or agent
+one run), an MCP tool's is `mcp_servers.<name>.auto_run`, a built-in's is the agent's
+`allow: [edit_file, write_file, shell]` (X-117). Those keys live in the home or agent
 config and apply to EVERY project, and the repository's own `.iota.yaml` is shared and
 trust-gated, so none of them can say "in this repository, stop asking". In every case
 the project level is that per-repository answer. A built-in grant is still keyed by its
@@ -296,8 +296,8 @@ is /, the home directory or an ancestor of it, which is never a project`; withou
   the tools read a path); it must exist and be a directory, and its REAL location is what
   is stored and shown. (3) Holding a `:`: `<server>:<tool>`, split at its last `:`; an
   empty half is refused. (4) Otherwise a bare word: a built-in tool by its wire name, one
-  the run has and whose argument-less `requires_approval` probe asks (`shell` without
-  `auto_run`, `edit_file`/`write_file` without `auto_write`) — a tool grant never answers
+  the run has and whose argument-less `requires_approval` probe asks (`shell`,
+  `edit_file`, `write_file`) — a tool grant never answers
   a call bound to a location (§3.4). `<tool>` of a server is resolved against its current
   tool list (`*` excepted), so a typo is refused instead of stored. A directory is never
   guessed: when the scope was taken off a target spelled as a directory and the WHOLE
@@ -657,7 +657,7 @@ Amendments, appended to the existing rows:
 - **X-92** — `Amended <date> by X-110: the session grant for an outside write is no
   longer `(tool, exact directory)` held by the gate. It is a directory grant in the
   grant store — the real directory AND its subtree, for both writers and the shell
-  sandbox — and a write there is thereafter INSIDE (asked or not by `auto_write`).
+  sandbox — and a write there is thereafter INSIDE (asked or not by the writer's tool grant).
   `Approved::Dir` is gone; `Approved::Once` is unchanged. `/new` still starts with no
   session grants; a resume now RESTORES the bundle's. The dialog does not offer the
   home directory or an ancestor of it. Retired pins:

@@ -629,7 +629,7 @@ mod tests {
         assert!(super::enabled_toolsets(&raw("ask: false"), false).is_empty());
         assert!(super::enabled_toolsets(&raw("nosuchset:"), false).is_empty());
         assert_eq!(
-            super::enabled_toolsets(&raw("shell:\ncode: {auto_write: true}\nask: false"), false),
+            super::enabled_toolsets(&raw("shell:\ncode: {read_only: true}\nask: false"), false),
             ["code", "shell"]
         );
         // A bot counts its memory set: a bot with no `tools:` still has the harness (review M10).

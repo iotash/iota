@@ -288,8 +288,7 @@ fn no_project(footing: &Footing, home: Option<&Path>, workspace: bool) -> String
 }
 
 /// The built-in tools of `tools` a tool grant can answer, by wire name, in its order: those whose argument-less
-/// probe asks ([`Dispatcher::requires_approval`]) — a tool that never asks, or one its config's `auto_write` or
-/// `auto_run` waives, is not among them.
+/// probe asks ([`Dispatcher::requires_approval`]) — a tool that never asks is not among them.
 fn asking(tools: &dyn Dispatcher) -> Vec<String> {
     tools
         .tools()

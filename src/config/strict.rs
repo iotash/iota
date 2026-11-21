@@ -74,6 +74,11 @@ const MCP_KEYS: [&str; 12] = [
     "auto_run",
 ];
 
+/// Every key a `tools.shell` set accepts.
+const SHELL_KEYS: [&str; 2] = ["sandbox", "network"];
+/// Every key a `tools.code` set accepts.
+const CODE_KEYS: [&str; 1] = ["read_only"];
+
 /// The `section` of a [`RETIRED_KEYS`] row that retires a top-level key.
 const TOP: &str = ".";
 
@@ -81,12 +86,12 @@ const TOP: &str = ".";
 const OUTSIDE_WRITES_GONE: &str = "`outside_writes` was removed — a write outside every root asks the user, and a run with nobody to ask refuses it; delete the key";
 
 /// Keys a redesign retired — `(section, key, replacement)`, `section` being `""` for "any entry of any
-/// section" and [`TOP`] for the top level — and the sentence that tells the user what to write instead, where
+/// section", [`TOP`] for the top level and `tools.<set>` for an agent's toolset — and the sentence that tells the user what to write instead, where
 /// `{entry}` is the entry's name (`agents.{entry}.allow`). They
 /// are checked whatever the key's value, before the "belongs under" table (and, at the top level, before
 /// `unknown top-level key`), so the message names the replacement rather than a layer; a key the section
 /// still owns never gets here.
-const RETIRED_KEYS: [(&str, &str, &str); 7] = [
+const RETIRED_KEYS: [(&str, &str, &str); 9] = [
     (
         "",
         "model",
@@ -116,6 +121,17 @@ const RETIRED_KEYS: [(&str, &str, &str); 7] = [
         "agents",
         "write_roots",
         "`write_roots` is now `allow:` — list each directory in `agents.{entry}.allow`",
+    ),
+    // 2026-11-22: a built-in runs unasked when the agent's `allow:` names it (X-110, X-117).
+    (
+        "tools.code",
+        "auto_write",
+        "`auto_write` is now `allow:` — write `allow: [edit_file, write_file]` in `agents.{entry}`",
+    ),
+    (
+        "tools.shell",
+        "auto_run",
+        "`auto_run` is now `allow:` — write `allow: [shell]` in `agents.{entry}`",
     ),
 ];
 
@@ -247,9 +263,10 @@ fn check_tools(agent: &str, tools: &Value) -> Result<(), ConfigError> {
     let Value::Mapping(sets) = tools else {
         return Ok(());
     };
-    for (key, _) in sets {
+    for (key, set) in sets {
         let Some(name) = key.as_str() else { continue };
         if SET_NAMES.contains(&name) {
+            check_set(agent, name, set)?;
             continue;
         }
         let at = format!("agents.{agent}.tools.{name}");
@@ -262,6 +279,40 @@ fn check_tools(agent: &str, tools: &Value) -> Result<(), ConfigError> {
                 at,
                 message: format!("unknown toolset (want {})", SET_NAMES.join(", ")),
             },
+        });
+    }
+    Ok(())
+}
+
+/// `agents.<agent>.tools.<set>`: the keys of a set that has them (`shell`, `code`) — retired (naming `allow:`) or
+/// unknown. A set written as anything but a mapping (`shell:`, `code: false`) carries no keys; its value is the
+/// set's own decode to judge.
+fn check_set(agent: &str, set: &str, fields: &Value) -> Result<(), ConfigError> {
+    let own: &[&str] = match set {
+        "shell" => &SHELL_KEYS,
+        "code" => &CODE_KEYS,
+        _ => return Ok(()),
+    };
+    let Value::Mapping(fields) = fields else {
+        return Ok(());
+    };
+    for (key, _) in fields {
+        let Some(key) = key.as_str() else { continue };
+        if own.contains(&key) {
+            continue;
+        }
+        let section = format!("tools.{set}");
+        // Only a row written for this set: the "any entry of any section" rows retire keys of a layer's entry.
+        let hint = RETIRED_KEYS
+            .iter()
+            .find(|(s, k, _)| *s == section && *k == key);
+        let message = match hint {
+            Some((_, _, hint)) => hint.replace("{entry}", agent),
+            None => format!("unknown key (want {})", own.join(", ")),
+        };
+        return Err(ConfigError::Key {
+            at: format!("agents.{agent}.{section}.{key}"),
+            message,
         });
     }
     Ok(())
@@ -503,6 +554,107 @@ mod tests {
         assert!(
             check("models:\n  m: {provider: p, id: i, write_roots: [/tmp/x]}\n")
                 .starts_with("models.m.write_roots: unknown key (want provider, ")
+        );
+    }
+
+    /// Every text of docs/design/config-allow.md §7 this tree produces, byte for byte (`mcp_servers.<n>.auto_run`
+    /// is still a server's key: its row comes with its removal).
+    #[test]
+    fn the_retired_grant_keys_name_allow() {
+        for (yaml, text) in [
+            (
+                "write_roots: [/tmp/x]\n",
+                "write_roots: `write_roots` is now `allow:` on an agent — list each directory in `agents.<name>.allow`, or pass `--allow <dir>` for one run",
+            ),
+            (
+                "outside_writes: ask\n",
+                "outside_writes: `outside_writes` was removed — a write outside every root asks the user, and a run with nobody to ask refuses it; delete the key",
+            ),
+            (
+                "agents:\n  coder: {model: m, write_roots: [/tmp/x]}\n",
+                "agents.coder.write_roots: `write_roots` is now `allow:` — list each directory in `agents.coder.allow`",
+            ),
+            (
+                "agents:\n  coder: {model: m, outside_writes: ask}\n",
+                "agents.coder.outside_writes: `outside_writes` was removed — a write outside every root asks the user, and a run with nobody to ask refuses it; delete the key",
+            ),
+            (
+                "agents:\n  coder: {model: m, tools: {code: {auto_write: true}}}\n",
+                "agents.coder.tools.code.auto_write: `auto_write` is now `allow:` — write `allow: [edit_file, write_file]` in `agents.coder`",
+            ),
+            (
+                "agents:\n  coder: {model: m, tools: {shell: {auto_run: true}}}\n",
+                "agents.coder.tools.shell.auto_run: `auto_run` is now `allow:` — write `allow: [shell]` in `agents.coder`",
+            ),
+            (
+                "agents:\n  coder: {model: m, tools: {code: {auto_wrtie: true}}}\n",
+                "agents.coder.tools.code.auto_wrtie: unknown key (want read_only)",
+            ),
+            (
+                "agents:\n  coder: {model: m, tools: {shell: {netwrok: true}}}\n",
+                "agents.coder.tools.shell.netwrok: unknown key (want sandbox, network)",
+            ),
+        ] {
+            assert_eq!(check(yaml), text, "{yaml}");
+        }
+    }
+
+    /// A retired switch is refused whatever its value — `false` too, and a non-bool: the key is what is gone.
+    #[test]
+    fn a_retired_key_is_refused_at_false_too() {
+        for value in ["false", "true", "no", "null", "[]"] {
+            assert_eq!(
+                check(&format!(
+                    "agents:\n  a: {{model: m, tools: {{code: {{auto_write: {value}}}}}}}\n"
+                )),
+                "agents.a.tools.code.auto_write: `auto_write` is now `allow:` — write `allow: [edit_file, write_file]` in `agents.a`",
+                "{value}"
+            );
+            assert_eq!(
+                check(&format!(
+                    "agents:\n  a: {{model: m, tools: {{shell: {{sandbox: auto, auto_run: {value}}}}}}}\n"
+                )),
+                "agents.a.tools.shell.auto_run: `auto_run` is now `allow:` — write `allow: [shell]` in `agents.a`",
+                "{value}"
+            );
+        }
+        // Each switch is retired in its own set only: in the other it never was a key.
+        assert_eq!(
+            check("agents:\n  a: {model: m, tools: {shell: {auto_write: false}}}\n"),
+            "agents.a.tools.shell.auto_write: unknown key (want sandbox, network)"
+        );
+        assert_eq!(
+            check("agents:\n  a: {model: m, tools: {code: {auto_run: false}}}\n"),
+            "agents.a.tools.code.auto_run: unknown key (want read_only)"
+        );
+    }
+
+    /// The keys under `tools.shell` and `tools.code` are audited like any other; a set without keys (`shell:`,
+    /// `code: false`) and the sets that take none are not the audit's.
+    #[test]
+    fn a_key_under_a_toolset_is_audited() {
+        assert_eq!(
+            check(
+                "agents:\n  a:\n    model: m\n    tools: {shell: {sandbox: \"off\", network: true}, code: {read_only: true}}\n"
+            ),
+            ""
+        );
+        assert_eq!(
+            check("agents:\n  a: {model: m, tools: {shell: , code: false, ask: , skills: }}\n"),
+            ""
+        );
+        assert_eq!(
+            check("agents:\n  a: {model: m, tools: {code: {read_only: true, readonly: true}}}\n"),
+            "agents.a.tools.code.readonly: unknown key (want read_only)"
+        );
+        assert_eq!(
+            check("agents:\n  a: {model: m, tools: {shell: {sandbox: auto, sandbx: auto}}}\n"),
+            "agents.a.tools.shell.sandbx: unknown key (want sandbox, network)"
+        );
+        // A layer's retired key is not a set's: `model` under a set is unknown, not "now a `models:` entry".
+        assert_eq!(
+            check("agents:\n  a: {model: m, tools: {shell: {model: m}}}\n"),
+            "agents.a.tools.shell.model: unknown key (want sandbox, network)"
         );
     }
 

@@ -3,7 +3,7 @@
 #
 # The rule is pinned in-process (`shell::selfcall`, `tests/tool/shell.rs`: a sandboxed set spawns a call
 # whose first word is the running binary without the sandbox, and only that call); what was left to a human
-# is what the user is ASKED. The agent enables `shell` with its defaults — the sandbox on, no `auto_run` —
+# is what the user is ASKED. The agent enables `shell` with its defaults — the sandbox on, no `allow:` —
 # which is the one configuration that never asks about anything… until iota itself is the command:
 #
 #   24.1 `iota mcp list` from the model — the approval prompt opens (a sandboxed set asks about the call

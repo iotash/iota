@@ -16,7 +16,7 @@
 # (`printf 'fa%s…' il`), since the mock reads the first `fail:` of each user message. The mock names no
 # `retry-after`, so the ladder is the wire layer's two retries under each of 2/4/8 s — about 20 s, longer
 # than `wait_all` polls; the block is waited for with a wider poll. The 60 s probe is left to the REPL tests.
-# The agent runs `shell` with the sandbox off and `auto_run: true`, as scenario 19 does.
+# The agent runs `shell` with the sandbox off and `allow: [shell]`, as scenario 19 does.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
 
@@ -28,7 +28,8 @@ agents:
   default:
     model: m
     choices: [m, \"mock:*\"]
-    tools: {shell: {sandbox: off, auto_run: true}}"
+    tools: {shell: {sandbox: off}}
+    allow: [shell]"
 export CONFIG_BODY
 
 # start_job <n> <cmd> — one `run:` turn: the call goes out, the receipt names job b<n>, the turn ends.

@@ -27,14 +27,15 @@ use iota::shell::exec::{
 use iota::shell::interp::{Family, Interpreter};
 use iota::shell::jobs::{CallEnd, Jobs};
 use iota::tool::Registry;
+#[cfg(unix)]
+use iota::tool::approval::{Gate, gate};
 use iota::tool::builtins::shell::{
     BASH_DESC_PREFIX, CMD_DESC_PREFIX, PWSH_DESC_PREFIX, SHELL_DESC_SANDBOXED,
     SHELL_DESC_UNSANDBOXED, SHELL_TOOL_NAME, background_desc, desc_prefix, new_shell_set,
     sandbox_desc,
 };
 use iota::tool::context::RunCtx;
-#[cfg(unix)]
-use iota::tool::grants::{GrantSet, Grants, Level};
+use iota::tool::grants::{GrantSet, Grants, Level, ToolKey};
 use iota::tool::sets::{RawNode, SetError, ToolsConfig};
 use iota::tool::{Dispatcher, Tool, ToolEnv};
 use pretty_assertions::assert_eq;
@@ -314,10 +315,8 @@ async fn shell_yields_a_long_command_to_a_background_job() {
     if skip_unless_posix("shell_yields_a_long_command_to_a_background_job") {
         return;
     }
-    let (_dir, jobs, tool) = new_shell_yielding_after(
-        "sandbox: off\nauto_run: true\n",
-        Some(Duration::from_secs(1)),
-    );
+    let (_dir, jobs, tool) =
+        new_shell_yielding_after("sandbox: off\n", Some(Duration::from_secs(1)));
     let (out, is_err) = call(&tool, json!({"command": "echo hi"})).await;
     assert_eq!(
         (out.as_str(), is_err),
@@ -376,10 +375,8 @@ async fn shell_waits_for_a_call_when_the_run_is_at_the_cap() {
     if skip_unless_posix("shell_waits_for_a_call_when_the_run_is_at_the_cap") {
         return;
     }
-    let (_dir, jobs, tool) = new_shell_yielding_after(
-        "sandbox: off\nauto_run: true\n",
-        Some(Duration::from_millis(200)),
-    );
+    let (_dir, jobs, tool) =
+        new_shell_yielding_after("sandbox: off\n", Some(Duration::from_millis(200)));
     for _ in 0..iota::shell::jobs::MAX_JOBS {
         let (out, is_err) = call(&tool, json!({"command": "sleep 30", "background": true})).await;
         assert!(!is_err, "{out}");
@@ -402,7 +399,7 @@ async fn shell_background_returns_a_receipt_and_keeps_running() {
     if skip_unless_posix("shell_background_returns_a_receipt_and_keeps_running") {
         return;
     }
-    let (dir, jobs, tool) = new_shell_with_jobs("sandbox: off\nauto_run: true\n");
+    let (dir, jobs, tool) = new_shell_with_jobs("sandbox: off\n");
     let marker = dir.path().join("done.txt");
     let cmd = format!("sleep 0.2; echo finished > {}", shell_path(&marker));
 
@@ -435,7 +432,7 @@ async fn shell_background_returns_a_receipt_and_keeps_running() {
 // anything is started.
 #[tokio::test]
 async fn shell_background_keeps_the_argument_rules() {
-    let (_dir, jobs, tool) = new_shell_with_jobs("sandbox: off\nauto_run: true\n");
+    let (_dir, jobs, tool) = new_shell_with_jobs("sandbox: off\n");
     let (out, is_err) = call(
         &tool,
         json!({"command": "true", "background": true, "timeout": 0}),
@@ -494,8 +491,15 @@ fn shell_calls_batch() {
         assert!(tool.supports_parallel(Some(&args)));
     }
 }
+/// A store whose static level holds `shell` — what `allow: [shell]` gives a run.
+fn allowing_shell() -> Arc<Grants> {
+    let mut fixed = GrantSet::default();
+    fixed.add_tool(ToolKey::Builtin(SHELL_TOOL_NAME.to_owned()));
+    Arc::new(Grants::with_static(fixed))
+}
+
 #[test]
-fn shell_approval_follows_the_auto_run_and_write_matrix() {
+fn shell_approval_is_a_fact_of_the_call() {
     let approval = |cfg: &str| {
         let (_dir, _root, tool) = new_shell(cfg);
         tool.requires_approval(None)
@@ -504,17 +508,31 @@ fn shell_approval_follows_the_auto_run_and_write_matrix() {
         approval("sandbox: off\n"),
         "an unsandboxed shell tool should require approval"
     );
-    assert!(
-        !approval("sandbox: off\nauto_run: true\n"),
-        "auto_run should waive approval"
-    );
-    // auto: the argument-less probe asks whether some call can ask — what `/allow shell` grants. A sandboxed
-    // set's call that leaves the sandbox (an iota call) still does, so it is `!auto_run` with a sandbox or
-    // without one; which calls ask is per call.
+    // auto: the argument-less probe asks whether some call can ask — what `/allow shell` and `allow: [shell]`
+    // grant. A sandboxed set's call that leaves the sandbox (an iota call) still does, so it is `true` with a
+    // sandbox or without one; which calls ask is per call.
     assert!(
         approval(""),
-        "a shell without auto_run has calls that ask (sandbox available: {})",
+        "a shell has calls that ask (sandbox available: {})",
         exec::available()
+    );
+    // What runs them unasked is the store, through the gate — never the set.
+    let (_dir, _root, tool) = new_shell("sandbox: off\n");
+    let mut reg = Registry::default();
+    reg.add(tool);
+    let call = json!({"command": "true"});
+    let call = call.as_object().expect("object");
+    assert_eq!(
+        gate(&reg, &allowing_shell(), SHELL_TOOL_NAME, call),
+        Gate::Run,
+        "allow: [shell]"
+    );
+    assert!(
+        matches!(
+            gate(&reg, &Grants::default(), SHELL_TOOL_NAME, call),
+            Gate::Ask { subject: None, .. }
+        ),
+        "without allow:"
     );
 }
 #[test]
@@ -535,9 +553,8 @@ fn a_bad_shell_config_names_its_fault() {
         r.tools()
     );
     assert!(
-        warned[0].starts_with(
-            "toolset \"shell\": config must be a mapping (sandbox, network, auto_run): "
-        ) && warned[0].ends_with(" (ignored)"),
+        warned[0].starts_with("toolset \"shell\": config must be a mapping (sandbox, network): ")
+            && warned[0].ends_with(" (ignored)"),
         "{:?}",
         warned[0]
     );
@@ -621,7 +638,7 @@ async fn a_shell_key_enables_the_shell_tool() {
         !out.is_error && out.text.contains("registry"),
         "the shell tool via registry: {out:?}"
     );
-    // The registry routes the tool's approval answer (sandbox: off, no auto_run).
+    // The registry routes the tool's approval answer (sandbox: off).
     assert!(r.requires_approval(SHELL_TOOL_NAME, None));
 }
 #[test]
@@ -1571,7 +1588,7 @@ async fn a_granted_repository_keeps_its_hooks_and_config() {
 }
 
 /// The writers are not the exception (DIVERGENCES X-44, X-95): `iota config trust|untrust|init` and
-/// `mcp add|remove` stay in the sandbox even with `auto_run: true` — the prompt-injection case, where nothing is
+/// `mcp add|remove` stay in the sandbox even with `allow: [shell]` — the prompt-injection case, where nothing is
 /// asked — so their write of the trust record or the config is refused. The binary is a stand-in that writes
 /// `~/.iota/trusted.json` and `~/.iota.yaml` itself; let out of the sandbox, either write would land. It reports
 /// each refused write by the write's own exit status, so the check holds whatever wording the platform's sandbox
@@ -1621,10 +1638,10 @@ async fn the_sandbox_keeps_the_trust_and_config_writers_in() {
             exe: Some(exe.clone()),
         },
         jobs: Some(Jobs::new(dir.path())),
+        grants: allowing_shell(),
         ..ToolEnv::default()
     };
-    let tool =
-        Arc::clone(&new_shell_set(&env, node("auto_run: true\n").as_ref()).expect("shell set")[0]);
+    let tool = Arc::clone(&new_shell_set(&env, None).expect("shell set")[0]);
     let exe = shell_path(&exe);
     for command in [
         format!("{exe} config trust"),
@@ -1666,7 +1683,7 @@ async fn the_sandbox_keeps_the_trust_and_config_writers_in() {
 
 /// A line that chooses what the child loads or starts is not the exception either (DIVERGENCES X-44, amended):
 /// `-c`/`--config` names a config — one the model could have written inside the project with `sandbox: off`
-/// and `auto_run: true` — and `--mcp` a command to start as a server. Even with `auto_run: true`, where
+/// and `allow: [shell]` — and `--mcp` a command to start as a server. Even with `allow: [shell]`, where
 /// nothing is asked, each spelling runs sandboxed: no mark on the header, and the stand-in binary's write
 /// outside the project is refused. Its write's own exit status reports the refusal, whatever the platform's
 /// sandbox calls it.
@@ -1710,10 +1727,10 @@ async fn the_sandbox_keeps_an_iota_that_names_its_own_config_in() {
             exe: Some(exe.clone()),
         },
         jobs: Some(Jobs::new(dir.path())),
+        grants: allowing_shell(),
         ..ToolEnv::default()
     };
-    let tool =
-        Arc::clone(&new_shell_set(&env, node("auto_run: true\n").as_ref()).expect("shell set")[0]);
+    let tool = Arc::clone(&new_shell_set(&env, None).expect("shell set")[0]);
     let exe = shell_path(&exe);
     for command in [
         format!("{exe} -c scratch.yaml run a -m hi"),
@@ -1746,9 +1763,9 @@ async fn the_sandbox_keeps_an_iota_that_names_its_own_config_in() {
 /// in. The binary is a stand-in script (`HostDirs::exe` is injected, never probed here) that writes a marker
 /// where the sandbox forbids writes: the marker's existence is the proof of where the call ran.
 ///
-/// Around it, the policy the exception does not change: the call still needs approval when the set does not
-/// `auto_run`, it is marked `(outside the sandbox)` in its header, and it never rides a parallel batch — the
-/// batch has no gate. With `auto_run: true` nothing is asked and it batches like any other call.
+/// Around it, the policy the exception does not change: the call still needs approval when the store does not
+/// hold `shell`, it is marked `(outside the sandbox)` in its header, and it never rides a parallel batch — the
+/// batch has no gate. With `allow: [shell]` the gate runs it unasked and it batches like any other call.
 #[cfg(unix)]
 #[tokio::test]
 async fn the_sandbox_lets_iota_itself_out_and_nothing_else() {
@@ -1807,7 +1824,7 @@ async fn the_sandbox_lets_iota_itself_out_and_nothing_else() {
     // Policy first (no process): approval, the header mark, no batch — for the self-invocation alone.
     assert!(
         tool.requires_approval(Some(&args(json!({"command": self_call})))),
-        "a sandboxed set without auto_run must ask about a call that leaves the sandbox"
+        "a sandboxed set must ask about a call that leaves the sandbox"
     );
     assert!(
         !tool.requires_approval(Some(&args(json!({"command": "echo hi"})))),
@@ -1868,12 +1885,21 @@ async fn the_sandbox_lets_iota_itself_out_and_nothing_else() {
     );
     assert!(!mark.exists(), "the sandboxed write landed anyway");
 
-    // `auto_run: true`: nothing is asked, so the call may batch — the mark stays on the header.
-    let auto = shell_set("auto_run: true\n");
-    assert!(!auto.requires_approval(Some(&args(json!({"command": self_call})))));
-    assert!(auto.supports_parallel(Some(&args(json!({"command": self_call})))));
+    // `allow: [shell]`: the gate asks nothing, so the call may batch — the mark stays on the header.
+    let mut reg = Registry::default();
+    reg.add(Arc::clone(&tool));
+    let leaving = args(json!({"command": self_call}));
+    assert_eq!(
+        gate(&reg, &allowing_shell(), SHELL_TOOL_NAME, &leaving),
+        Gate::Run
+    );
+    assert!(matches!(
+        gate(&reg, &Grants::default(), SHELL_TOOL_NAME, &leaving),
+        Gate::Ask { subject: None, .. }
+    ));
+    assert!(tool.supports_parallel(Some(&leaving)));
     assert!(
-        auto.header_summary(&args(json!({"command": self_call})))
+        tool.header_summary(&leaving)
             .is_some_and(|h| h.ends_with(iota::tool::builtins::shell::OUTSIDE_SANDBOX_MARK))
     );
 
@@ -1921,7 +1947,7 @@ async fn a_static_directory_is_writable_in_the_sandbox() {
     let extra = extra_dir.path().to_path_buf();
     assert!(!extra.starts_with(&root));
     let yaml = format!(
-        "agents:\n  a:\n    tools: {{code: {{}}, shell: {{}}}}\n    allow: ['{}']\n",
+        "agents:\n  a:\n    tools: {{code: {{}}, shell: {{}}}}\n    allow: ['{}', edit_file, write_file]\n",
         extra.display()
     );
     let cfg =
@@ -1935,7 +1961,7 @@ async fn a_static_directory_is_writable_in_the_sandbox() {
     assert_eq!(env.grants.roots(), std::slice::from_ref(&extra));
 
     // The code tools: create a file there, then read it back.
-    let code = new_code_set(&env, node("auto_write: true\n").as_ref()).expect("code set");
+    let code = new_code_set(&env, None).expect("code set");
     let tool = |name: &str| Arc::clone(code.iter().find(|t| t.def().name == name).expect("tool"));
     let target = extra.join("from-code.txt");
     let (text, is_err) = call(

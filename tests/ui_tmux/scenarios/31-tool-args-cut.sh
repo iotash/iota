@@ -39,7 +39,8 @@ agents:
   default:
     model: m
     choices: [m, \"mock:*\"]
-    tools: {shell: {sandbox: off, auto_run: true}}"
+    tools: {shell: {sandbox: off}}
+    allow: [shell]"
 export CONFIG_BODY
 
 # Red is read by lib.sh's `red_rows`/`red_rows_with` (SGR parameters walked, so the extended colour

@@ -66,7 +66,7 @@ What a write outside those roots does depends on whether the sandbox is on:
   Seatbelt, `Read-only file system` under bwrap's read-only bind) and its
   exit status says so. Nothing in iota inspects the command's paths.
 - **Sandbox off** (`sandbox: off`, or no sandbox on this platform): the call
-  is approval-gated (Approval, below) unless `auto_run`, and once allowed it runs with the
+  is approval-gated (Approval, below) unless the store holds `shell`, and once allowed it runs with the
   user's full permissions. Its paths are **not checked at all** — the code
   tools' jail is theirs alone, and an `allow:` directory changes nothing here.
 
@@ -133,21 +133,23 @@ writes.
 code set: a sandboxed call is pre-contained and runs **without prompting**
 (the industry default); an unsandboxed call (platform gap or `sandbox: off`)
 asks allow once / allow for this session / deny, and is rejected outright in
-non-interactive `-m` runs. `auto_run: true` waives approval for unsandboxed
-calls.
+non-interactive `-m` runs unless allowed. `allow: [shell]` in the agent (or
+`--allow shell`, `/allow shell`) is the tool grant that runs unsandboxed calls
+unasked; `requires_approval` is a fact of the call (`!sandboxed ||
+leaves_sandbox`) and reads no setting.
 
 One call leaves a sandboxed set: iota itself (`shell::selfcall`, DIVERGENCES
 X-44). A command whose first word resolves to the running binary — with POSIX
 quoting, no pipe, chain or substitution outside single quotes — is spawned
 without the sandbox, because opening a browser, storing a login's token and
 reaching an API from a child agent are what the sandbox refuses. Approval is
-the unsandboxed rule for that call alone (`auto_run` waives), the header and
+the unsandboxed rule for that call alone (the `shell` grant answers it), the header and
 the prompt read `(outside the sandbox)`, and it never rides a parallel batch.
 The commands that write the trust record or a config are never self-calls:
 `config` then `trust`/`untrust`/`init`, or `mcp` then `add`/`remove`,
 anywhere among the arguments (so no `-c`/`--config` spelling hides them),
 keeps the call in the sandbox, where the write meets the protected paths and
-fails — otherwise `auto_run: true` would let the model trust a project config
+fails — otherwise `allow: [shell]` would let the model trust a project config
 or rewrite `~/.iota.yaml` for the next run. Reading the arguments is also why an expansion (`$` outside
 single quotes, a glob or brace outside quotes) keeps a line in: the shell, not
 iota, would decide its words.
@@ -159,8 +161,8 @@ tools:
   shell:               # empty = sandbox auto + network blocked
     # sandbox: off     # disable the sandbox (calls then need approval)
     # network: true    # allow network inside the sandbox
-    # auto_run: true   # skip approval for unsandboxed calls (incl. -m)
-allow: [~/.cargo/registry]  # in the agent: extra writable directories, shared with the code tools
+allow: [~/.cargo/registry, shell]  # in the agent: extra writable directories, shared with the code
+                                   # tools; `shell` skips approval for unsandboxed calls (incl. -m)
 ```
 
 `tools.shell.write` is retired: a config that still writes it gets no shell
@@ -233,6 +235,6 @@ write allowed, out-of-root denied, a static directory honored
 protected paths denied while `git commit` works —
 `the_sandbox_never_writes_a_protected_path`) with an
 environment probe that skips where the sandbox cannot run (e.g. nested
-sandboxes). tests/tool/shell.rs: config matrix (sandbox/auto_run →
-`requires_approval`), legacy-shape and retired-`write` rejection, the sandbox
+sandboxes). tests/tool/shell.rs: config matrix (sandbox →
+`requires_approval`, the `shell` grant through the gate), legacy-shape and retired-`write` rejection, the sandbox
 line naming the static directories (`the_sandbox_line_names_the_static_directories`), model-facing formatting, registry/Merge integration.

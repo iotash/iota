@@ -134,22 +134,12 @@ pub trait Tool: Send + Sync {
     fn def(&self) -> ToolDef;
     /// Executes one call.
     fn call<'a>(&'a self, cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult>;
-    /// Whether a call needs interactive approval (a set may report false when configured to auto-approve).
-    /// Per CALL, like `supports_parallel`: `Some(args)` the call about to run — the `shell` tool's answer
+    /// Whether a call is of a kind that asks — a fact of the call, never of a setting: a tool grant (the store's
+    /// static, session or project level) is what runs it unasked ([`approval::gate`]). Per CALL, like `supports_parallel`: `Some(args)` the call about to run — the `shell` tool's answer
     /// depends on the command line. `None` is the argument-less probe (a registry asking about the tool):
     /// whether some call of it bound to no location asks — what a tool grant answers, and what `/allow <tool>`
     /// takes (a write outside the roots asks too, but no tool grant answers it).
     fn requires_approval(&self, _args: Option<&JsonObject>) -> bool {
-        false
-    }
-    /// Whether the user configured this tool to act without the approval it would otherwise ask for
-    /// (`shell` with `auto_run`, `edit_file`/`write_file` with `auto_write` — which waives writes inside the
-    /// roots only: one outside them is still asked or refused) — the same setting
-    /// [`Self::requires_approval`] reads, asked as one question about the set. A chat whose tools waive
-    /// approval holds a message from another process for the user (`repl::inbound`). A tool that never asks
-    /// (a read) waives nothing: there was no approval to give up. (An MCP server's tools are not `Tool`s: the
-    /// manager answers for them as a [`Dispatcher`], and `mcp_servers.<name>.auto_run` is what waives.)
-    fn waives_approval(&self) -> bool {
         false
     }
     /// Presentation class of the tool's calls.
@@ -208,7 +198,9 @@ pub trait Dispatcher: Send + Sync {
     fn requires_approval(&self, _name: &str, _args: Option<&JsonObject>) -> bool {
         false
     }
-    /// Whether any tool here waives the approval it would ask for ([`Tool::waives_approval`]).
+    /// Whether a tool here acts without asking by the dispatcher's own setting — an MCP server's `auto_run`, the
+    /// one switch left (a built-in is allowed by a tool grant, which [`crate::tool::grants::Grants::waives`]
+    /// answers).
     fn waives_approval(&self) -> bool {
         false
     }

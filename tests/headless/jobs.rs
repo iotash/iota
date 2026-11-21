@@ -33,12 +33,23 @@ fn shell_over_jobs() -> (TempDir, Arc<Jobs>, Arc<dyn Dispatcher>) {
         jobs: Some(Arc::clone(&jobs)),
         ..ToolEnv::default()
     };
-    let node: RawNode =
-        serde_norway::from_str("sandbox: off\nauto_run: true\n").expect("shell config");
+    let node: RawNode = serde_norway::from_str("sandbox: off\n").expect("shell config");
     let mut cfg = ToolsConfig::new();
     cfg.insert("shell".to_owned(), node);
     let registry = Registry::build(&env, &cfg, &mut |w| panic!("the shell set complained: {w}"));
     (dir, jobs, Arc::new(registry))
+}
+
+/// A quiet host over `jobs` whose store holds `shell` — what `allow: [shell]` gives the run, so no call is
+/// refused for want of somebody to ask.
+fn allowing_shell(jobs: Arc<Jobs>) -> QuietHost {
+    let mut fixed = iota::tool::grants::GrantSet::default();
+    fixed.add_tool(iota::tool::grants::ToolKey::Builtin("shell".to_owned()));
+    QuietHost {
+        jobs: Some(jobs),
+        grants: Arc::new(iota::tool::grants::Grants::with_static(fixed)),
+        ..QuietHost::new()
+    }
 }
 
 /// Whether to skip a test whose command line is POSIX. The interpreter is `bash` on Unix and, on Windows,
@@ -94,8 +105,7 @@ async fn a_headless_run_waits_for_its_background_job_and_reports_it() {
             ..RoundResult::default()
         },
     ]);
-    let mut host = QuietHost::new();
-    host.jobs = Some(Arc::clone(&jobs));
+    let mut host = allowing_shell(Arc::clone(&jobs));
 
     let out = run_once(
         &RunCtx::default(),
@@ -152,8 +162,7 @@ async fn a_run_with_no_jobs_ends_on_the_first_reply() {
         content: "done".to_owned(),
         ..RoundResult::default()
     }]);
-    let mut host = QuietHost::new();
-    host.jobs = Some(jobs);
+    let mut host = allowing_shell(jobs);
 
     let out = run_once(
         &RunCtx::default(),
@@ -206,8 +215,7 @@ async fn a_job_that_lands_mid_round_enters_at_the_next_round() {
             ..RoundResult::default()
         },
     ]);
-    let mut host = QuietHost::new();
-    host.jobs = Some(Arc::clone(&jobs));
+    let mut host = allowing_shell(Arc::clone(&jobs));
 
     let out = run_once(
         &RunCtx::default(),

@@ -10,8 +10,9 @@
 //! whose first word is the running binary — `iota mcp login …`, a child agent's `iota run <agent> -m …` — is
 //! spawned without the sandbox, because what it does (open a browser, reach the API) is what the sandbox
 //! exists to refuse; every other call, iota in a pipe or a chain included, stays in — and so do iota's own
-//! writers of a config or the trust record (`config trust|untrust|init`, `mcp add|remove`, X-95). Approval is not waived by the exception: a sandboxed set that does not `auto_run` asks for such a
-//! call exactly as an unsandboxed set asks for every call, its header marked `(outside the sandbox)` — and
+//! writers of a config or the trust record (`config trust|untrust|init`, `mcp add|remove`, X-95). Approval is not waived by the exception: a sandboxed set asks for such a call
+//! exactly as an unsandboxed set asks for every call (unless the store holds `shell`: `allow: [shell]`, `--allow
+//! shell`, `/allow shell`), its header marked `(outside the sandbox)` — and
 //! a call that must be asked about never rides a parallel batch, which has no gate.
 //!
 //! The NAME does not move: [`SHELL_TOOL_NAME`] is `shell` on every platform and under every interpreter, as
@@ -81,9 +82,6 @@ pub(crate) struct ShellConfig {
     /// Whether sandboxed commands may use the network.
     #[serde(deserialize_with = "yaml11::deserialize_bool")]
     pub(crate) network: bool,
-    /// Whether calls run without approval even unsandboxed.
-    #[serde(deserialize_with = "yaml11::deserialize_bool")]
-    pub(crate) auto_run: bool,
 }
 
 impl Default for ShellConfig {
@@ -91,7 +89,6 @@ impl Default for ShellConfig {
         Self {
             sandbox: "auto".to_owned(),
             network: false,
-            auto_run: false,
         }
     }
 }
@@ -266,32 +263,23 @@ impl Tool for ShellTool {
         })
     }
 
-    /// `!auto_run` for a call that runs outside the sandbox — every call of an unsandboxed set, and a
-    /// sandboxed set's iota call (`leaves_sandbox`). The argument-less probe is `!auto_run`: without it, some
-    /// call asks in either set, and a tool grant answers it.
+    /// A call that runs outside the sandbox asks — every call of an unsandboxed set, and a sandboxed set's
+    /// iota call (`leaves_sandbox`); a confined one never does. A fact of the call: the tool grant `shell`
+    /// (`allow:`, `--allow`, `/allow`) is what runs an asking call unasked ([`crate::tool::approval::gate`]).
+    /// The argument-less probe is `true`: some call asks in either set, and a tool grant answers it.
     fn requires_approval(&self, args: Option<&JsonObject>) -> bool {
-        if self.shell_cfg.auto_run {
-            return false;
-        }
         match args {
             None => true,
             Some(a) => !self.sandboxed || self.leaves_sandbox(str_arg(a, "command")),
         }
     }
 
-    /// `auto_run`: the setting that lifts every approval above. A sandboxed set without it waives nothing —
-    /// its confined commands never asked, and one leaving the sandbox still does (docs/design/agent-messaging.md
-    /// §4 leaves "is the sandbox itself a waiver?" open).
-    fn waives_approval(&self) -> bool {
-        self.shell_cfg.auto_run
-    }
-
     /// Always — a deliberate break with the earlier rule that only read-only tools batch
     /// (DIVERGENCES X-05). A round's consecutive `shell` calls the gate runs unasked go out in ONE batch,
     /// results still in call order. The judgement that rule made for the model (is this command safe beside
     /// that one?) is the model's own here: it wrote both command lines, and `&`/`wait`/`xargs -P` inside a
-    /// single call were never gated either. A call that is asked — every call of an unsandboxed set without
-    /// `auto_run`, a sandboxed set's iota call — is kept out of the batch by the walk, not here.
+    /// single call were never gated either. A call that is asked — every call of an unsandboxed set the store
+    /// does not hold `shell` for, a sandboxed set's iota call — is kept out of the batch by the walk, not here.
     fn supports_parallel(&self, _args: Option<&JsonObject>) -> bool {
         true
     }
@@ -519,7 +507,7 @@ pub const CMD_DESC_PREFIX: &str = "Run a cmd.exe command line on the user's mach
 /// Sandboxed suffix; `{net}` = `network access is BLOCKED` | `network access is allowed`.
 pub const SHELL_DESC_SANDBOXED: &str = "Commands run inside an OS sandbox: file writes are confined to the project root and temp/cache directories (writes elsewhere fail with permission errors), and {net}. Inside the root, .iota.yaml, .git/config, .git/config.worktree and .git/hooks (a submodule's under .git/modules too) stay read-only and .git itself cannot be moved or replaced, so `git config`, `git remote add`, hook installers and the iota commands that write a config or the trust record (`iota config trust|untrust|init`, `iota mcp add|remove`) fail there: ask the user to make such a change. The user can make another directory writable with /allow <dir>: when a command must write outside these, ask for that instead of working around it.";
 /// Unsandboxed suffix — the only one Windows ever gets: no OS sandbox exists there, so every call runs with
-/// the user's full permissions and needs approval unless `auto_run` waived it.
+/// the user's full permissions and needs approval unless the store holds `shell` (`allow: [shell]`).
 pub const SHELL_DESC_UNSANDBOXED: &str = "Commands run WITHOUT a sandbox on this system, with the user's full permissions — be conservative.";
 /// The jobs paragraph, appended after the sandbox suffix: the rule a call returns by (the exit, or the
 /// [`SHELL_YIELD`] window — the model never has to guess how long a command takes), what `background`

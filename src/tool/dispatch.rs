@@ -133,11 +133,6 @@ impl Dispatcher for Registry {
         self.get(name).is_some_and(|t| t.requires_approval(args))
     }
 
-    /// Any registered tool's answer.
-    fn waives_approval(&self) -> bool {
-        self.order.iter().any(|t| t.waives_approval())
-    }
-
     /// The tool's answer; unknown → `Group`.
     fn presentation(&self, name: &str) -> Presentation {
         self.get(name)

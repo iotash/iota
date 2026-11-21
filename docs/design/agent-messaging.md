@@ -88,11 +88,11 @@ herdr 0.9.5 的 `pane.report_agent_session` 只有 `agent_session_id` / `agent_s
 2. **hold 把人放回被免审拿掉的那个位置。** 风险恰恰是「模型不经人就动手」，hold 让「外部来的话」在到达模型前经过人——与 Claude Code「接收方免审时默认 hold 等人批」一致。
 3. **复用现成的东西**：`NeedsInput` 状态、宿主 ping、`ui.confirm`；hold 期间 socket 对新消息回 `blocked`，不会在人背后堆积。
 
-**触发器：已建好的 dispatcher 说了算（一处真相）。** `Dispatcher::waives_approval`（`src/tool/mod.rs`，Registry 与 Merged 汇总各工具的 `Tool::waives_approval`，`src/tool/dispatch.rs:135`）；每个工具读的是它的 `requires_approval` 读的**同一个**配置字段：`shell` 的 `auto_run`（`src/tool/builtins/shell.rs:271`）、`edit_file` / `write_file` 的 `auto_write`。循环启动时问一次（`src/repl/run.rs:674`）。评审前它是 `tool::sets` 里对 YAML 的第二次解码，已删除。**范围：所有这样配置的会话，不只 bot**——普通 chat 开了 `auto_run` 风险完全一样；bot 是最常见的这种配置。
+**触发器：已建好的 dispatcher 说了算（一处真相）。** `Dispatcher::waives_approval`（`src/tool/mod.rs`，Merged 汇总各部分的回答）；内置工具集不再有开关（`tools.code.auto_write` / `tools.shell.auto_run` 已由 `allow:` 取代，X-117），所以今天只剩 MCP server 的 `mcp_servers.<name>.auto_run` 会回答 true（task 8 移除）。循环启动时问一次（`src/repl/run.rs`）。评审前它是 `tool::sets` 里对 YAML 的第二次解码，已删除。**范围：所有这样配置的会话，不只 bot**——普通 chat 允许了 `shell` 风险完全一样；bot 是最常见的这种配置。
 
-**第二个触发器：授权库里的工具授权（`docs/design/config-allow.md` §4.4）。** 上面那三个开关是循环启动时问一次的，而工具授权（`/allow shell`、项目级的 `github:*`）同样让工具不经询问就动手，且可以在会话中途给出。所以 hold 是 `repl::inbound::Hold`：`waives_approval() || Grants::waives()`，**每条消息到达时重新问**——socket 的 `Gate` 决定回执是否 `held`、空闲循环决定是否先问人、`Steerer` 在每个 round 边界决定是否扣下，三处问的是同一个 `Hold`。`Grants::waives` 是「任一级（session、project，以后的 static）有任一工具授权」；**只有目录授权不算**——沙箱多写一个目录不是免审，与下一段的政策一致。测试：`grants::tests::any_tool_grant_waives_and_a_directory_does_not`、`tests/repl/messaging.rs::a_message_is_held_after_a_tool_grant`（会话中途打 `/allow shell` 后的消息被 hold）、`a_directory_grant_does_not_hold`。
+**第二个触发器：授权库里的工具授权（`docs/design/config-allow.md` §4.4）。** 上面那个开关是循环启动时问一次的，而工具授权（agent 的 `allow: [shell]` 或 `--allow shell`、`/allow shell`、项目级的 `github:*`）同样让工具不经询问就动手，且可以在会话中途给出。所以 hold 是 `repl::inbound::Hold`：`waives_approval() || Grants::waives()`，**每条消息到达时重新问**——socket 的 `Gate` 决定回执是否 `held`、空闲循环决定是否先问人、`Steerer` 在每个 round 边界决定是否扣下，三处问的是同一个 `Hold`。`Grants::waives` 是「任一级（static、session、project）有任一工具授权」；**只有目录授权不算**——沙箱多写一个目录不是免审，与下一段的政策一致。测试：`grants::tests::any_tool_grant_waives_and_a_directory_does_not`、`tests/repl/messaging.rs::a_message_is_held_after_a_tool_grant`（会话中途打 `/allow shell` 后的消息被 hold）、`a_directory_grant_does_not_hold`。
 
-**政策维持现状（未决，见 §7 第 1 条）：沙箱不算免审。** `shell: {sandbox: auto}` 不开 `auto_run` 时，沙箱内的命令不问就跑，但 `shell` 的 `waives_approval` 是 `auto_run`，所以这样的会话**不 hold**。`sets::tests::the_dispatcher_says_whether_approval_is_waived` 把这一点钉成了今天的预期。
+**政策维持现状（未决，见 §7 第 1 条）：沙箱不算免审。** `shell: {sandbox: auto}` 而 `allow:` 不含 `shell` 时，沙箱内的命令不问就跑，但授权库里没有工具授权，所以这样的会话**不 hold**。`sets::tests::a_built_in_set_never_waives` 把这一点钉成了今天的预期。
 
 **行为**：回执是 `held`（不是 `woken` / `queued`：那两个承诺模型会读）。空闲时外部消息醒来 → 先打一行标题 → 状态 `NeedsInput`、宿主收到 `NeedsInput` ping → 一个两项的 select：「Let the model read it」/「Discard it」（`src/repl/run.rs:1117`）。放行就是普通的 notice 轮（标题不重复打）；丢弃打一行 `Message discarded: the model never saw it.`，模型从未见过它。忙时 `Steerer` 把它**扣下**、不注入——和 bot 的 flush notice 进同一个 `held` 列表（`src/repl/turn/steer.rs:63`）；这一轮结束后循环把其中的外部消息放回队列（`src/repl/run.rs:981`），到空闲时再问。
 
@@ -111,7 +111,7 @@ herdr 0.9.5 的 `pane.report_agent_session` 只有 `agent_session_id` / `agent_s
 
 ## 7. 拿不准 / 留给所有者
 
-1. **沙箱算不算免审（未决）。** `shell: {sandbox: auto}` 不开 `auto_run` 时，沙箱内命令不问就跑，而沙箱允许写项目根；今天的政策是**不 hold**。两种选项：(a) 维持——hold 只对用户明确放弃审批（`auto_run` / `auto_write`）的会话，沙箱被视为替代审批的边界；(b) 改成 hold——「不问就能写项目根」就算免审，`shell` 的 `waives_approval` 改为 `sandboxed || auto_run`，代价是默认配置（`sandbox: auto`）的会话都会 hold。
+1. **沙箱算不算免审（未决）。** `shell: {sandbox: auto}` 不开 `auto_run` 时，沙箱内命令不问就跑，而沙箱允许写项目根；今天的政策是**不 hold**。两种选项：(a) 维持——hold 只对用户明确放弃审批（`allow:` 里的工具授权）的会话，沙箱被视为替代审批的边界；(b) 改成 hold——「不问就能写项目根」就算免审，`Hold` 再加上「`shell` 已沙箱化」，代价是默认配置（`sandbox: auto`）的会话都会 hold。
 2. **路径偏离研究稿。** `<bundle>/sock` 是链接，不是 socket 本体（§2.1）。外部工具照研究稿去连 `<bundle>/sock` 仍然能用（connect 跟随链接）——除非链接路径本身超过 104 字节，那时要 `realpath` 一下再连。
 3. **MCP 工具不需要审批**（`Dispatcher::requires_approval` 默认 false，MCP manager 不覆盖它），也不 `waives_approval`，所以接了能写东西的 MCP server 的会话不 hold。
 4. **重复归 `flooded`。** 也可以说重复是 `refused`。

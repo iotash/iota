@@ -17,7 +17,7 @@
 #
 # There is no `/quit` command: the exit is Ctrl+C at idle, twice (scenario 05), and
 # `Jobs::kill_all` runs on the way out (`repl/run.rs`). The agent runs `shell` with the sandbox
-# off and `auto_run: true`, so no approval prompt sits between the call and the job.
+# off and `allow: [shell]`, so no approval prompt sits between the call and the job.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
 
@@ -29,7 +29,8 @@ agents:
   default:
     model: m
     choices: [m, \"mock:*\"]
-    tools: {shell: {sandbox: off, auto_run: true}}"
+    tools: {shell: {sandbox: off}}
+    allow: [shell]"
 export CONFIG_BODY
 
 # start_job <n> <cmd> — one `run:` turn: the call goes out, the receipt names job b<n>, the turn ends.
