@@ -971,18 +971,40 @@ impl Manager {
     }
 
     /// The servers called `name` that are connected now: each one's identity in a grant, whether it is
-    /// `auto_run`, and its raw tool names — what `/allow <server>:<tool>` resolves against. More than one only
-    /// for `--mcp` servers sharing an `argv[0]` (or one beside an entry of that name).
+    /// `auto_run`, and its tools — raw name and description, in the server's order — what `/allow
+    /// <server>:<tool>` resolves against and its completion rows show. More than one only for `--mcp` servers
+    /// sharing an `argv[0]` (or one beside an entry of that name).
     pub fn connected_named(&self, name: &str) -> Vec<ConnectedServer> {
         let st = read(&self.state);
         st.servers
             .iter()
             .zip(&self.configs)
-            .filter(|(status, cfg)| status.connected() && cfg.name == name)
-            .map(|(status, cfg)| ConnectedServer {
-                id: server_id(cfg),
-                auto_run: cfg.auto_run,
-                tools: status.tools.clone(),
+            .enumerate()
+            .filter(|(_, (status, cfg))| status.connected() && cfg.name == name)
+            .map(|(i, (status, cfg))| {
+                // The descriptions are the merged definitions' (a duplicate the merge skipped has none).
+                let described: HashMap<&str, &str> = st
+                    .tools
+                    .iter()
+                    .filter_map(|td| {
+                        let t = st.tool_index.get(&td.name)?;
+                        (t.config == i).then_some((t.raw.as_str(), td.description.as_str()))
+                    })
+                    .collect();
+                ConnectedServer {
+                    id: server_id(cfg),
+                    auto_run: cfg.auto_run,
+                    tools: status
+                        .tools
+                        .iter()
+                        .map(|raw| ConnectedTool {
+                            name: raw.clone(),
+                            description: described
+                                .get(raw.as_str())
+                                .map_or_else(String::new, |d| (*d).to_owned()),
+                        })
+                        .collect(),
+                }
             })
             .collect()
     }
@@ -1007,8 +1029,17 @@ pub struct ConnectedServer {
     pub id: ServerId,
     /// Whether its tools already run without asking.
     pub auto_run: bool,
-    /// Its raw tool names.
-    pub tools: Vec<String>,
+    /// Its tools, in the server's order.
+    pub tools: Vec<ConnectedTool>,
+}
+
+/// One tool of a [`ConnectedServer`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectedTool {
+    /// Its raw (un-namespaced) name.
+    pub name: String,
+    /// Its description, as the server wrote it.
+    pub description: String,
 }
 
 /// A server's identity in a grant: an entry's CONFIGURED name, or a `--mcp` server's whole flag value — never
@@ -1366,7 +1397,8 @@ mod tests {
             let found = m.connected_named("npx");
             assert_eq!(found.len(), 1);
             assert_eq!(found[0].id, ServerId::Flag(spec.to_owned()));
-            assert_eq!(found[0].tools, ["push", "pull"]);
+            let names: Vec<&str> = found[0].tools.iter().map(|t| t.name.as_str()).collect();
+            assert_eq!(names, ["push", "pull"]);
         }
     }
 

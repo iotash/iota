@@ -23,7 +23,7 @@ use crate::mcp::config::AuthMode;
 use crate::mcp::{Manager, ServerDetail, ServerState, ServerStatus};
 use crate::repl::render::styles::{bold, dim, green, red, yellow};
 use crate::repl::render::transcript::Transcript;
-use crate::repl::run::Repl;
+use crate::repl::run::{AllowRows, Repl};
 use crate::sync::lock;
 use crate::text::human_duration;
 use crate::tool::Dispatcher;
@@ -399,13 +399,15 @@ pub(crate) fn page_prompt(can_reconnect: bool, reconnect: Option<&Reconnect>) ->
 
 /// Reconnects server `i` in the background — the page stays open and shows it — and records the outcome,
 /// in the transcript too: `MCP <name> reconnected · N tools`, or the startup notice's own line
-/// (`⚠ MCP <name>: <summary> · details in /tools`). A reconnect already running is left to finish.
+/// (`⚠ MCP <name>: <summary> · details in /tools`). A reconnect already running is left to finish. Its end is
+/// a server's status resolving: `rows` re-issues the `/allow` rows (docs/design/allow-completion.md §7).
 fn start_reconnect(
     manager: &Arc<Manager>,
     servers: &[ServerStatus],
     i: usize,
     reconnects: &Reconnects,
     tr: &Arc<Transcript>,
+    rows: AllowRows,
 ) {
     let Some(name) = servers.get(i).map(|s| s.name.clone()) else {
         return;
@@ -441,6 +443,7 @@ fn start_reconnect(
             }
             None => Reconnect::Failed(format!("no MCP server named {name:?} in this run")),
         };
+        rows.issue();
         lock(&reconnects).insert(i, outcome);
     });
 }
@@ -539,7 +542,14 @@ pub(crate) async fn cmd_tools(repl: &Repl) {
             };
             match (r.cancelled, source, &manager) {
                 (false, Source::Server(i), Some(manager)) => {
-                    start_reconnect(manager, &snapshot(), i, &reconnects, &repl.handles.tr);
+                    start_reconnect(
+                        manager,
+                        &snapshot(),
+                        i,
+                        &reconnects,
+                        &repl.handles.tr,
+                        repl.allow_rows(),
+                    );
                 }
                 _ => break,
             }

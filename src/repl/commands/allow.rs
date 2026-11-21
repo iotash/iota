@@ -32,7 +32,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::app::{fs, paths, protected};
-use crate::mcp::Manager;
+use crate::mcp::{ConnectedServer, Manager};
 use crate::repl::grants::{Door, Footing, Unsaved, label, unsaved_session};
 use crate::repl::run::Repl;
 use crate::session::SessionError;
@@ -290,37 +290,148 @@ fn asking(tools: &dyn Dispatcher) -> Vec<String> {
 /// dispatcher's order: its row (`/allow <tool>`, a session grant) unless a grant at either level already
 /// covers it — [`grant_tool`]'s refusal — then, in a run with a project, its scope row (`/allow <tool>
 /// project`, waiting behind `/allow <tool> `) unless the project level holds it. A session grant removes the
-/// tool's row and keeps its scope row. The rows decide nothing: a submitted row is parsed like a typed line,
-/// and one that outlived its truth is refused there.
-pub(crate) fn grantable(door: &Door, tools: &dyn Dispatcher) -> Vec<Suggestion> {
-    let project = door
-        .project
-        .is_some()
-        .then(|| (door.grants.snapshot(Level::Project), shown_root(door)));
-    let mut rows = Vec::new();
+/// tool's row and keeps its scope row. Then each server of `servers` that `/allow` would take ([`server_rows`]),
+/// in config order. The rows decide nothing: a submitted row is parsed like a typed line, and one that
+/// outlived its truth is refused there.
+pub(crate) fn grantable(
+    door: &Door,
+    tools: &dyn Dispatcher,
+    servers: Option<&Manager>,
+) -> Vec<Suggestion> {
+    let rows = Rows {
+        door,
+        project: door
+            .project
+            .is_some()
+            .then(|| (door.grants.snapshot(Level::Project), shown_root(door))),
+    };
+    let mut out = Vec::new();
     for name in asking(tools) {
-        let key = ToolKey::Builtin(name.clone());
-        let line = format!("/allow {name}");
-        if !door.grants.allows(&key) {
-            rows.push(Suggestion {
-                value: line.clone(),
-                label: name.clone(),
-                desc: "stop asking before it runs".to_owned(),
-                after: Some("/allow ".to_owned()),
+        rows.target(
+            &mut out,
+            &ToolKey::Builtin(name.clone()),
+            &format!("/allow {name}"),
+            &name,
+            "stop asking before it runs".to_owned(),
+            "/allow ",
+        );
+    }
+    if let Some(m) = servers {
+        for name in m.connected_names() {
+            if let [one] = m.connected_named(&name).as_slice() {
+                out.extend(rows.server(&name, one));
+            }
+        }
+    }
+    out
+}
+
+/// What every row of [`grantable`] is computed against: the door, and — in a run with a project — the
+/// project level's grants and the root its scope rows name.
+struct Rows<'a> {
+    door: &'a Door,
+    project: Option<(grants::GrantSet, String)>,
+}
+
+impl Rows<'_> {
+    /// The rows of one target, the line `line` granting `key`: its own row (labelled `label`, offered behind
+    /// `after`) unless a grant at either level covers it, then its scope row unless the project level does.
+    /// Whether its own row is there.
+    fn target(
+        &self,
+        out: &mut Vec<Suggestion>,
+        key: &ToolKey,
+        line: &str,
+        label: &str,
+        desc: String,
+        after: &str,
+    ) -> bool {
+        let own = !self.door.grants.allows(key);
+        if own {
+            out.push(Suggestion {
+                value: line.to_owned(),
+                label: label.to_owned(),
+                desc,
+                after: Some(after.to_owned()),
             });
         }
-        if let Some((held, root)) = &project
-            && !held.allows(&key)
+        if let Some((held, root)) = &self.project
+            && !held.allows(key)
         {
-            rows.push(Suggestion {
+            out.push(Suggestion {
                 value: format!("{line} {PROJECT}"),
                 label: PROJECT.to_owned(),
                 desc: format!("for this project ({root}), in every session"),
                 after: Some(format!("{line} ")),
             });
         }
+        own
     }
-    rows
+
+    /// The rows of the connected server `name` — one server under that name, as `/allow` requires: none when
+    /// it is `auto_run` (its tools never ask) or its name cannot be typed back ([`typable`]). Its `*` row and
+    /// then a row per tool that can be ([`typable`]), in the server's order, each followed by its scope row,
+    /// all waiting behind `/allow <name>:`; and first the server's own row, the prefix, when any `*` or tool
+    /// row is there to reach.
+    fn server(&self, name: &str, server: &ConnectedServer) -> Vec<Suggestion> {
+        if server.auto_run || !typable(name) {
+            return Vec::new();
+        }
+        let prefix = format!("/allow {name}:");
+        let key = |tool| ToolKey::Mcp {
+            server: server.id.clone(),
+            tool,
+        };
+        let mut children = Vec::new();
+        let any = self.target(
+            &mut children,
+            &key(McpTool::Any),
+            &format!("{prefix}*"),
+            "*",
+            format!("every tool of {name}, those it exposes later included"),
+            &prefix,
+        );
+        let mut count = 0;
+        for tool in server.tools.iter().filter(|t| typable(&t.name)) {
+            count += usize::from(self.target(
+                &mut children,
+                &key(McpTool::Named(tool.name.clone())),
+                &format!("{prefix}{}", tool.name),
+                &tool.name,
+                cleaned(&tool.description),
+                &prefix,
+            ));
+        }
+        if !any && count == 0 {
+            return children;
+        }
+        let mut rows = vec![Suggestion {
+            value: prefix.clone(),
+            label: format!("{name}:"),
+            desc: format!(
+                "MCP server · {count} tool{}",
+                if count == 1 { "" } else { "s" }
+            ),
+            after: Some("/allow ".to_owned()),
+        }];
+        rows.extend(children);
+        rows
+    }
+}
+
+/// Whether a server's or a tool's name can be a completed line the parse reads back: not empty, and no
+/// whitespace or control character in it. One that cannot gets no row; it stays grantable from the dialog.
+fn typable(name: &str) -> bool {
+    !name.is_empty() && !name.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Server-written text as a row may show it: its ANSI sequences stripped and every other control character
+/// dropped (the list draws its rows raw); whitespace stays, for the list to flatten.
+fn cleaned(text: &str) -> String {
+    crate::text::ansi::strip_ansi(text)
+        .chars()
+        .filter(|c| c.is_whitespace() || !c.is_control())
+        .collect()
 }
 
 /// Grants the built-in tool `name` at `level`: the notice line, or why not — an unknown name, or a tool that
@@ -468,7 +579,7 @@ fn allow_tool(
     }
     let tool = McpTool::parse(tool);
     if let McpTool::Named(t) = &tool
-        && !target.tools.contains(t)
+        && !target.tools.iter().any(|known| known.name == *t)
     {
         return Err(format!("server \"{server}\" has no tool \"{t}\""));
     }
@@ -726,6 +837,8 @@ mod tests {
         home: Option<PathBuf>,
         /// Whether the agent has a workspace (`mode: agent`): [`Self::new`]'s does.
         workspace: bool,
+        /// The run's MCP servers: none unless a test gives some ([`Self::with_servers`]).
+        servers: Option<Arc<crate::mcp::Manager>>,
     }
 
     impl Chat {
@@ -754,7 +867,14 @@ mod tests {
                 tools: tools(),
                 home: None,
                 workspace: true,
+                servers: None,
             }
+        }
+
+        /// The same chat with the MCP servers `servers`.
+        fn with_servers(mut self, servers: Arc<crate::mcp::Manager>) -> Self {
+            self.servers = Some(servers);
+            self
         }
 
         /// The same chat with no project, as assembly leaves a run that has none: `workspace` false is a
@@ -775,14 +895,14 @@ mod tests {
             self.door.project.as_ref().expect("a project")
         }
 
-        /// `/allow` in a run with no MCP server and the built-ins of [`tools`].
+        /// `/allow` in a run with the chat's MCP servers and the built-ins of [`tools`].
         fn allow(&self, arg: &str) -> Result<String, String> {
             super::allow(
                 &self.door,
                 &self.footing,
                 self.home.as_deref(),
                 self.workspace,
-                None,
+                self.servers.as_deref(),
                 &self.tools,
                 arg,
             )
@@ -1392,7 +1512,7 @@ mod tests {
 
     /// The rows as `(value, label, desc, after)`.
     fn rows_of(c: &Chat) -> Vec<(String, String, String, String)> {
-        super::grantable(&c.door, &c.tools)
+        super::grantable(&c.door, &c.tools, c.servers.as_deref())
             .into_iter()
             .map(|r| (r.value, r.label, r.desc, r.after.unwrap_or_default()))
             .collect()
@@ -1474,5 +1594,209 @@ mod tests {
         );
         c.allow("shell project").unwrap();
         assert_eq!(rows_of(&c), builtin_rows("write_file", &root, true));
+    }
+
+    /// An `mcp_servers:` entry `name`, `auto_run` as given.
+    fn entry(name: &str, auto_run: bool) -> crate::mcp::config::ServerConfig {
+        crate::mcp::config::ServerConfig {
+            name: name.to_owned(),
+            command: format!("{name}-bin"),
+            auto_run,
+            ..crate::mcp::config::ServerConfig::default()
+        }
+    }
+
+    /// The labels of the rows the list offers for `line`.
+    fn offered(c: &Chat, line: &str) -> Vec<String> {
+        let rows = super::grantable(&c.door, &c.tools, c.servers.as_deref());
+        crate::ui::input::suggest::match_suggestions(&rows, line)
+            .into_iter()
+            .map(|r| r.label.clone())
+            .collect()
+    }
+
+    /// A connected server is one row on level 1, after the built-ins, in config order — `gh:`, its value the
+    /// prefix, its count its tool rows; behind `/allow gh:` wait `*` first, then its tools in the server's order,
+    /// each with its own description, each followed by its scope row behind `/allow gh:<tool> `. Every row but
+    /// the server's, submitted, grants; a session `*` takes every row of the server away but the scope rows,
+    /// and with them the server's own row.
+    #[test]
+    fn a_servers_rows_wait_behind_its_prefix() {
+        let chat = || {
+            let (t, root, _out) = fixture();
+            let m = crate::mcp::testutil::serving(vec![
+                (
+                    entry("gh", false),
+                    &[("create_issue", "Opens an issue"), ("search", "Finds code")],
+                ),
+                (entry("lin", false), &[("list", "")]),
+            ]);
+            let c = Chat::new(&t, &root, &[], &[]).with_servers(m);
+            (t, root, c)
+        };
+        let (_t, root, c) = chat();
+        let project = |line: &str| {
+            (
+                format!("{line} project"),
+                "project".to_owned(),
+                format!("for this project ({}), in every session", root.display()),
+                format!("{line} "),
+            )
+        };
+        let row = |value: &str, label: &str, desc: &str, after: &str| {
+            (
+                value.to_owned(),
+                label.to_owned(),
+                desc.to_owned(),
+                after.to_owned(),
+            )
+        };
+        let gh = [
+            row("/allow gh:", "gh:", "MCP server · 2 tools", "/allow "),
+            row(
+                "/allow gh:*",
+                "*",
+                "every tool of gh, those it exposes later included",
+                "/allow gh:",
+            ),
+            project("/allow gh:*"),
+            row(
+                "/allow gh:create_issue",
+                "create_issue",
+                "Opens an issue",
+                "/allow gh:",
+            ),
+            project("/allow gh:create_issue"),
+            row("/allow gh:search", "search", "Finds code", "/allow gh:"),
+            project("/allow gh:search"),
+        ];
+        let lin = [
+            row("/allow lin:", "lin:", "MCP server · 1 tool", "/allow "),
+            row(
+                "/allow lin:*",
+                "*",
+                "every tool of lin, those it exposes later included",
+                "/allow lin:",
+            ),
+            project("/allow lin:*"),
+            row("/allow lin:list", "list", "", "/allow lin:"),
+            project("/allow lin:list"),
+        ];
+        let builtins = [
+            builtin_rows("shell", &root, true),
+            builtin_rows("write_file", &root, true),
+        ]
+        .concat();
+        assert_eq!(rows_of(&c), [builtins, gh.to_vec(), lin.to_vec()].concat());
+
+        // The levels, as the list filters them (docs/design/allow-completion.md §4.3).
+        assert_eq!(
+            offered(&c, "/allow "),
+            ["shell", "write_file", "gh:", "lin:"]
+        );
+        assert_eq!(offered(&c, "/allow g"), ["gh:"]);
+        assert_eq!(
+            offered(&c, "/allow gh:"),
+            ["gh:", "*", "create_issue", "search"]
+        );
+        assert_eq!(offered(&c, "/allow gh:s"), ["search"]);
+        assert_eq!(offered(&c, "/allow gh:search "), ["project"]);
+
+        // Every row under a server is a line that grants now; the server's own is their prefix, not a line.
+        for (value, ..) in gh.iter().skip(1).chain(&lin[1..]) {
+            let (_t, _root, c) = chat();
+            let arg = value.strip_prefix("/allow ").unwrap();
+            assert!(c.allow(arg).is_ok(), "{value} did not grant");
+        }
+        assert!(c.allow("gh:").is_err(), "the prefix grants nothing");
+
+        let (t, root, _out) = fixture();
+        let m = crate::mcp::testutil::serving(vec![(entry("gh", false), &[("search", "")])]);
+        let c = Chat::new(&t, &root, &[], &[]).with_servers(m);
+        c.allow("gh:*").unwrap();
+        let values: Vec<String> = rows_of(&c).into_iter().map(|r| r.0).collect();
+        assert_eq!(
+            values,
+            [
+                "/allow shell",
+                "/allow shell project",
+                "/allow write_file",
+                "/allow write_file project",
+                "/allow gh:* project",
+                "/allow gh:search project",
+            ]
+        );
+    }
+
+    /// The command's own refusals are the rows' absences: an `auto_run` server's tools never ask, and a name two
+    /// connected servers share identifies neither — both have no row at all, while the server beside them keeps
+    /// its own.
+    #[test]
+    fn an_auto_run_or_ambiguous_server_has_no_rows() {
+        let (t, root, _out) = fixture();
+        let flag = |spec: &str| crate::mcp::config::parse_mcp_flag(spec).expect("flag");
+        let m = crate::mcp::testutil::serving(vec![
+            (entry("auto", true), &[("push", "")]),
+            (flag("npx -y @acme/mcp"), &[("push", "")]),
+            (flag("npx -y @other/mcp"), &[("pull", "")]),
+            (entry("gh", false), &[("search", "")]),
+        ]);
+        let c = Chat::new(&t, &root, &[], &[])
+            .without_project(false, None)
+            .with_servers(m);
+        assert!(c.allow("auto:push").is_err());
+        assert!(c.allow("npx:push").is_err());
+        let values: Vec<String> = rows_of(&c).into_iter().map(|r| r.0).collect();
+        assert_eq!(
+            values,
+            [
+                "/allow shell",
+                "/allow write_file",
+                "/allow gh:",
+                "/allow gh:*",
+                "/allow gh:search",
+            ]
+        );
+    }
+
+    /// A tool's description is server-written: its ANSI sequences and other control characters never reach the
+    /// list, its whitespace does (the list flattens it). A tool or a server whose NAME holds whitespace or a
+    /// control character could not be typed back, so it has no row — the server's count says so too.
+    #[test]
+    fn a_servers_text_is_cleaned_before_it_is_a_row() {
+        let (t, root, _out) = fixture();
+        let m = crate::mcp::testutil::serving(vec![
+            (
+                entry("gh", false),
+                &[
+                    ("search", "\x1b[31mFinds\x1b[0m code\x07\nfast"),
+                    ("two words", "x"),
+                    ("bell\x07", "x"),
+                ],
+            ),
+            (entry("my server", false), &[("push", "")]),
+        ]);
+        let c = Chat::new(&t, &root, &[], &[])
+            .without_project(false, None)
+            .with_servers(m);
+        assert_eq!(
+            rows_of(&c)
+                .into_iter()
+                .filter(|r| r.0.starts_with("/allow gh"))
+                .map(|r| (r.1, r.2))
+                .collect::<Vec<_>>(),
+            [
+                ("gh:".to_owned(), "MCP server · 1 tool".to_owned()),
+                (
+                    "*".to_owned(),
+                    "every tool of gh, those it exposes later included".to_owned()
+                ),
+                ("search".to_owned(), "Finds code\nfast".to_owned()),
+            ]
+        );
+        assert!(
+            !rows_of(&c).iter().any(|r| r.0.contains("my server")),
+            "a name with a space has no row"
+        );
     }
 }

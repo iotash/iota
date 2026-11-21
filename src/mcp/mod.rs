@@ -14,8 +14,9 @@ pub(crate) mod schema;
 pub(crate) mod transport;
 
 pub use manager::{
-    ConnectedServer, DEFAULT_CALL_TIMEOUT, DEFAULT_CONNECT_TIMEOUT, DEFAULT_STDERR_CAP, Manager,
-    ManagerOptions, WIRE_NAME_MAX_LEN, sanitize_name_segment, server_id, wire_tool_name,
+    ConnectedServer, ConnectedTool, DEFAULT_CALL_TIMEOUT, DEFAULT_CONNECT_TIMEOUT,
+    DEFAULT_STDERR_CAP, Manager, ManagerOptions, WIRE_NAME_MAX_LEN, sanitize_name_segment,
+    server_id, wire_tool_name,
 };
 pub(crate) use manager::{ServerDetail, ServerState, ServerStatus};
 
@@ -189,6 +190,49 @@ pub(crate) mod testutil {
             },
         );
         (m, session)
+    }
+
+    /// A manager over `servers` (in config order), each already connected to a [`CountingSession`] serving the
+    /// tools given as `(raw name, description)`, in a run with a project.
+    pub(crate) fn serving(
+        servers: Vec<(crate::mcp::config::ServerConfig, &[(&str, &str)])>,
+    ) -> Arc<crate::mcp::Manager> {
+        use crate::mcp::manager::{Manager, ServerResult, ServerStatus};
+        use crate::provider::model::ToolDef;
+
+        let (configs, tools): (Vec<_>, Vec<_>) = servers.into_iter().unzip();
+        let names: Vec<String> = configs.iter().map(|c| c.name.clone()).collect();
+        let m = Manager::new(
+            configs,
+            ManagerOptions {
+                project: true,
+                ..options()
+            },
+        );
+        for (i, (name, tools)) in names.into_iter().zip(tools).enumerate() {
+            let tools: Vec<ToolDef> = tools
+                .iter()
+                .map(|(name, description)| ToolDef {
+                    name: (*name).to_owned(),
+                    description: (*description).to_owned(),
+                    ..ToolDef::default()
+                })
+                .collect();
+            m.merge_result(
+                i,
+                ServerResult::Connected {
+                    status: ServerStatus {
+                        name,
+                        tool_count: tools.len(),
+                        tools: tools.iter().map(|t| t.name.clone()).collect(),
+                        ..ServerStatus::default()
+                    },
+                    session: Arc::new(CountingSession::default()) as Arc<dyn Session>,
+                    tools,
+                },
+            );
+        }
+        m
     }
 
     /// An in-memory `Session` with no transport at all: every call answers `"<id>:<raw name>"` and `close` is a

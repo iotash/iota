@@ -780,7 +780,13 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     }
 
     if let Some(events) = repl.handles.mcp.events.take() {
-        tokio::spawn(report_mcp_failures(events, Arc::clone(&tr), ui.done()));
+        let rows = repl.allow_rows();
+        tokio::spawn(report_mcp_failures(
+            events,
+            Arc::clone(&tr),
+            ui.done(),
+            move || rows.issue(),
+        ));
     }
 
     // ---- pre-loop interactions, INSIDE the facade (chat/run.go:349-371) ----
@@ -1306,14 +1312,47 @@ async fn admit_held_message(repl: &Repl, headline: &str) -> bool {
     read
 }
 
-impl Repl {
-    /// Recomputes the `/allow` completion rows ([`allow::grantable`]) and re-issues the command table when they
-    /// changed (docs/design/allow-completion.md §7): per prompt, not per key.
-    fn issue_allow_rows(&self) {
-        let rows = allow::grantable(&self.door(), &*self.conv.dispatch);
-        let mut table = lock(&self.handles.table);
+/// The `/allow` completion rows' issuer (docs/design/allow-completion.md §7): everything [`allow::grantable`]
+/// reads, and the table it goes out with. Its three moments: the chat's start and every return to the prompt
+/// (the loop), and a server's status resolving — a background connect finishing or a server going down (the MCP
+/// reporter's drain), a `/tools` reconnect ending.
+#[derive(Clone)]
+pub(crate) struct AllowRows {
+    door: crate::repl::grants::Door,
+    dispatch: Arc<dyn crate::tool::Dispatcher>,
+    servers: Option<Arc<crate::mcp::Manager>>,
+    table: Arc<Mutex<CommandTable>>,
+    ui: Arc<dyn crate::ui::facade::Ui>,
+}
+
+impl AllowRows {
+    /// Recomputes the rows and re-issues the table when they changed. Both under the table's lock, so two
+    /// tasks issuing at once cannot leave the older rows standing.
+    pub(crate) fn issue(&self) {
+        let mut table = lock(&self.table);
+        let rows = allow::grantable(&self.door, &*self.dispatch, self.servers.as_deref());
         if table.set_allow(rows) {
-            self.handles.ui.set_slash_commands(table.active());
+            self.ui.set_slash_commands(table.active());
+        }
+    }
+}
+
+impl Repl {
+    /// Recomputes the `/allow` completion rows and re-issues the command table when they changed
+    /// (docs/design/allow-completion.md §7): per prompt, not per key.
+    fn issue_allow_rows(&self) {
+        self.allow_rows().issue();
+    }
+
+    /// What recomputes the `/allow` rows from outside the loop: the MCP reporter and a `/tools` reconnect, when a
+    /// server's status resolves.
+    pub(crate) fn allow_rows(&self) -> AllowRows {
+        AllowRows {
+            door: self.door(),
+            dispatch: Arc::clone(&self.conv.dispatch),
+            servers: self.handles.mcp.manager.clone(),
+            table: Arc::clone(&self.handles.table),
+            ui: Arc::clone(&self.handles.ui),
         }
     }
 

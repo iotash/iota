@@ -3919,6 +3919,84 @@ fn sh_entry(name: &str, script: &str, auto_run: bool) -> iota::mcp::config::Serv
     }
 }
 
+/// The `/allow` rows arrive when a server connects (docs/design/allow-completion.md §7): the chat starts with
+/// the server still connecting, so the start issues nothing; the connect finishes while the chat sits at the
+/// prompt, and the MCP reporter re-issues the table with the server's rows — no return to the prompt needed.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_allow_rows_arrive_when_a_server_connects() {
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+
+    let (t, root, _out) = allow_fixture();
+    // The server answers nothing until the chat is at its prompt and the test lets it.
+    let go = t.path().join("go");
+    let script = format!(
+        "while [ ! -f '{}' ]; do sleep 0.05; done\n{SH_SERVER}",
+        go.display()
+    );
+    let manager = iota::mcp::Manager::new(
+        vec![sh_entry("gh", &script, false)],
+        iota::mcp::ManagerOptions::new(reqwest::Client::new(), iota::app::env::Env::default()),
+    );
+    let mut statuses = manager.connect_background(&CancellationToken::new());
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    tokio::spawn(async move {
+        while let Some(st) = statuses.recv().await {
+            let event = McpEvent {
+                name: st.name.clone(),
+                error: st.error().map(str::to_owned),
+                warnings: Vec::new(),
+            };
+            if tx.send(event).await.is_err() {
+                return;
+            }
+        }
+    });
+
+    let ui: Arc<OnceLock<Arc<ScriptedUi>>> = Arc::default();
+    let at_prompt = {
+        let ui = Arc::clone(&ui);
+        Reply::Pause(Arc::new(move || {
+            std::fs::write(&go, "").expect("let the server answer");
+            let ui = ui.get().expect("the ui");
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !allow_rows(ui).concat().iter().any(|r| r == "/allow gh:") {
+                assert!(Instant::now() < deadline, "the server's rows never arrived");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }))
+    };
+    let f = Fixture::new(vec![at_prompt, Reply::Interrupted]);
+    ui.set(Arc::clone(&f.ui)).ok().expect("set once");
+    let grants = Arc::new(iota::tool::grants::Grants::default());
+    let mut params = allow_params(&f, &root, &grants);
+    let snapshot = Arc::clone(&manager);
+    params.mcp = McpHooks {
+        servers: Some(Arc::new(move || snapshot.servers())),
+        events: Some(rx),
+        manager: Some(Arc::clone(&manager)),
+    };
+    iota::repl::run(params).await.expect("clean exit");
+
+    let rows = |r: &[&str]| r.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+    assert_eq!(
+        allow_rows(&f.ui),
+        [
+            // The table as first issued; the start has no rows to add (no built-in asks, gh is connecting).
+            rows(&[]),
+            // The connect finished at the prompt.
+            rows(&[
+                "/allow gh:",
+                "/allow gh:*",
+                "/allow gh:* project",
+                "/allow gh:echo",
+                "/allow gh:echo project",
+            ]),
+        ]
+    );
+}
+
 /// `/allow gh:*` grants every tool of the server by its configured name — the tools it lists, and one it
 /// starts exposing later — so a call of any of them is no longer gated; a tool it covers is then refused as
 /// already allowed. `project` writes the wildcard to the project's file; the `Grants` tab names both levels;

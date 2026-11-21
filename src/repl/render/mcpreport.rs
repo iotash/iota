@@ -18,16 +18,20 @@ use crate::repl::run::McpEvent;
 /// Drains `events` into `tr` until the channel closes or `done` fires (the UI loop thread
 /// exited). Only the error's summary — its first line, which says what happened and what to do
 /// (`crate::mcp::explain`) — is shown: a stack of transport detail in the chat area buries the
-/// conversation. When there IS detail, the line says where it is: the server's page in `/tools`.
+/// conversation. When there IS detail, the line says where it is: the server's page in `/tools`. Every event
+/// is a server's status resolving — connected, failed, gone down — and `resolved` runs first, for what follows
+/// the live server set (the `/allow` rows, docs/design/allow-completion.md §7).
 pub(crate) async fn report_mcp_failures(
     mut events: Receiver<McpEvent>,
     tr: Arc<Transcript>,
     done: CancellationToken,
+    resolved: impl Fn(),
 ) {
     loop {
         tokio::select! {
             ev = events.recv() => {
                 let Some(ev) = ev else { return };
+                resolved();
                 for warning in &ev.warnings {
                     tr.notice(&format!("⚠ MCP {}: {warning}", ev.name));
                 }
