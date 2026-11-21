@@ -274,8 +274,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::{
-        PROBE_QUERY, ProgramStatus, STATUS_SESSION, accepts, answer, for_terminal, remembered,
-        report, unless_nested,
+        PROBE_QUERY, ProgramStatus, STATUS_SESSION, accepts, for_terminal, remembered, report,
+        unless_nested,
     };
     use crate::app::env::Env;
     use crate::host::{Host, State};
@@ -387,6 +387,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_probe_over_a_socket_pair() {
+        use super::answer;
         use crate::ui::runtime::osc::{REPLY_TIMEOUT, exchange};
         use std::io::{Read as _, Write as _};
         use std::time::{Duration, Instant};

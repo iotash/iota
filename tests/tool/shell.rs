@@ -33,6 +33,7 @@ use iota::tool::builtins::shell::{
     sandbox_desc,
 };
 use iota::tool::context::RunCtx;
+#[cfg(unix)]
 use iota::tool::grants::{GrantSet, Grants, Level};
 use iota::tool::sets::{RawNode, SetError, ToolsConfig};
 use iota::tool::{Dispatcher, Tool, ToolEnv};
@@ -1388,6 +1389,7 @@ async fn a_write_root_that_is_a_repository_keeps_its_hooks_and_config() {
 /// A sandboxed `shell` assembled ONCE over a temp project whose store is the returned one, and `out`: a real
 /// directory beside the project, under the target dir (`/tmp` and the system temp dir are writable in the
 /// sandbox whatever is granted, so a write there would prove nothing). `None`: no sandbox here to test.
+#[cfg(unix)]
 async fn granted_shell(
     test: &str,
 ) -> Option<(TempDir, TempDir, PathBuf, Arc<Grants>, Arc<dyn Tool>)> {

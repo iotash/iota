@@ -1636,20 +1636,22 @@ async fn cli_children_carry_the_status_session() {
     );
     assert_ne!(recording, SH_SERVER_RECORDING_ENV, "the server records");
     fs::write(&script, recording).expect("write the server script");
+    let session = nix::unistd::getsid(None).expect("getsid");
+    // An id inherited from another session is replaced by this run's own: the sentinel is derived from the
+    // run's session so it never equals it (a runner's session may be 1), or replaced and kept look alike.
+    let sentinel = session.as_raw() + 1;
+    assert_ne!(sentinel, session.as_raw());
     let mut cmd = iota(dir.path(), &home);
-    // An id inherited from another session is replaced by this run's own.
     cmd.args([
         "-m",
         "go",
         "--mcp",
         &format!("sh {} {}", script.display(), mcp_seen.display()),
     ])
-    .env("IOTA_STATUS_SESSION", "1");
+    .env("IOTA_STATUS_SESSION", sentinel.to_string());
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
     assert_eq!(out(&o), "ran.\n");
-    let session = nix::unistd::getsid(None).expect("getsid");
-    assert_ne!(session.as_raw(), 1);
     for (child, seen) in [
         ("the shell call", &shell_seen),
         ("the MCP server", &mcp_seen),

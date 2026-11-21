@@ -193,7 +193,8 @@ pub(crate) mod testutil {
     }
 
     /// A manager over `servers` (in config order), each already connected to a [`CountingSession`] serving the
-    /// tools given as `(raw name, description)`, in a run with a project.
+    /// tools given as `(raw name, description)`, in a run with a project. Its callers (`/allow`'s rows) are unix-only.
+    #[cfg(unix)]
     pub(crate) fn serving(
         servers: Vec<(crate::mcp::config::ServerConfig, &[(&str, &str)])>,
     ) -> Arc<crate::mcp::Manager> {
