@@ -7,8 +7,11 @@ use iota::headless::batch::{parallel_run, run_batch};
 use iota::headless::{QuietHost, TurnParams, execute_with_tools};
 use iota::provider::RoundResult;
 use iota::provider::model::{Message, Role};
-use iota::testing::{FakeProvider, NoCapDispatch, ParallelDispatch, tool_call, tool_call_with};
+use iota::testing::{
+    FakeProvider, NoCapDispatch, ParallelDispatch, StaticDispatcher, tool_call, tool_call_with,
+};
 use iota::tool::context::RunCtx;
+use iota::tool::grants::{Grants, Level, ToolKey};
 use tokio_util::sync::CancellationToken;
 
 #[test]
@@ -32,7 +35,7 @@ fn a_parallel_run_ends_at_the_first_serial_call() {
         (6, 6), // past the end
     ] {
         assert_eq!(
-            parallel_run(&d, &calls, from),
+            parallel_run(&d, &Grants::default(), &calls, from),
             want,
             "parallel_run(from={from})"
         );
@@ -57,7 +60,7 @@ fn a_parallel_run_splits_calls_to_one_tool_by_their_arguments() {
         (3, 4), // and the search after it batches again
     ] {
         assert_eq!(
-            parallel_run(&d, &calls, from),
+            parallel_run(&d, &Grants::default(), &calls, from),
             want,
             "parallel_run(from={from})"
         );
@@ -69,8 +72,46 @@ fn a_dispatcher_without_the_capability_serializes_every_call() {
     // A dispatcher without the capability serializes everything.
     let plain = NoCapDispatch;
     let calls = [tool_call("1", "read_file"), tool_call("2", "read_file")];
-    assert_eq!(parallel_run(&plain, &calls, 0), 0);
-    assert_eq!(parallel_run(&plain, &calls, 1), 1);
+    assert_eq!(parallel_run(&plain, &Grants::default(), &calls, 0), 0);
+    assert_eq!(parallel_run(&plain, &Grants::default(), &calls, 1), 1);
+}
+
+#[test]
+fn a_call_the_gate_would_ask_never_batches() {
+    // The batch has no approval gate (DIVERGENCES X-05): a parallel-capable call the gate would ask ends the
+    // run before it, and a run of them is a run of serial calls; a tool grant that answers the question lets
+    // it batch again.
+    let d = StaticDispatcher::new(&["read", "sh"])
+        .with_parallel(&["read", "sh"])
+        .with_approval(&["sh"]);
+    let grants = Grants::default();
+    let calls = [
+        tool_call("1", "read"),
+        tool_call("2", "read"),
+        tool_call("3", "sh"),
+        tool_call("4", "sh"),
+        tool_call("5", "read"),
+    ];
+    assert_eq!(
+        parallel_run(&d, &grants, &calls, 0),
+        2,
+        "the asked call ends the run"
+    );
+    assert_eq!(
+        parallel_run(&d, &grants, &calls, 2),
+        2,
+        "an asked call is a run of none"
+    );
+    assert_eq!(parallel_run(&d, &grants, &calls, 3), 3);
+
+    grants.update(Level::Session, |s| {
+        s.add_tool(ToolKey::Builtin("sh".to_owned()))
+    });
+    assert_eq!(
+        parallel_run(&d, &grants, &calls, 0),
+        5,
+        "granted, it runs unasked and batches"
+    );
 }
 
 // The batch core alone; the transcript widget is interactive-only.
