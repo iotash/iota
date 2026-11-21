@@ -321,9 +321,20 @@ is /, the home directory or an ancestor of it, which is never a project`; withou
   A cancel, or a commit with nothing checked, changes nothing.
 - **Who may type it.** The user, at the prompt. A message from the socket never runs a
   slash command (`src/repl/inbound.rs`), and the model has no way to type one.
-- **Table.** One row after `/tools`: `/allow` — `Make a directory writable or stop asking
-  for a tool, or browse and revoke grants`. X-42 kept configuration out of the chat; a
-  grant is not configuration — it is the answer to a question only the chat asks.
+- **Table.** One row after `/tools`: `/allow` — `Stop asking for a tool or make a directory
+  writable (type its path); bare, list and revoke grants`. X-42 kept configuration out of
+  the chat; a grant is not configuration — it is the answer to a question only the chat
+  asks.
+- **Completion** (docs/design/allow-completion.md §3). `/allow ` opens a list of the lines
+  that would grant if submitted now, right after the `/allow` row: one row per built-in
+  tool that asks and is not granted at either level (`shell` — `stop asking before it
+  runs`, a session grant), and after `/allow <tool> ` one `project` row (`for this project
+  (<real root>), in every session`) in a run with a project, unless the project level holds
+  the tool. A tool granted for this session keeps its `project` row. Directories are never
+  rows. The rows are recomputed before every read of the prompt (the first is the chat's
+  start) and the table re-issued when they changed; they decide nothing — a submitted row is
+  parsed like a typed line, and one that outlived its truth is refused by the command's own
+  check.
 - **`/status`** gains one row, present only when something is granted:
   `Grants   2 for this session, 3 for this project (/allow lists them)`.
 - **The model is told through `<environment>`**: its `write roots:` line lists the

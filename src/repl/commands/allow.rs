@@ -22,6 +22,9 @@
 //! file parses and words; every change is kept by the grants service, [`Door::apply`] (`repl::grants`), as the
 //! dialog's and `/save`'s are.
 //!
+//! `/allow ` completes: [`grantable`] is the list of lines that would grant now, issued with the command table
+//! (docs/design/allow-completion.md §3, §7).
+//!
 //! A message from the socket never reaches here: the loop's notice path runs no slash command
 //! (`repl::inbound`), and the model has no way to type one.
 
@@ -36,7 +39,7 @@ use crate::session::SessionError;
 use crate::tool::Dispatcher;
 use crate::tool::builtins::code::offers_root;
 use crate::tool::grants::{self, Grants, Level, McpTool, ServerId, ToolKey};
-use crate::ui::facade::{Panel, TabbedSpec};
+use crate::ui::facade::{Panel, Suggestion, TabbedSpec};
 use crate::ui::render::label::sgr_if;
 
 /// What the user is told when the argument is not something `/allow` takes.
@@ -280,6 +283,44 @@ fn asking(tools: &dyn Dispatcher) -> Vec<String> {
             matches!(tools.grant_key(n), ToolKey::Builtin(_)) && tools.requires_approval(n, None)
         })
         .collect()
+}
+
+/// The completion rows of `/allow ` (docs/design/allow-completion.md §3): one per line that would grant if it
+/// were submitted now, computed with the command's own predicates. Per built-in that asks ([`asking`]), in the
+/// dispatcher's order: its row (`/allow <tool>`, a session grant) unless a grant at either level already
+/// covers it — [`grant_tool`]'s refusal — then, in a run with a project, its scope row (`/allow <tool>
+/// project`, waiting behind `/allow <tool> `) unless the project level holds it. A session grant removes the
+/// tool's row and keeps its scope row. The rows decide nothing: a submitted row is parsed like a typed line,
+/// and one that outlived its truth is refused there.
+pub(crate) fn grantable(door: &Door, tools: &dyn Dispatcher) -> Vec<Suggestion> {
+    let project = door
+        .project
+        .is_some()
+        .then(|| (door.grants.snapshot(Level::Project), shown_root(door)));
+    let mut rows = Vec::new();
+    for name in asking(tools) {
+        let key = ToolKey::Builtin(name.clone());
+        let line = format!("/allow {name}");
+        if !door.grants.allows(&key) {
+            rows.push(Suggestion {
+                value: line.clone(),
+                label: name.clone(),
+                desc: "stop asking before it runs".to_owned(),
+                after: Some("/allow ".to_owned()),
+            });
+        }
+        if let Some((held, root)) = &project
+            && !held.allows(&key)
+        {
+            rows.push(Suggestion {
+                value: format!("{line} {PROJECT}"),
+                label: PROJECT.to_owned(),
+                desc: format!("for this project ({root}), in every session"),
+                after: Some(format!("{line} ")),
+            });
+        }
+    }
+    rows
 }
 
 /// Grants the built-in tool `name` at `level`: the notice line, or why not — an unknown name, or a tool that
@@ -1347,5 +1388,91 @@ mod tests {
                 real("project").display()
             )
         );
+    }
+
+    /// The rows as `(value, label, desc, after)`.
+    fn rows_of(c: &Chat) -> Vec<(String, String, String, String)> {
+        super::grantable(&c.door, &c.tools)
+            .into_iter()
+            .map(|r| (r.value, r.label, r.desc, r.after.unwrap_or_default()))
+            .collect()
+    }
+
+    /// A built-in's row and its scope row, as [`super::grantable`] words them for the project at `root`.
+    fn builtin_rows(
+        name: &str,
+        root: &std::path::Path,
+        own: bool,
+    ) -> Vec<(String, String, String, String)> {
+        let mut rows = Vec::new();
+        if own {
+            rows.push((
+                format!("/allow {name}"),
+                name.to_owned(),
+                "stop asking before it runs".to_owned(),
+                "/allow ".to_owned(),
+            ));
+        }
+        rows.push((
+            format!("/allow {name} project"),
+            "project".to_owned(),
+            format!("for this project ({}), in every session", root.display()),
+            format!("/allow {name} "),
+        ));
+        rows
+    }
+
+    /// `/allow `'s rows are the lines that would grant now: each built-in that asks, in the dispatcher's order,
+    /// then its scope row behind `/allow <tool> ` — a tool that never asks has none. Every row, submitted, grants;
+    /// a project grant takes both of the tool's rows away; a run with no project has no scope rows.
+    #[test]
+    fn the_rows_are_the_lines_that_would_grant() {
+        let (t, root, _out) = fixture();
+        let c = Chat::new(&t, &root, &[], &[]);
+        let all = [
+            builtin_rows("shell", &root, true),
+            builtin_rows("write_file", &root, true),
+        ]
+        .concat();
+        assert_eq!(rows_of(&c), all);
+        // Every row's value is a line `/allow` grants.
+        for (value, ..) in &all {
+            let arg = value.strip_prefix("/allow ").unwrap();
+            assert!(c.allow(arg).is_ok(), "{value} did not grant");
+        }
+        assert!(rows_of(&c).is_empty(), "all granted, nothing left to offer");
+
+        let (t, root, _out) = fixture();
+        let c = Chat::new(&t, &root, &[], &[]);
+        c.allow("shell project").unwrap();
+        assert_eq!(rows_of(&c), builtin_rows("write_file", &root, true));
+
+        let (t, root, _out) = fixture();
+        let c = Chat::new(&t, &root, &[], &[]).without_project(false, None);
+        let values: Vec<String> = rows_of(&c).into_iter().map(|r| r.0).collect();
+        assert_eq!(values, ["/allow shell", "/allow write_file"]);
+    }
+
+    /// A tool granted for this session has no row of its own — that line would be refused — and keeps its
+    /// `project` row, because `/allow shell project` still grants.
+    #[test]
+    fn a_session_grant_keeps_the_scope_row() {
+        let (t, root, _out) = fixture();
+        let c = Chat::new(&t, &root, &[], &[]);
+        c.allow("shell").unwrap();
+        assert_eq!(
+            rows_of(&c),
+            [
+                builtin_rows("shell", &root, false),
+                builtin_rows("write_file", &root, true),
+            ]
+            .concat()
+        );
+        assert_eq!(
+            c.allow("shell").unwrap_err(),
+            "shell already runs without asking (this session)"
+        );
+        c.allow("shell project").unwrap();
+        assert_eq!(rows_of(&c), builtin_rows("write_file", &root, true));
     }
 }

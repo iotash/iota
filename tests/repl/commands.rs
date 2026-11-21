@@ -3809,6 +3809,76 @@ async fn allow_project_grants_a_builtin_tool() {
     assert_eq!(grants_tabs(&f.ui), [vec!["this project  shell".to_owned()]]);
 }
 
+/// The `/allow` rows of every command table the chat issued, in order, as their values.
+fn allow_rows(ui: &ScriptedUi) -> Vec<Vec<String>> {
+    ui.events()
+        .into_iter()
+        .filter_map(|e| match e {
+            UiEvent::Commands(c) => Some(
+                c.into_iter()
+                    .filter(|s| !s.label.is_empty() && s.value.starts_with("/allow "))
+                    .map(|s| s.value)
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The `/allow` rows follow the grants (docs/design/allow-completion.md §7): issued at the start, re-issued at
+/// the next prompt after each change — a session grant takes the tool's own row and keeps its scope row, a
+/// project grant takes both, `/new` gives back what the session level held — and not re-issued when nothing
+/// changed (a refused line, a turn).
+#[tokio::test]
+async fn the_allow_rows_follow_the_grants() {
+    let (_t, root, _out) = allow_fixture();
+    let f = Fixture::new(vec![
+        input("/allow shell"),
+        input("/allow shell"),
+        input("/allow write_file project"),
+        input("hi"),
+        input("/new"),
+        Reply::Interrupted,
+    ]);
+    let grants = Arc::new(iota::tool::grants::Grants::default());
+    let p = provider("gpt-4o", Ok(vec![]))
+        .with_tools()
+        .rounds([iota::testing::Round::reply("hello")]);
+    let mut params = f.params(p, f.session(Some(f.writer())));
+    params.footing = iota::testing::footing(&params.session.store, root);
+    params.grants = Arc::clone(&grants);
+    params.dispatch = Arc::new(
+        StaticDispatcher::new(&["shell", "read_file", "write_file"])
+            .with_approval(&["shell", "write_file"]),
+    );
+    iota::repl::run(params).await.expect("clean exit");
+
+    let rows = |r: &[&str]| r.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+    assert_eq!(
+        allow_rows(&f.ui),
+        [
+            // The table as first issued, then the start's rows.
+            rows(&[]),
+            rows(&[
+                "/allow shell",
+                "/allow shell project",
+                "/allow write_file",
+                "/allow write_file project",
+            ]),
+            // `/allow shell`; the refused second one changes nothing.
+            rows(&[
+                "/allow shell project",
+                "/allow write_file",
+                "/allow write_file project",
+            ]),
+            // `/allow write_file project`.
+            rows(&["/allow shell project"]),
+            // `/new`: the session level starts empty, the project keeps write_file.
+            rows(&["/allow shell", "/allow shell project"]),
+        ]
+    );
+}
+
 /// [`SH_SERVER`] listing two tools, `echo` and `ping`.
 #[cfg(unix)]
 fn two_tool_server() -> String {
@@ -4050,7 +4120,7 @@ async fn allow_is_in_the_table() {
         [
             (
                 "/allow",
-                "Make a directory writable or stop asking for a tool, or browse and revoke grants"
+                "Stop asking for a tool or make a directory writable (type its path); bare, list and revoke grants"
             ),
             ("/debug", "Browse API traffic; toggle request recording"),
         ]

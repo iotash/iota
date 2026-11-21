@@ -43,6 +43,11 @@
 //! (`CmdFlags::jobs`, set from the job registry's watch — `run.rs` — with the table re-issued each
 //! time it flips, the `/save` way). Typed with nothing running it is a message like any other
 //! unregistered `/xyz`.
+//!
+//! The `/allow` rows follow the grants: one per line that would grant now ([`allow::grantable`],
+//! docs/design/allow-completion.md §3), each waiting behind its prefix (`/allow `, `/allow <tool> `). They
+//! are recomputed before every read of the prompt and the table re-issued when they changed
+//! ([`CommandTable::set_allow`]). They decide nothing — a submitted row is parsed like a typed line.
 
 pub(crate) mod allow;
 pub(crate) mod compact;
@@ -108,7 +113,7 @@ const BASE: &[CmdSpec] = &[
     },
     CmdSpec {
         value: "/allow",
-        desc: "Make a directory writable or stop asking for a tool, or browse and revoke grants",
+        desc: "Stop asking for a tool or make a directory writable (type its path); bare, list and revoke grants",
     },
     CmdSpec {
         value: "/debug",
@@ -181,6 +186,8 @@ pub(crate) struct SkillEntry {
 pub(crate) struct CommandTable {
     flags: CmdFlags,
     skills: Vec<SkillEntry>,
+    /// The `/allow` completion rows ([`allow::grantable`]), after the command's own row.
+    allow: Vec<Suggestion>,
 }
 
 impl CommandTable {
@@ -189,6 +196,7 @@ impl CommandTable {
         Self {
             flags,
             skills: Vec::new(),
+            allow: Vec::new(),
         }
     }
 
@@ -199,6 +207,14 @@ impl CommandTable {
         self.skills = entries;
     }
 
+    /// Replaces the `/allow` rows ([`allow::grantable`]); `true` when they changed, which is when the table must
+    /// be re-issued (docs/design/allow-completion.md §7).
+    pub(crate) fn set_allow(&mut self, rows: Vec<Suggestion>) -> bool {
+        let changed = self.allow != rows;
+        self.allow = rows;
+        changed
+    }
+
     /// Flips the `jobs` flag; `true` when it changed, which is when the table must be re-issued.
     pub(crate) fn set_jobs(&mut self, running: bool) -> bool {
         let changed = self.flags.jobs != running;
@@ -207,10 +223,11 @@ impl CommandTable {
     }
 
     /// The active rows, in dispatch order — what the composer's completion list gets
-    /// (chat/completion.go:78-97 `rebuildCommands`): base (`/compact` iff `compact`) → jobs →
-    /// image → save → agent (+ the per-skill rows).
+    /// (chat/completion.go:78-97 `rebuildCommands`): base (`/compact` iff `compact`; the `/allow` rows after
+    /// `/allow`) → jobs → image → save → agent (+ the per-skill rows).
     pub(crate) fn active(&self) -> Vec<Suggestion> {
-        let mut out: Vec<Suggestion> = Vec::with_capacity(BASE.len() + self.skills.len() + 5);
+        let mut out: Vec<Suggestion> =
+            Vec::with_capacity(BASE.len() + self.skills.len() + self.allow.len() + 5);
         for c in BASE {
             if c.value == "/compact" && !self.flags.compact {
                 continue;
@@ -219,6 +236,9 @@ impl CommandTable {
                 continue;
             }
             out.push(suggestion(c));
+            if c.value == "/allow" {
+                out.extend(self.allow.iter().cloned());
+            }
         }
         if self.flags.jobs {
             out.extend(JOBS.iter().map(suggestion));
@@ -296,6 +316,7 @@ pub(crate) fn match_cmd<'a>(input: &'a str, cmd: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::{BASE, CmdFlags, CommandTable, SkillEntry, match_cmd};
+    use crate::ui::facade::Suggestion;
 
     fn has(table: &CommandTable, value: &str) -> bool {
         table.active().iter().any(|s| s.value == value)
@@ -554,5 +575,37 @@ mod tests {
             .find(|c| c.value == "/exit")
             .expect("a base row");
         assert_eq!(row.desc, "Quit iota, as Ctrl+D does");
+    }
+
+    /// The `/allow` rows sit right after the command's own row and are not commands; `set_allow` reports a
+    /// change only when the rows differ, so an unchanged table is not re-issued.
+    #[test]
+    fn the_allow_rows_follow_the_command_and_report_a_change() {
+        let row = |value: &str, label: &str, after: &str| Suggestion {
+            value: value.to_owned(),
+            label: label.to_owned(),
+            desc: String::new(),
+            after: Some(after.to_owned()),
+        };
+        let rows = vec![
+            row("/allow shell", "shell", "/allow "),
+            row("/allow shell project", "project", "/allow shell "),
+        ];
+        let mut t = table((true, true, true, true));
+        let before = names(&t);
+        assert!(!t.set_allow(Vec::new()), "none to none is no change");
+        assert!(t.set_allow(rows.clone()));
+        assert!(!t.set_allow(rows.clone()), "the same rows again");
+        let active = t.active();
+        let at = active
+            .iter()
+            .position(|s| s.value == "/allow")
+            .expect("/allow");
+        assert_eq!(active[at + 1..at + 3], rows[..]);
+        assert_eq!(active[at + 3].value, "/debug");
+        assert_eq!(names(&t), before, "the rows are not commands");
+        assert!(t.set_allow(rows[1..].to_vec()), "a row gone is a change");
+        assert!(t.set_allow(Vec::new()));
+        assert_eq!(t.active().len(), before.len());
     }
 }

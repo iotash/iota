@@ -797,6 +797,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     // Every exit path breaks out with its outcome so the presenter is closed exactly once
     // below (Go's `defer pres.Close()`).
     let outcome: Result<(), ReplError> = 'main: loop {
+        // Every return to the prompt — the first one is the chat's start — brings the `/allow` rows up to date:
+        // a grant or a revoke by `/allow` or the dialog, `/new`, `/session` and `/save` all land before it.
+        repl.issue_allow_rows();
         // A typed `/exit` is an idle Ctrl+D spelled out: it ends the input right here, down the same break.
         let next = next_input(&mut repl, &root_cancel).await;
         let Some((input, released)) = next.filter(|(input, _)| !is_exit(input)) else {
@@ -1304,6 +1307,16 @@ async fn admit_held_message(repl: &Repl, headline: &str) -> bool {
 }
 
 impl Repl {
+    /// Recomputes the `/allow` completion rows ([`allow::grantable`]) and re-issues the command table when they
+    /// changed (docs/design/allow-completion.md §7): per prompt, not per key.
+    fn issue_allow_rows(&self) {
+        let rows = allow::grantable(&self.door(), &*self.conv.dispatch);
+        let mut table = lock(&self.handles.table);
+        if table.set_allow(rows) {
+            self.handles.ui.set_slash_commands(table.active());
+        }
+    }
+
     /// The grants' door-side service over this chat's store, bundle slot and project file (if it has one).
     pub(crate) fn door(&self) -> crate::repl::grants::Door {
         crate::repl::grants::Door {
