@@ -2070,10 +2070,11 @@ mod tests {
         );
     }
 
-    /// On Windows a drive path is absolute, so `/allow` reads it as a directory — the config's rule
-    /// ([`spells_dir`]) — before any `:` rule takes the drive's colon for a server's; `C:x`, relative to a drive,
-    /// stays `<server>:<tool>`. A platform expectation, not a skipped test: off Windows the drive spelling is
-    /// `<server>:<tool>` (pinned below).
+    /// On Windows a drive path has a root, so `/allow` reads it as a directory — the config's rule
+    /// ([`spells_dir`]) — before any `:` rule takes the drive's colon for a server's, and so does the same path
+    /// rooted without its drive (`\x`, `/x`); `C:x`, relative to a drive with no root, stays `<server>:<tool>`.
+    /// A platform expectation, not a skipped test: off Windows the drive spelling is `<server>:<tool>` (pinned
+    /// below).
     #[cfg(windows)]
     #[test]
     fn a_windows_drive_path_is_a_directory() {
@@ -2090,17 +2091,24 @@ mod tests {
         );
         assert_eq!(c.g().live_dirs(), std::slice::from_ref(&out));
         let forward = back.replace('\\', "/");
-        assert_eq!(
-            c.allow(&forward).unwrap_err(),
-            format!("{back} is already writable (this session)")
-        );
+        // The same directory rooted without its drive (`\…`, `/…`): resolved against the root's drive, which
+        // is the temp dir's.
+        let rooted = back[2..].to_owned();
+        let rooted_forward = forward[2..].to_owned();
+        for d in [&forward, &rooted, &rooted_forward] {
+            assert_eq!(
+                c.allow(d).unwrap_err(),
+                format!("{back} is already writable (this session)"),
+                "{d}"
+            );
+        }
         assert_eq!(
             c.allow("C:x").unwrap_err(),
             "no MCP server named \"C\" is connected"
         );
     }
 
-    /// Off Windows a drive spelling is not absolute: it is `<server>:<tool>`, as in the config.
+    /// Off Windows a drive spelling has no root: it is `<server>:<tool>`, as in the config.
     #[cfg(not(windows))]
     #[test]
     fn a_drive_spelling_is_no_directory_off_windows() {

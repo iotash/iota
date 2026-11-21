@@ -7,9 +7,10 @@
 //! in place of the connected ones:
 //!
 //! 1. a server's whole name — the longest that matches — then `:` and the tool;
-//! 2. a directory: it starts with `~` or `.`, or is absolute ([`Path::is_absolute`]: `/x` on Unix; `C:\x`,
-//!    `C:/x` and `\\server\share` on Windows — so a drive's `:` is never a server's, and `C:x`, relative to a
-//!    drive, is not a directory);
+//! 2. a directory: it starts with `~` or `.`, or has a root ([`Path::has_root`]: `/x` on Unix; `/x`, `\x`,
+//!    `C:\x`, `C:/x` and `\\server\share` on Windows — so a drive's `:` is never a server's, and a rooted
+//!    spelling without a drive is a path the OS resolves against the current drive; `C:x`, with no root, is not
+//!    a directory);
 //! 3. anything else holding a `:` — `<server>:<tool>`, split at its LAST `:`;
 //! 4. a bare word — a built-in tool, by its wire name.
 //!
@@ -76,11 +77,12 @@ pub fn parse(entry: &str, servers: &[String]) -> Result<Entry, String> {
     }
 }
 
-/// Whether `target` is spelled as a directory (rule 2 of the module's order): it starts with `~` or `.`, or is
-/// absolute ([`Path::is_absolute`]). `/allow`'s typed target reads the same rule, so the chat, `allow:` and
-/// `--allow` agree on every platform.
+/// Whether `target` is spelled as a directory (rule 2 of the module's order): it starts with `~` or `.`, or has
+/// a root ([`Path::has_root`]). Not [`Path::is_absolute`]: on Windows `/x` and `\x` have a root but no drive, so
+/// they are not absolute, yet the OS resolves them against the current drive — they ARE paths. `/allow`'s typed
+/// target reads the same rule, so the chat, `allow:` and `--allow` agree on every platform.
 pub fn spells_dir(target: &str) -> bool {
-    target.starts_with(['~', '.']) || Path::new(target).is_absolute()
+    target.starts_with(['~', '.']) || Path::new(target).has_root()
 }
 
 /// `<server>:<tool>`, the tool being a name or `*`; an empty one names nothing.
@@ -190,21 +192,37 @@ mod tests {
         );
     }
 
-    /// On Windows a drive path and a UNC path are absolute, so they are a directory before any `:` rule reads
-    /// the drive's colon as a server's. A platform-specific expectation, not a skipped test: off Windows the
-    /// same spellings are not absolute (pinned below).
-    #[cfg(windows)]
+    /// On every platform a rooted spelling is a directory, and one with no root is not: `x` is a built-in's
+    /// name, `C:x` (relative to a drive's current directory on Windows) is `<server>:<tool>`.
     #[test]
-    fn a_windows_absolute_path_is_a_directory() {
+    fn a_rooted_spelling_is_a_directory_on_every_platform() {
         let s = names(&["github"]);
-        for d in [r"C:\x", "C:/x", r"\\server\share\x"] {
-            assert_eq!(parse(d, &s), Ok(Entry::Dir(d.to_owned())), "{d}");
-        }
-        // Relative to the drive's current directory: not absolute, so still `<server>:<tool>`.
+        assert_eq!(parse("/tmp/out", &s), Ok(Entry::Dir("/tmp/out".to_owned())));
+        assert_eq!(
+            parse("x", &s),
+            Err(
+                "no built-in tool named \"x\" (tools that ask: shell, edit_file, write_file)"
+                    .to_owned()
+            )
+        );
         assert_eq!(parse("C:x", &s), Ok(mcp("C", "x")));
     }
 
-    /// Off Windows a drive spelling is not absolute: it is `<server>:<tool>`, which the load refuses when no
+    /// On Windows a drive path, a UNC path and a rooted path without a drive have a root, so they are a
+    /// directory before any `:` rule reads the drive's colon as a server's. A platform-specific expectation, not
+    /// a skipped test: off Windows a drive spelling has no root (pinned below).
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_rooted_path_is_a_directory() {
+        let s = names(&["github"]);
+        for d in [r"C:\x", "C:/x", r"\\server\share\x", r"\x", "/x"] {
+            assert_eq!(parse(d, &s), Ok(Entry::Dir(d.to_owned())), "{d}");
+        }
+        // Relative to the drive's current directory, with no root: still `<server>:<tool>`.
+        assert_eq!(parse("C:x", &s), Ok(mcp("C", "x")));
+    }
+
+    /// Off Windows a drive spelling has no root: it is `<server>:<tool>`, which the load refuses when no
     /// `mcp_servers:` entry has that name.
     #[cfg(not(windows))]
     #[test]

@@ -183,7 +183,7 @@ Read in this order, on the trimmed argument:
 3. **No project, no project level.** `…project` in a run without one is refused before the
    target is read, with today's three sentences (`no_project`).
 4. **The target**, exactly as today: a connected server's whole name, a directory (a
-   leading `~` or `.`, or absolute — `allow:`'s rule, config-allow.md §3.2),
+   leading `~` or `.`, or a root (`Path::has_root`) — `allow:`'s rule, config-allow.md §3.2),
    `<server>:<tool>` at its last `:`, else a built-in's wire name.
 5. **A directory is never guessed.** When step 2 took the scope off a target spelled as a
    directory, and the WHOLE argument is itself an existing directory (`~/my project` beside
