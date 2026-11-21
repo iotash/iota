@@ -1998,7 +1998,7 @@ async fn session_switch_replaces_and_never_merges() {
     let (t, root, out) = allow_fixture();
     let elsewhere = t.path().join("elsewhere");
     std::fs::create_dir(&elsewhere).expect("elsewhere");
-    let elsewhere = std::fs::canonicalize(elsewhere).expect("real");
+    let elsewhere = iota::app::fs::physical(&elsewhere).expect("real");
     let f = Fixture::new(vec![
         input("first"),
         pick_row(1), // "Allow for this session"
@@ -3383,8 +3383,8 @@ fn allow_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     std::fs::write(t.path().join("proj/file.txt"), "x").expect("a file");
     #[cfg(unix)]
     std::os::unix::fs::symlink(t.path().join("out"), t.path().join("link")).expect("link");
-    let root = std::fs::canonicalize(t.path().join("proj")).expect("real proj");
-    let out = std::fs::canonicalize(t.path().join("out")).expect("real out");
+    let root = iota::app::fs::physical(&t.path().join("proj")).expect("real proj");
+    let out = iota::app::fs::physical(&t.path().join("out")).expect("real out");
     (t, root, out)
 }
 

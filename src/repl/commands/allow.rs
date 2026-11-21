@@ -822,15 +822,15 @@ mod tests {
         let t = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(t.path().join("proj/.git/hooks")).expect("proj");
         std::fs::create_dir_all(t.path().join("out/sub")).expect("out");
-        let root = std::fs::canonicalize(t.path().join("proj")).expect("real proj");
-        let out = std::fs::canonicalize(t.path().join("out")).expect("real out");
+        let root = crate::app::canonical(&t.path().join("proj")).expect("real proj");
+        let out = crate::app::canonical(&t.path().join("out")).expect("real out");
         (t, root, out)
     }
 
     /// A new directory `name` in the temp dir, physical, for a test to grant and then make stale with
     /// [`make_stale`].
     fn stale_to_be(t: &tempfile::TempDir, name: &str) -> PathBuf {
-        let dir = std::fs::canonicalize(t.path())
+        let dir = crate::app::canonical(t.path())
             .expect("real temp")
             .join(name);
         std::fs::create_dir(&dir).expect("the directory");
@@ -997,7 +997,7 @@ mod tests {
         let (t, root, out) = fixture();
         let added = t.path().join("added");
         std::fs::create_dir(&added).unwrap();
-        let added = std::fs::canonicalize(added).unwrap();
+        let added = crate::app::canonical(&added).unwrap();
         let c = Chat::new(&t, &root, &[out.join("sub")], std::slice::from_ref(&added));
         assert_eq!(
             c.allow("./.git/hooks").unwrap_err(),
@@ -1495,7 +1495,7 @@ mod tests {
         for d in ["my", "my project", "project"] {
             std::fs::create_dir(t.path().join(d)).unwrap();
         }
-        let real = |d: &str| std::fs::canonicalize(t.path().join(d)).unwrap();
+        let real = |d: &str| crate::app::canonical(&t.path().join(d)).unwrap();
         let c = Chat::new(&t, &root, &[], &[]);
         let shown = root.display();
         assert_eq!(

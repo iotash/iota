@@ -72,7 +72,7 @@ mod tests {
     #[test]
     fn a_tool_grant_never_answers_a_call_bound_to_a_location() {
         let t = tempfile::tempdir().expect("tempdir");
-        let root = std::fs::canonicalize(t.path()).expect("real").join("proj");
+        let root = crate::app::canonical(t.path()).expect("real").join("proj");
         std::fs::create_dir_all(&root).expect("root");
         let grants = Arc::new(Grants::default());
         let cs = CodeSet::new(
@@ -109,7 +109,10 @@ mod tests {
                 match gate(&reg, &grants, tool, a) {
                     Gate::Ask {
                         subject: Some(s), ..
-                    } => assert!(s.target.starts_with(t.path().canonicalize().unwrap())),
+                    } => assert!(
+                        s.target
+                            .starts_with(crate::app::canonical(t.path()).unwrap())
+                    ),
                     other => panic!("{tool} {what}: {other:?}"),
                 }
             }

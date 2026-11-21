@@ -1369,7 +1369,7 @@ mod tests {
         use crate::tool::context::{Approved, RunCtx};
 
         let (t, root, out, cs) = asking_set(true);
-        let real_out = std::fs::canonicalize(&out).expect("real out");
+        let real_out = crate::app::canonical(&out).expect("real out");
         let w = args(json!({"path": "outdir/new.txt", "content": "x"}));
         assert_eq!(
             writer_subject(&cs, &w),
@@ -1489,7 +1489,7 @@ mod tests {
         let scope = writer_subject(&cs, &w)
             .and_then(|s| s.scope)
             .expect("a grant");
-        assert_eq!(scope, std::fs::canonicalize(&out2).expect("real out2"));
+        assert_eq!(scope, crate::app::canonical(&out2).expect("real out2"));
         // 3. Relink outdir -> out again.
         relink(&root.join("outdir"), &out);
         // 4. The call, after the gate granted that directory.
@@ -1569,7 +1569,7 @@ mod tests {
         use crate::tool::{ApprovalSubject, Tool};
 
         let t = tempfile::tempdir().expect("tempdir");
-        let root = std::fs::canonicalize(t.path()).expect("real").join("root");
+        let root = crate::app::canonical(t.path()).expect("real").join("root");
         let user_home = root.parent().expect("parent").join("home");
         let home = user_home.join(".iota");
         std::fs::create_dir_all(root.join(".git/hooks")).expect("hooks");
@@ -1706,7 +1706,7 @@ mod tests {
         use crate::tool::context::{Approved, RunCtx};
 
         let t = tempfile::tempdir().expect("tempdir");
-        let home = std::fs::canonicalize(t.path()).expect("real").join("home");
+        let home = crate::app::canonical(t.path()).expect("real").join("home");
         let sessions = home.join(".iota/sessions");
         let bundle = sessions.join("20261119-abc/meta.json");
         let bucket = sessions.join("projects/-r/grants.json");
@@ -1716,7 +1716,7 @@ mod tests {
         }
         let elsewhere = t.path().join("project");
         std::fs::create_dir_all(&elsewhere).expect("project");
-        let elsewhere = std::fs::canonicalize(elsewhere).expect("real");
+        let elsewhere = crate::app::canonical(&elsewhere).expect("real");
         for root in [elsewhere, home.clone()] {
             for extra in [vec![], vec![home.clone()], vec![sessions.clone()]] {
                 for auto_write in [false, true] {
@@ -1796,7 +1796,7 @@ mod tests {
         let (_t, root, out) = jail_fixture();
         std::os::unix::fs::symlink("lb", root.join("la")).expect("la");
         std::os::unix::fs::symlink("la", root.join("lb")).expect("lb");
-        let real_out = std::fs::canonicalize(&out).expect("real out");
+        let real_out = crate::app::canonical(&out).expect("real out");
         let inside = args(json!({"path": "dir/x.txt"}));
         let outside = args(json!({"path": format!("{}/deep/x.txt", out.display())}));
         let looped = args(json!({"path": "la/x.txt"}));

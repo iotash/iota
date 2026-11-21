@@ -193,7 +193,7 @@ impl CodeSet {
     /// `.gitignore` ([`Self::anchor`]) and reports the same paths, and a root reached through a
     /// link keeps its own spelling. `base` unchanged when it cannot be canonicalized.
     pub(crate) fn walk_base(&self, base: PathBuf) -> PathBuf {
-        let Ok(real) = std::fs::canonicalize(&base) else {
+        let Some(real) = crate::app::canonical(&base) else {
             return base;
         };
         std::iter::once(&self.root)
@@ -717,7 +717,7 @@ mod tests {
         symlink(&out, root.join("outdir")).expect("link");
         symlink("lb", root.join("la")).expect("la");
         symlink("la", root.join("lb")).expect("lb");
-        let real_out = std::fs::canonicalize(&out).expect("real out");
+        let real_out = crate::app::canonical(&out).expect("real out");
         let cs = CodeSet::new(
             root.clone(),
             Vec::new(),
@@ -914,7 +914,7 @@ mod tests {
         let (t, root, _out) = jail_fixture();
         let via = t.path().join("via");
         symlink(&root, &via).expect("link");
-        let real = std::fs::canonicalize(&root).expect("canonical root");
+        let real = crate::app::canonical(&root).expect("canonical root");
         let cs = CodeSet::new(
             via.clone(),
             Vec::new(),
@@ -942,7 +942,7 @@ mod tests {
             std::sync::Arc::default(),
         )
         .expect("set");
-        let real = std::fs::canonicalize(tmp.path()).expect("canonical tmp");
+        let real = crate::app::canonical(tmp.path()).expect("canonical tmp");
         assert_eq!(jail(&cs, "new.txt"), Ok(tmp.path().join("new.txt")));
         let abs = real.join("new.txt");
         let abs = abs.to_str().expect("utf-8");
@@ -970,7 +970,7 @@ mod tests {
             std::sync::Arc::default(),
         )
         .expect("set");
-        let real_out = std::fs::canonicalize(&out).expect("real out");
+        let real_out = crate::app::canonical(&out).expect("real out");
         for (base, want) in [
             (via.clone(), via.clone()),
             (via.join("dir"), via.join("dir")),
@@ -1054,7 +1054,7 @@ mod tests {
         // Under `outside_writes: ask` an unknown location is still refused: it is never approvable, never
         // asked about, and neither an approval the call could carry nor a directory grant over it admits it.
         let grants = std::sync::Arc::new(crate::tool::grants::Grants::default());
-        let real_t = std::fs::canonicalize(t.path()).expect("real t");
+        let real_t = crate::app::canonical(t.path()).expect("real t");
         grants.update(crate::tool::grants::Level::Session, |s| {
             s.add_dir(real_t.clone())
         });

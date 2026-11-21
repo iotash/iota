@@ -2310,7 +2310,7 @@ impl CodeChat {
         let root = t.path().join("proj");
         std::fs::create_dir_all(&root).expect("root");
         std::fs::create_dir_all(t.path().join("out")).expect("out");
-        let real_out = std::fs::canonicalize(t.path().join("out")).expect("real out");
+        let real_out = crate::app::canonical(&t.path().join("out")).expect("real out");
         let grants = Arc::new(crate::tool::grants::Grants::default());
         let env = crate::tool::ToolEnv {
             project_root: Some(root.clone()),
@@ -2492,7 +2492,7 @@ async fn a_protected_write_is_asked_every_time_and_never_granted_for_the_session
     let mut history = vec![Message::user("write")];
     fx.turn(&p, &mut history).await.outcome.expect("turn");
 
-    let real_hook = std::fs::canonicalize(root)
+    let real_hook = crate::app::canonical(root)
         .expect("real root")
         .join(".git/hooks/pre-commit");
     let protected = format!(
@@ -2705,7 +2705,7 @@ async fn a_directory_granted_in_the_dialog_is_a_root_for_both_writers() {
     let mut history = vec![Message::user("write")];
     fx.turn(&p, &mut history).await.outcome.expect("turn");
     let items: Vec<String> = prompts(&fx.events()).into_iter().map(|(_, i)| i).collect();
-    let real_t = std::fs::canonicalize(c.t.path()).expect("real t");
+    let real_t = crate::app::canonical(c.t.path()).expect("real t");
     assert_eq!(
         items,
         [
@@ -2805,7 +2805,7 @@ async fn a_directory_granted_for_the_project_is_kept_in_its_file() {
 async fn the_dialog_never_offers_the_home_directory() {
     let c = CodeChat::homed(crate::tool::OutsideWrites::Ask, true, Some("home"));
     std::fs::create_dir_all(c.t.path().join("home/sub")).expect("home");
-    let real_t = std::fs::canonicalize(c.t.path()).expect("real t");
+    let real_t = crate::app::canonical(c.t.path()).expect("real t");
     let mut script = vec![choose(1), choose(1), choose(1), choose(1)];
     script.extend(quiet(1));
     let fx = c.fx(script);
@@ -3029,7 +3029,7 @@ async fn a_link_swapped_after_a_grant_writes_nothing() {
     let c = CodeChat::new(crate::tool::OutsideWrites::Ask, true);
     let out2 = c.t.path().join("out2");
     std::fs::create_dir(&out2).expect("out2");
-    let real_out2 = std::fs::canonicalize(&out2).expect("real out2");
+    let real_out2 = crate::app::canonical(&out2).expect("real out2");
     let link = c.root.join("outdir");
     std::os::unix::fs::symlink(&real_out2, &link).expect("link");
     let dispatch = Arc::new(Flipping {
@@ -3083,7 +3083,7 @@ async fn a_link_swapped_after_a_grant_writes_nothing() {
 
 // Review S1 through the gate: an inside session grant does not cover a write to `/`, whose real location
 // has no parent — it is asked about, bound to that location itself (`/` on Unix; on Windows the root of the
-// project's drive, e.g. `\\?\D:\`), and offers no directory: "Allow once" / "Deny". The tool joins `/` to the
+// project's drive, e.g. `D:\`), and offers no directory: "Allow once" / "Deny". The tool joins `/` to the
 // project root, and on Windows a rooted, prefixless path keeps the root's drive, so the expectation is the
 // project root's own topmost ancestor, never a fixed drive.
 #[tokio::test]
@@ -3091,7 +3091,7 @@ async fn an_inside_grant_does_not_cover_a_parentless_target() {
     let c = CodeChat::new(crate::tool::OutsideWrites::Ask, false);
     let root = &c.root;
     let top = root.ancestors().last().expect("a topmost ancestor");
-    let top = std::fs::canonicalize(top).expect("real /");
+    let top = crate::app::canonical(top).expect("real /");
     assert_eq!(top.parent(), None, "{}", top.display());
     let mut script = vec![choose(1), choose(1)];
     script.extend(quiet(1));

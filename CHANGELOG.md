@@ -54,6 +54,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **A granted directory reads `C:\…` on Windows, not `\\?\C:\…`.** A path iota
+  resolves (a grant, the `grants.json` key, a root's real location) now has one
+  spelling, the one the executable's already had; the three path tests that
+  failed there compare against it, and read a request body as the JSON it is.
 - **The approval-walk tests pass on Windows.** Their "unwritable" project
   file lived under `/dev/null/sessions`, which on Windows is a directory a run
   can create, so a grant meant to be refused was saved; it now lives under the

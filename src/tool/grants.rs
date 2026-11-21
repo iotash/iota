@@ -283,8 +283,8 @@ mod tests {
         let t = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(t.path().join("proj")).expect("proj");
         std::fs::create_dir_all(t.path().join("out/sub/deeper")).expect("out");
-        let out = std::fs::canonicalize(t.path().join("out")).expect("real out");
-        let root = std::fs::canonicalize(t.path().join("proj")).expect("real proj");
+        let out = crate::app::canonical(&t.path().join("out")).expect("real out");
+        let root = crate::app::canonical(&t.path().join("proj")).expect("real proj");
         (t, root, out)
     }
 
@@ -331,7 +331,7 @@ mod tests {
         ] {
             assert!(inside(&cs, &p), "{p:?}");
         }
-        let real_t = std::fs::canonicalize(t.path()).expect("real t");
+        let real_t = crate::app::canonical(t.path()).expect("real t");
         for p in [real_t.join("x.txt"), real_t.join("out-sibling/x.txt")] {
             assert!(!inside(&cs, &p), "{p:?}");
         }

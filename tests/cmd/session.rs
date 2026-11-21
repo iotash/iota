@@ -102,17 +102,11 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-/// `fs::canonicalize` minus the `\\?\` verbatim prefix Windows adds to it — the spelling a plain
-/// `current_dir()` reports back, and so the only one a run's own `project_root` can be compared with.
-/// A no-op on unix, where the prefix does not exist.
-fn strip_verbatim(p: &Path) -> PathBuf {
-    let s = p.to_string_lossy();
-    match s.strip_prefix(r"\\?\") {
-        // `\\?\UNC\server\share` is not a drive path: dropping the prefix there would leave a RELATIVE
-        // path, so only the `\\?\C:\…` form is unwrapped.
-        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
-        _ => p.to_path_buf(),
-    }
+/// `s` as a request body spells it: the body is JSON, so a string in it is escaped — a Windows path's every
+/// `\` is `\\` there, and the path as displayed is nowhere in the raw bytes.
+fn in_json(s: &str) -> String {
+    let quoted = serde_json::to_string(s).expect("a JSON string");
+    quoted[1..quoted.len() - 1].to_owned()
 }
 
 /// `<home>/.iota/sessions`.
@@ -1129,10 +1123,10 @@ async fn resume_agent_mode_prefers_the_project_bucket() {
     // the run's own root is whatever `current_dir()` reports, and a temp path is not that spelling on
     // either platform: macOS resolves `/var` → `/private/var`, Windows hands out 8.3 components
     // (`RUNNER~1`). So the canonical root is what the child is GIVEN as its cwd, and the same value
-    // computes the bucket — `strip_verbatim` because `fs::canonicalize` is the one call that adds a
-    // `\\?\` prefix, which `current_dir()` would not report back.
+    // computes the bucket — resolved as the product resolves a path (`app::fs::physical`): a bare
+    // `fs::canonicalize` adds a `\\?\` prefix on Windows, which `current_dir()` would not report back.
     fs::create_dir_all(cwd.path().join(".git")).expect("mkdir .git");
-    let root = strip_verbatim(&fs::canonicalize(cwd.path()).expect("canonical cwd"));
+    let root = iota::app::fs::physical(cwd.path()).expect("canonical cwd");
     let home = home_with_fixtures();
     let m = manifest();
     let fragment = m["resolution"]["ambiguous_fragment"].as_str().unwrap();
@@ -1217,7 +1211,7 @@ async fn one_mode_requests(mode_line: &str, fresh: bool) -> Vec<String> {
     google_stub(&server, false).await;
     let cwd = TempDir::new().expect("temp cwd");
     fs::create_dir_all(cwd.path().join(".git")).expect("mkdir .git");
-    let root = strip_verbatim(&fs::canonicalize(cwd.path()).expect("canonical cwd"));
+    let root = iota::app::fs::physical(cwd.path()).expect("canonical cwd");
     fs::write(
         root.join("AGENTS.md"),
         "Run the linter before every commit.\n",
@@ -1239,7 +1233,7 @@ async fn one_mode_requests(mode_line: &str, fresh: bool) -> Vec<String> {
     )
     .expect("write config");
     let home = home_with_fixtures();
-    let home_path = strip_verbatim(&fs::canonicalize(home.path()).expect("canonical home"));
+    let home_path = iota::app::fs::physical(home.path()).expect("canonical home");
     let id = fixture("go-gemini-rich")["id"].as_str().unwrap().to_owned();
 
     let mut runs = vec![vec!["resume", id.as_str(), "-m", "hi"]];
@@ -1367,7 +1361,7 @@ async fn resume_m_loads_the_session_grants_and_keeps_them() {
     let cwd = TempDir::new().expect("temp cwd");
     let home = TempDir::new().expect("temp home");
     let granted = TempDir::new().expect("granted dir");
-    let granted = fs::canonicalize(granted.path()).expect("real");
+    let granted = iota::app::fs::physical(granted.path()).expect("real");
     let id = "grantsresum1";
     let dir = sessions_root(home.path()).join(id);
     plant_bundle(
@@ -1391,7 +1385,7 @@ async fn resume_m_loads_the_session_grants_and_keeps_them() {
     assert!(!err(&o).contains("grants:"), "stderr: {}", err(&o));
     let reqs = server.received_requests().await.expect("requests");
     let body = String::from_utf8_lossy(&reqs[0].body).into_owned();
-    let roots = format!("write roots: {}", granted.display());
+    let roots = format!("write roots: {}", in_json(&granted.display().to_string()));
     assert!(body.contains(&roots), "the model was not told: {body}");
     assert_eq!(
         SessionMeta::read(&dir).expect("meta").grants.dirs,
@@ -1411,7 +1405,7 @@ async fn only_a_run_with_a_project_loads_the_project_grants() {
     let cwd = TempDir::new().expect("temp cwd");
     let home = TempDir::new().expect("temp home");
     let granted = TempDir::new().expect("granted dir");
-    let granted = fs::canonicalize(granted.path()).expect("real");
+    let granted = iota::app::fs::physical(granted.path()).expect("real");
     let grant = |home: &Path| {
         SessionStore::new(sessions_root(home))
             .update_project_grants(cwd.path(), |s| s.dirs.push(granted.clone()))
@@ -1420,7 +1414,7 @@ async fn only_a_run_with_a_project_loads_the_project_grants() {
     let told = async || {
         let reqs = server.received_requests().await.expect("requests");
         let body = String::from_utf8_lossy(&reqs.last().expect("a request").body).into_owned();
-        body.contains(&granted.display().to_string())
+        body.contains(&in_json(&granted.display().to_string()))
     };
     grant(home.path());
     for (mode, loaded) in [("", false), ("chat", false), ("agent", true)] {

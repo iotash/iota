@@ -1435,9 +1435,17 @@ async fn add_dir_is_relative_to_the_working_directory() {
     let requests = server.received_requests().await.expect("recorded requests");
     let first: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("a JSON body");
     let system = first["messages"][0]["content"].as_str().unwrap_or_default();
-    let real = fs::canonicalize(&out_dir).expect("canonical out");
+    // The root is named as it was resolved: the value joined to the child's own cwd and cleaned, never
+    // looked up (`ToolEnv::with_write_roots`). That cwd is the process's `getcwd` — on macOS the canonical
+    // spelling of the temp path (`/private/var/…`), on Windows the path as given — so `../../out` from
+    // `proj/sub` is `out` under the temp directory in that same spelling.
+    let seen = if cfg!(windows) {
+        dir.path().to_path_buf()
+    } else {
+        fs::canonicalize(dir.path()).expect("canonical dir")
+    };
     assert!(
-        system.contains(&format!("\nwrite roots: {}\n", real.display())),
+        system.contains(&format!("\nwrite roots: {}\n", seen.join("out").display())),
         "{system}"
     );
 }
@@ -1805,7 +1813,7 @@ async fn an_ephemeral_chat_still_writes_a_project_grant() {
     let (_fixture, home) = project();
     let dir = tempfile::tempdir().expect("project");
     let outside = tempfile::tempdir().expect("outside");
-    let lib = fs::canonicalize(outside.path())
+    let lib = iota::app::fs::physical(outside.path())
         .expect("real outside")
         .join("lib");
     fs::create_dir_all(&lib).expect("lib");
@@ -1869,7 +1877,7 @@ async fn an_ephemeral_chat_still_writes_a_project_grant() {
 
     let store = iota::session::SessionStore::new(home.join(".iota/sessions"));
     let path = store.grants_path(dir.path());
-    let real_root = fs::canonicalize(dir.path()).expect("real root");
+    let real_root = iota::app::fs::physical(dir.path()).expect("real root");
     let file: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).expect("grants.json")).expect("json");
     assert_eq!(

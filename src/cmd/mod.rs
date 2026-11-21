@@ -1008,7 +1008,7 @@ mod tests {
     fn only_a_workspace_off_the_home_has_a_project_file() {
         use crate::config::AgentMode;
         let t = tempfile::tempdir().expect("tempdir");
-        let real = std::fs::canonicalize(t.path()).expect("real t");
+        let real = crate::app::canonical(t.path()).expect("real t");
         let home = real.join("home");
         std::fs::create_dir_all(home.join("work/proj")).expect("dirs");
         std::fs::create_dir_all(real.join("elsewhere")).expect("elsewhere");

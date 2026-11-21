@@ -659,7 +659,7 @@ async fn new_forgets_the_session_grants() {
         Reply::Interrupted,
     ]);
     let granted = tempfile::tempdir().expect("tempdir");
-    let dir = std::fs::canonicalize(granted.path()).expect("real dir");
+    let dir = iota::app::fs::physical(granted.path()).expect("real dir");
     let grants = Arc::new(Grants::default());
     grants.update(Level::Session, |s| s.add_dir(dir.clone()));
     assert_eq!(grants.live_dirs(), [dir]);
@@ -688,7 +688,7 @@ async fn new_keeps_the_project_grants() {
     for d in ["proj", "lib", "other", "mine"] {
         std::fs::create_dir(t.path().join(d)).expect("dir");
     }
-    let real = |d: &str| std::fs::canonicalize(t.path().join(d)).expect("real");
+    let real = |d: &str| iota::app::fs::physical(&t.path().join(d)).expect("real");
     let (root, lib, other, mine) = (real("proj"), real("lib"), real("other"), real("mine"));
     let provider = FakeProvider::new()
         .with_model("gpt-4o")

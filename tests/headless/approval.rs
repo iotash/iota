@@ -435,7 +435,7 @@ async fn a_project_grant_runs_unattended() {
     use iota::tool::{Registry, ToolEnv};
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let real = std::fs::canonicalize(dir.path()).expect("real");
+    let real = iota::app::fs::physical(dir.path()).expect("real");
     let root = real.join("a/b/proj");
     let twin = real.join("a-b/proj"); // the same bucket slug
     let lib = real.join("lib");
@@ -506,7 +506,7 @@ async fn a_project_builtin_grant_runs_unattended() {
     use iota::tool::{Registry, ToolEnv};
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let real = std::fs::canonicalize(dir.path()).expect("real");
+    let real = iota::app::fs::physical(dir.path()).expect("real");
     let (root, other, out) = (real.join("proj"), real.join("other"), real.join("out"));
     for d in [&root, &other, &out] {
         std::fs::create_dir_all(d).expect("dir");
@@ -598,7 +598,7 @@ async fn a_project_mcp_grant_runs_unattended() {
     use tokio_util::sync::CancellationToken;
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let real = std::fs::canonicalize(dir.path()).expect("real");
+    let real = iota::app::fs::physical(dir.path()).expect("real");
     let (root, other) = (real.join("proj"), real.join("other"));
     for d in [&root, &other] {
         std::fs::create_dir_all(d).expect("dir");

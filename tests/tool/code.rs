@@ -275,7 +275,7 @@ async fn walks_and_listings_reach_outside_the_project_root() {
     write_project_file(&other, ".gitignore", "skip/\n");
     write_project_file(&other, "b.rs", "fn needle() {}\n");
     write_project_file(&other, "skip/c.rs", "fn needle() {}\n");
-    let real = fs::canonicalize(&other).expect("real other");
+    let real = iota::app::fs::physical(&other).expect("real other");
     let abs = real.join("b.rs").display().to_string();
     let spellings = vec![
         other.to_str().expect("utf-8").to_owned(),
@@ -373,7 +373,7 @@ async fn a_walk_that_never_matches_stops_at_the_entry_cap() {
     }
 
     let cancelled = "[search cancelled]";
-    let real = fs::canonicalize(&big).expect("real big");
+    let real = iota::app::fs::physical(&big).expect("real big");
     let hit = |rel: &str| format!("{}:1: HIT", real.join(rel).display());
     // Cancelled with nothing found: up front, and mid-walk (a grep over 100k files takes seconds).
     let out = call_cancelled(

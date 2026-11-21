@@ -722,7 +722,7 @@ mod tests {
     fn fixture() -> (tempfile::TempDir, SessionStore, PathBuf) {
         let t = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(t.path().join("proj")).expect("proj");
-        let root = std::fs::canonicalize(t.path().join("proj")).expect("real proj");
+        let root = crate::app::canonical(&t.path().join("proj")).expect("real proj");
         let store = SessionStore::new(t.path().join("sessions"));
         (t, store, root)
     }
@@ -791,7 +791,7 @@ mod tests {
     #[test]
     fn two_roots_with_one_slug_share_a_file_and_nothing_else() {
         let t = tempfile::tempdir().expect("tempdir");
-        let real = std::fs::canonicalize(t.path()).expect("real t");
+        let real = crate::app::canonical(t.path()).expect("real t");
         let one = real.join("a-b/c");
         let two = real.join("a/b/c");
         for d in [&one, &two] {

@@ -92,19 +92,32 @@ impl HostDirs {
 }
 
 /// `std::fs::canonicalize` as a comparison key that is also fit to show: symlinks resolved, and on Windows
-/// the `\\?\` verbatim prefix `canonicalize` puts on a drive path dropped again, so the result reads like a
-/// path the user would write (and two canonical paths compare by their bytes). `None` when the path does not
-/// exist or cannot be resolved.
+/// the `\\?\` verbatim prefix `canonicalize` puts on a drive path dropped again ([`plain`]), so the result
+/// reads like a path the user would write (and two canonical paths compare by their bytes). `None` when the
+/// path does not exist or cannot be resolved.
 pub(crate) fn canonical(p: &Path) -> Option<PathBuf> {
-    let resolved = std::fs::canonicalize(p).ok()?;
+    std::fs::canonicalize(p).ok().map(plain)
+}
+
+/// What `std::fs::canonicalize` returned, in the ONE spelling the crate keeps, compares and shows: on Windows
+/// without the `\\?\` verbatim prefix of a drive path; elsewhere `p` itself. Every resolved path goes
+/// through here ([`canonical`], [`fs::physical`]) — a grant, a `grants.json` key and a write root are then the
+/// same bytes whichever of the two resolved them, and none of them is a spelling `current_dir()` or the user
+/// never writes.
+pub(crate) fn plain(p: PathBuf) -> PathBuf {
     if cfg!(windows)
-        && let Some(s) = resolved.to_str()
-        && let Some(rest) = s.strip_prefix(r"\\?\")
-        && rest.as_bytes().get(1) == Some(&b':')
+        && let Some(rest) = p.to_str().and_then(verbatim_drive)
     {
-        return Some(PathBuf::from(rest));
+        return PathBuf::from(rest);
     }
-    Some(resolved)
+    p
+}
+
+/// The drive path inside a verbatim one (`\\?\C:\x` → `C:\x`); `None` for anything else — a
+/// `\\?\UNC\server\share` unwrapped would be a relative path.
+fn verbatim_drive(s: &str) -> Option<&str> {
+    s.strip_prefix(r"\\?\")
+        .filter(|rest| rest.as_bytes().get(1) == Some(&b':'))
 }
 
 /// `os.UserHomeDir` rule: `$HOME` (`%USERPROFILE%` on windows), None when unset or empty.
@@ -148,6 +161,16 @@ mod tests {
     use super::{CONFIG_BASE, CONFIG_EXTS, DOT_DIR, HostDirs, NAME, cache_dir};
 
     // Go: internal/app/app_test.go:8
+    // The one spelling of a resolved path: only the verbatim form of a DRIVE path is unwrapped.
+    #[test]
+    fn verbatim_drive_unwraps_a_drive_path_only() {
+        use super::verbatim_drive;
+        assert_eq!(verbatim_drive(r"\\?\C:\Users\x"), Some(r"C:\Users\x"));
+        assert_eq!(verbatim_drive(r"\\?\UNC\server\share\x"), None);
+        assert_eq!(verbatim_drive(r"C:\Users\x"), None);
+        assert_eq!(verbatim_drive("/private/var/x"), None);
+    }
+
     #[test]
     fn test_home() {
         let dirs = HostDirs {

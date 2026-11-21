@@ -1402,7 +1402,7 @@ async fn granted_shell(
     let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     fs::create_dir_all(&base).expect("target tmp dir");
     let out_dir = tempfile::tempdir_in(&base).expect("out");
-    let out = fs::canonicalize(out_dir.path()).expect("real out");
+    let out = iota::app::fs::physical(out_dir.path()).expect("real out");
     let sb = Sandbox {
         root: root.clone(),
         network: false,

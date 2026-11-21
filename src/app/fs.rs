@@ -82,7 +82,11 @@ const MAX_SYMLINK_HOPS: usize = 40;
 /// Only `NotFound` counts as "missing". Every other failure — `ENAMETOOLONG` (a resolved
 /// prefix past `PATH_MAX`, which the kernel itself follows happily), `EACCES`, `ELOOP`,
 /// `ENOTDIR`, too many hops — is `None`: the location is unknown and the caller refuses it.
-pub(crate) fn physical(p: &Path) -> Option<PathBuf> {
+///
+/// The spelling is `app::canonical`'s: on Windows a drive path, never the `\\?\` verbatim one
+/// `canonicalize` hands back. A grant is live while `physical(dir) == dir`, and `grants.json` is keyed by
+/// `physical(root)`: one spelling, so a path resolved here once compares equal when it is resolved again.
+pub fn physical(p: &Path) -> Option<PathBuf> {
     use std::io::ErrorKind::NotFound;
     let mut path = p.to_path_buf();
     for _ in 0..MAX_SYMLINK_HOPS {
@@ -100,13 +104,10 @@ pub(crate) fn physical(p: &Path) -> Option<PathBuf> {
             }
         };
         let (base, done) = match std::fs::canonicalize(at) {
-            Ok(c) => (c, true),
+            Ok(c) => (super::plain(c), true),
             Err(e) if e.kind() == NotFound && meta.file_type().is_symlink() => {
                 let target = std::fs::read_link(at).ok()?;
-                (
-                    std::fs::canonicalize(at.parent()?).ok()?.join(target),
-                    false,
-                )
+                (super::canonical(at.parent()?)?.join(target), false)
             }
             Err(_) => return None,
         };
@@ -123,7 +124,24 @@ pub(crate) fn physical(p: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::write_atomic;
+    use super::{physical, write_atomic};
+
+    // One spelling for a resolved path: `physical` is `canonical` for a path that exists (on Windows both
+    // without `\\?\`, which `fs::canonicalize` alone adds), and resolving the result again changes nothing —
+    // what keeps a stored grant live (`tool::grants::is_live`) and a `grants.json` key findable.
+    #[test]
+    fn physical_is_canonical_and_its_own_fixed_point() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = physical(dir.path()).expect("physical");
+        assert_eq!(Some(real.clone()), crate::app::canonical(dir.path()));
+        assert_eq!(physical(&real), Some(real.clone()));
+        assert!(!real.to_string_lossy().starts_with(r"\\?\"), "{real:?}");
+        // A missing tail hangs off the same spelling.
+        assert_eq!(
+            physical(&dir.path().join("a/b")),
+            Some(real.join("a").join("b"))
+        );
+    }
 
     #[test]
     fn write_atomic_replaces_the_file_and_leaves_no_temp_behind() {
