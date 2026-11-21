@@ -557,6 +557,17 @@ fn assemble_tools(
         ..ToolEnv::default()
     }
     .with_write_roots(&cfg.write_roots, &inv.args.add_dir);
+    // The static level (docs/design/config-allow.md §4.1): the agent's `allow:`, resolved once against the root
+    // and the home, before any tool, the harness or a door reads the store. A directory that cannot be one
+    // refuses the run here, naming its entry.
+    tool_env.grants = Arc::new(crate::tool::grants::Grants::with_static(
+        assemble::static_grants(
+            cfg,
+            &settings.resolved.agent_name,
+            &settings.resolved.agent,
+            &tool_env,
+        )?,
+    ));
     // The project's grants (docs/design/grants.md §4.2), of a run that has a project and before any tool or the
     // harness reads the store: what the user granted for this project holds from the first call — in `-m` too,
     // which has no door of its own, and so in a child `iota run … -m` of the same agent in the same project.

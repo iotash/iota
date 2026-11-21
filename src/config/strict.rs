@@ -50,7 +50,7 @@ const MODEL_KEYS: [&str; 14] = [
     "moderation",
 ];
 /// Every key an `agents.<name>` entry accepts.
-const AGENT_KEYS: [&str; 15] = [
+const AGENT_KEYS: [&str; 16] = [
     "model",
     "choices",
     "system",
@@ -66,6 +66,7 @@ const AGENT_KEYS: [&str; 15] = [
     "temperature",
     "top_p",
     "max_tokens",
+    "allow",
 ];
 /// Every key an `mcp_servers.<name>` entry accepts.
 const MCP_KEYS: [&str; 12] = [
@@ -179,6 +180,9 @@ fn audit_section(section: &str, entries: &Value) -> Result<(), ConfigError> {
             if section == "agents" && key == "mode" {
                 check_mode(name, value)?;
             }
+            if section == "agents" && key == "allow" {
+                check_allow(name, value)?;
+            }
             if section == "models" && key == "moderation" {
                 check_moderation(name, value)?;
             }
@@ -279,6 +283,26 @@ fn check_mode(agent: &str, mode: &Value) -> Result<(), ConfigError> {
         at: format!("agents.{agent}.mode"),
         message: format!("unknown mode (want {})", AgentMode::NAMES.join(", ")),
     })
+}
+
+/// `agents.<name>.allow`: a list of strings (docs/design/config-allow.md §3.3) — a single string is refused too,
+/// so a grant list that grows by one never changes shape. What each string says is the load's to read
+/// (`Config::validate`), with the agent's servers and tools.
+fn check_allow(agent: &str, allow: &Value) -> Result<(), ConfigError> {
+    let Value::Sequence(entries) = allow else {
+        return Err(ConfigError::Key {
+            at: format!("agents.{agent}.allow"),
+            message: "expected a list".to_owned(),
+        });
+    };
+    match entries.iter().position(|e| !e.is_string()) {
+        None => Ok(()),
+        Some(i) => Err(ConfigError::Key {
+            at: format!("agents.{agent}.allow[{i}]"),
+            message: "expected a string (a directory, a built-in tool or <server>:<tool>)"
+                .to_owned(),
+        }),
+    }
 }
 
 /// `models.<name>.moderation`: one of the API's two levels, refused in the shape of [`check_mode`].
@@ -491,7 +515,7 @@ mod tests {
     fn workspace_is_an_unknown_agent_key() {
         assert_eq!(
             check("agents:\n  a: {model: m, workspace: true}\n"),
-            "agents.a.workspace: unknown key (want model, choices, system, system_file, tools, mcp_servers, mode, no_save, notify, description, context_window, effort, temperature, top_p, max_tokens)"
+            "agents.a.workspace: unknown key (want model, choices, system, system_file, tools, mcp_servers, mode, no_save, notify, description, context_window, effort, temperature, top_p, max_tokens, allow)"
         );
     }
 

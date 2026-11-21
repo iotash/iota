@@ -170,11 +170,25 @@ impl CodeSet {
     /// (reads are open, so a walk may start anywhere). `base` is a [`Self::walk_base`], so this
     /// lexical test decides by the real location.
     pub(crate) fn anchor<'a>(&'a self, base: &'a Path) -> &'a Path {
-        std::iter::once(&self.root)
-            .chain(&self.extra)
-            .map(|r| r.path.as_path())
+        self.fixed_roots()
+            .map(|(path, _)| path)
             .find(|root| paths::within(root, base))
             .unwrap_or(base)
+    }
+
+    /// The roots fixed at assembly, `(as configured, real)`: the project root, the static extra roots, then the
+    /// store's static directories (`allow:`), each its own real location.
+    fn fixed_roots(&self) -> impl Iterator<Item = (&Path, &Path)> {
+        std::iter::once(&self.root)
+            .chain(&self.extra)
+            .map(|r| (r.path.as_path(), r.real.as_path()))
+            .chain(
+                self.grants
+                    .statics()
+                    .dirs
+                    .iter()
+                    .map(|d| (d.as_path(), d.as_path())),
+            )
     }
 
     /// Where a walk from the existing directory `base` really starts: its real location, expressed
@@ -187,13 +201,12 @@ impl CodeSet {
         let Some(real) = crate::app::canonical(&base) else {
             return base;
         };
-        std::iter::once(&self.root)
-            .chain(&self.extra)
-            .find_map(|r| {
-                paths::within(&r.real, &real)
-                    .then(|| paths::rel(&r.real, &real))
+        self.fixed_roots()
+            .find_map(|(path, root_real)| {
+                paths::within(root_real, &real)
+                    .then(|| paths::rel(root_real, &real))
                     .flatten()
-                    .map(|rel| paths::clean(&r.path.join(rel)))
+                    .map(|rel| paths::clean(&path.join(rel)))
             })
             .unwrap_or(real)
     }
@@ -382,9 +395,14 @@ impl CodeSet {
     }
 
     /// `the project root`, or `the project root or the extra write roots ({e1}, {e2})` — where the
-    /// writers' descriptions say a write may land.
+    /// writers' descriptions say a write may land: the static roots, then the store's static directories.
     pub(crate) fn write_scope(&self) -> String {
-        let statics: Vec<PathBuf> = self.extra.iter().map(|r| r.path.clone()).collect();
+        let mut statics: Vec<PathBuf> = self.extra.iter().map(|r| r.path.clone()).collect();
+        for d in &self.grants.statics().dirs {
+            if !statics.contains(d) {
+                statics.push(d.clone());
+            }
+        }
         match extra_list(&statics) {
             None => "the project root".to_owned(),
             Some(extra) => format!("the project root or the extra write roots ({extra})"),
@@ -488,6 +506,12 @@ pub fn new_code_set(env: &ToolEnv, node: Option<&RawNode>) -> Result<Vec<Arc<dyn
         tools.push(Arc::new(WriteFile(cs)));
     }
     Ok(tools)
+}
+
+/// Whether the `tools.code` value `node` sets `read_only` — the writers left out. A value that does not decode
+/// says no: the set itself refuses it when it is built.
+pub(crate) fn read_only(node: Option<&RawNode>) -> bool {
+    yaml11::decode_mapping::<CodeConfig>(node).is_ok_and(|c| c.read_only)
 }
 
 /// The extra roots `roots`, `, `-joined; `None` when there are none.

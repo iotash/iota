@@ -1,6 +1,6 @@
 //! `agents.<name>` — the USAGE layer: the model this agent starts on and the ones it may switch to, the
 //! prompt it drives them with, the tools and MCP servers it loads, and the session-shaped switches
-//! (`mode`, `no_save`, `notify`).
+//! (`mode`, `no_save`, `notify`), and what it may do unasked (`allow`).
 //!
 //! An agent may override the five parameters a model sets as defaults (`context_window`/`effort`/
 //! `temperature`/`top_p`/`max_tokens`) — ONE level of inheritance, deliberately not a chain (brain page
@@ -66,6 +66,11 @@ pub struct AgentConfig {
     pub top_p: Option<f64>,
     /// `max_tokens:` — overrides the model's default.
     pub max_tokens: Option<u32>,
+    /// `allow:` — what this agent may do without being asked, each entry a `/allow` target without the scope
+    /// word ([`crate::config::allow`]): the grant store's static level, filled at assembly. As written; the key
+    /// audit has refused anything but a list of strings, and the load every entry that reads as nothing this
+    /// agent has. An `agents:` entry merges whole, so a project's `coder` replaces the home's list.
+    pub allow: Vec<String>,
 }
 
 /// `agents.<name>.mode` — three nested levels, chat ⊂ agent ⊂ bot.

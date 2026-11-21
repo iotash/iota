@@ -17,8 +17,8 @@
 //!
 //! The BARE `/allow` grants nothing: it opens a tabbed surface that lists and takes back. `Grants` is a
 //! multi-select of every grant in effect, by level, and committing it takes each checked grant back from every
-//! level that holds it; `Static`, shown only when there is one, is a read-only view of the roots that are not
-//! grants (`write_roots:`, `--add-dir`). With neither, no surface opens: one line says how to grant. This
+//! level that holds it; `Static`, shown only when there is one, is a read-only view of what the config and the
+//! command line allow — not grants made here (`write_roots:`, the agent's `allow:`, `--add-dir`). With neither, no surface opens: one line says how to grant. This
 //! file parses and words; every change is kept by the grants service, [`Door::apply`] (`repl::grants`), as the
 //! dialog's and `/save`'s are.
 //!
@@ -57,9 +57,18 @@ const NONE_NO_PROJECT: &str =
 /// the same column.
 const LEVEL_W: usize = 12;
 
-/// The `Static` tab's prompt: what its rows are, and why none can be taken back here.
-const STATIC: &str =
-    "Writable from the config and the command line: not grants, so none can be revoked here.";
+/// The `Static` tab's prompt: what its rows are, why none can be taken back here, and where to instead — the
+/// agent's `allow:` when the run has a named agent.
+fn static_prompt(agent: &str) -> String {
+    let edit = if agent.is_empty() {
+        "edit the config".to_owned()
+    } else {
+        format!("edit agents.{agent}.allow")
+    };
+    format!(
+        "From the config and the command line: not grants made here, so none can be revoked here — {edit}, or drop the flag."
+    )
+}
 
 /// A change made: the notice line, and — the session level changed but its bundle's meta could not be written —
 /// why, said after it.
@@ -149,17 +158,24 @@ async fn panel(repl: &Repl) {
     }
 }
 
-/// The `Static` tab: a read-only view, one row per writable root that is not a grant, `write_roots:` first,
-/// each labelled with its source (the labels padded to one width). `None` when there is no such root: the
-/// surface then has `Grants` alone.
+/// The `Static` tab: a read-only view of what the config and the command line allow — not grants, so nothing
+/// here is taken back — each row labelled with its source (the labels padded to one width): `write_roots:`,
+/// then the agent's `allow:` (its directories, then its tools), then `--add-dir`. `None` when there is none:
+/// the surface then has `Grants` alone.
 fn static_tab(footing: &Footing) -> Option<Panel> {
-    let w = footing.write_roots.iter().map(|r| ("write_roots:", r));
-    let a = footing.added_dirs.iter().map(|r| ("--add-dir", r));
+    let shown = |p: &PathBuf| p.display().to_string();
+    let w = footing.write_roots.iter().map(|r| ("write_roots:", shown(r)));
+    let dirs = footing.config.dirs.iter().map(|d| ("allow:", shown(d)));
+    let tools = footing.config.tools.iter().map(|k| ("allow:", label(k)));
+    let a = footing.added_dirs.iter().map(|r| ("--add-dir", shown(r)));
     let rows: Vec<String> = w
+        .chain(dirs)
+        .chain(tools)
         .chain(a)
-        .map(|(from, r)| format!("{from:<12}  {}", r.display()))
+        .map(|(from, what)| format!("{from:<12}  {what}"))
         .collect();
-    (!rows.is_empty()).then(|| Panel::view("Static", rows).with_prompt(STATIC))
+    (!rows.is_empty())
+        .then(|| Panel::view("Static", rows).with_prompt(static_prompt(&footing.agent)))
 }
 
 /// The user's home directory: `~` and the protected table's home rows.
@@ -347,6 +363,7 @@ impl Rows<'_> {
         after: &str,
     ) -> bool {
         let own = !self.door.grants.allows(key);
+        let fixed = self.door.grants.statics().allows(key);
         if own {
             out.push(Suggestion {
                 value: line.to_owned(),
@@ -357,6 +374,7 @@ impl Rows<'_> {
         }
         if let Some((held, root)) = &self.project
             && !held.allows(key)
+            && !fixed
         {
             out.push(Suggestion {
                 value: format!("{line} {PROJECT}"),
@@ -369,19 +387,20 @@ impl Rows<'_> {
     }
 
     /// The rows of the connected server `name` — one server under that name, as `/allow` requires: none when
-    /// it is `auto_run` (its tools never ask) or its name cannot be typed back ([`typable`]). Its `*` row and
+    /// it is `auto_run` (its tools never ask), when the config's `allow:` holds its `*` (they run unasked
+    /// already), or when its name cannot be typed back ([`typable`]). Its `*` row and
     /// then a row per tool that can be ([`typable`]), in the server's order, each followed by its scope row,
     /// all waiting behind `/allow <name>:`; and first the server's own row, the prefix, when any `*` or tool
     /// row is there to reach.
     fn server(&self, name: &str, server: &ConnectedServer) -> Vec<Suggestion> {
-        if server.auto_run || !typable(name) {
-            return Vec::new();
-        }
-        let prefix = format!("/allow {name}:");
         let key = |tool| ToolKey::Mcp {
             server: server.id.clone(),
             tool,
         };
+        if server.auto_run || self.door.grants.statics().allows(&key(McpTool::Any)) || !typable(name) {
+            return Vec::new();
+        }
+        let prefix = format!("/allow {name}:");
         let mut children = Vec::new();
         let any = self.target(
             &mut children,
@@ -597,9 +616,13 @@ fn allow_tool(
 }
 
 /// Grants the tool `key` at `level`, the notice naming it `what`: the notice line, or why not — it is refused
-/// when a project grant already covers it, or (for a session grant) a session one.
+/// when the config's `allow:` already covers it (the static level), when a project grant does, or (for a
+/// session grant) a session one.
 fn grant_tool(door: &Door, level: Level, key: ToolKey, what: &str) -> Result<Done, String> {
     let shown = label(&key);
+    if door.grants.statics().allows(&key) {
+        return Err(format!("{shown} already runs without asking (allow:)"));
+    }
     let held = |l: Level| door.grants.snapshot(l).allows(&key);
     if held(Level::Project) {
         return Err(format!(
@@ -628,7 +651,8 @@ fn grant_tool(door: &Door, level: Level, key: ToolKey, what: &str) -> Result<Don
 }
 
 /// What already makes the real directory `real` writable for a grant at `level`, if anything: the project
-/// root, a `write_roots:` entry, an `--add-dir` value, or a grant that covers it — of this project at either
+/// root, a `write_roots:` entry, a live directory of the agent's `allow:`, an `--add-dir` value, or a grant that
+/// covers it — of this project at either
 /// level, of this session only for another session grant (a project grant is what a session grant becomes when
 /// it should last).
 fn writable_by(
@@ -643,6 +667,14 @@ fn writable_by(
     }
     if footing.write_roots.iter().any(|r| under(r)) {
         return Some("write_roots:");
+    }
+    if footing
+        .config
+        .dirs
+        .iter()
+        .any(|d| grants::is_live(d) && paths::within(d, real))
+    {
+        return Some("allow:");
     }
     if footing.added_dirs.iter().any(|r| under(r)) {
         return Some("--add-dir");
@@ -814,7 +846,7 @@ mod tests {
     };
     use crate::repl::grants::{Door, ProjectFile};
     use crate::session::SessionStore;
-    use crate::tool::grants::{McpTool, ServerId};
+    use crate::tool::grants::{self, McpTool, ServerId};
     use crate::ui::facade::PanelBody;
 
     /// A temp dir holding `proj/` (the project, a repository) and `out/` beside it; their real locations.
@@ -885,12 +917,21 @@ mod tests {
                     project: Some(project),
                     write_roots: write_roots.to_vec(),
                     added_dirs: added_dirs.to_vec(),
+                    config: grants::GrantSet::default(),
+                    agent: "coder".to_owned(),
                 },
                 tools: tools(),
                 home: None,
                 workspace: true,
                 servers: None,
             }
+        }
+
+        /// The same chat with the agent's `allow:` resolved to `config`: the store's static level and the footing's.
+        fn with_config(mut self, config: grants::GrantSet) -> Self {
+            self.door.grants = Arc::new(Grants::with_static(config.clone()));
+            self.footing.config = config;
+            self
         }
 
         /// The same chat with the MCP servers `servers`.
@@ -1415,7 +1456,7 @@ mod tests {
         );
         let (title, prompt, rows) = c.fixed().expect("the tab is shown");
         assert_eq!(title, "Static");
-        assert_eq!(prompt, super::STATIC);
+        assert_eq!(prompt, super::static_prompt("coder"));
         assert_eq!(
             rows,
             [
@@ -1424,6 +1465,117 @@ mod tests {
             ]
         );
         assert!(Chat::new(&t, &root, &[], &[]).fixed().is_none());
+    }
+
+    /// The `Static` tab lists the agent's `allow:` beside the old static roots — its directories, then its tools
+    /// — each labelled with its source, and says where it is taken back: the file, not here.
+    #[test]
+    fn the_static_tab_lists_tools_and_directories_by_source() {
+        let (t, root, out) = fixture();
+        let add = PathBuf::from("/tmp/out");
+        let lib = out.join("sub");
+        let gh = ToolKey::Mcp {
+            server: ServerId::Config("gh".to_owned()),
+            tool: McpTool::Any,
+        };
+        let c = Chat::new(
+            &t,
+            &root,
+            std::slice::from_ref(&out),
+            std::slice::from_ref(&add),
+        )
+        .with_config(grants::GrantSet {
+            dirs: vec![lib.clone()],
+            tools: vec![ToolKey::Builtin("shell".to_owned()), gh],
+        });
+        let (title, prompt, rows) = c.fixed().expect("the tab is shown");
+        assert_eq!(title, "Static");
+        assert_eq!(
+            prompt,
+            "From the config and the command line: not grants made here, so none can be revoked here — edit agents.coder.allow, or drop the flag."
+        );
+        assert_eq!(
+            rows,
+            [
+                format!("write_roots:  {}", out.display()),
+                format!("allow:        {}", lib.display()),
+                "allow:        shell".to_owned(),
+                "allow:        gh:*".to_owned(),
+                "--add-dir     /tmp/out".to_owned(),
+            ]
+        );
+        assert!(c.rows().is_empty(), "the Grants tab holds none of it");
+
+        let only = Chat::new(&t, &root, &[], &[]).with_config(grants::GrantSet {
+            dirs: Vec::new(),
+            tools: vec![ToolKey::Builtin("write_file".to_owned())],
+        });
+        assert_eq!(only.fixed().expect("shown").2, ["allow:        write_file"]);
+    }
+
+    /// What the config's `allow:` already gives, `/allow` refuses naming it — at either level, a directory under
+    /// one of its directories, a built-in, an MCP tool its `*` covers — and the completion rows leave out: the
+    /// built-in's rows and its scope row, every row of the server.
+    #[test]
+    fn allow_refuses_what_the_config_already_allows() {
+        let (t, root, out) = fixture();
+        let m = crate::mcp::testutil::serving(vec![
+            (entry("gh", false), &[("search", "")]),
+            (entry("lin", false), &[("list", "")]),
+        ]);
+        let c = Chat::new(&t, &root, &[], &[])
+            .with_servers(m)
+            .with_config(grants::GrantSet {
+                dirs: vec![out.clone()],
+                tools: vec![
+                    ToolKey::Builtin("shell".to_owned()),
+                    ToolKey::Mcp {
+                        server: ServerId::Config("gh".to_owned()),
+                        tool: McpTool::Any,
+                    },
+                ],
+            });
+        for line in ["shell", "shell project"] {
+            assert_eq!(
+                c.allow(line).unwrap_err(),
+                "shell already runs without asking (allow:)"
+            );
+        }
+        for line in ["gh:search", "gh:* project"] {
+            let shown = line.trim_end_matches(" project");
+            assert_eq!(
+                c.allow(line).unwrap_err(),
+                format!("{shown} already runs without asking (allow:)")
+            );
+        }
+        for dir in [out.clone(), out.join("sub")] {
+            let arg = dir.display().to_string();
+            assert_eq!(
+                c.allow(&arg).unwrap_err(),
+                format!("{arg} is already writable (allow:)")
+            );
+            assert_eq!(
+                c.allow(&format!("{arg} project")).unwrap_err(),
+                format!("{arg} is already writable (allow:)")
+            );
+        }
+        assert!(c.g().snapshot(Level::Session).is_empty());
+        assert!(c.g().snapshot(Level::Project).is_empty());
+
+        let values: Vec<String> = rows_of(&c).into_iter().map(|r| r.0).collect();
+        assert_eq!(
+            values,
+            [
+                "/allow write_file",
+                "/allow write_file project",
+                "/allow lin:",
+                "/allow lin:*",
+                "/allow lin:* project",
+                "/allow lin:list",
+                "/allow lin:list project",
+            ]
+        );
+        assert!(c.allow("write_file").is_ok(), "what it does not allow, /allow grants");
     }
 
     /// The scope is the LAST word: `project` there is the project level and the target is what precedes it,

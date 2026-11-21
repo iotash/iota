@@ -195,7 +195,13 @@ impl Tool for ShellTool {
             } else {
                 "network access is BLOCKED"
             };
-            description.push_str(&sandbox_desc(&self.write_roots, net));
+            let mut roots = self.write_roots.clone();
+            for d in &self.grants.statics().dirs {
+                if !roots.contains(d) {
+                    roots.push(d.clone());
+                }
+            }
+            description.push_str(&sandbox_desc(&roots, net));
         } else {
             description.push_str(SHELL_DESC_UNSANDBOXED);
         }

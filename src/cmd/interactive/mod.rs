@@ -406,6 +406,8 @@ pub(crate) async fn run_interactive(
         footing: crate::repl::Footing {
             write_roots: tool_env.write_roots.clone(),
             added_dirs: tool_env.added_dirs.clone(),
+            config: tool_env.grants.statics().clone(),
+            agent: settings.resolved.agent_name.clone(),
             root,
             project,
         },

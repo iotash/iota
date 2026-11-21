@@ -178,8 +178,15 @@ fn push_new<T: PartialEq>(list: &mut Vec<T>, item: T) -> bool {
 }
 
 /// The store. `Default` is empty.
+///
+/// Beside the two levels a door writes ([`Level`]) it holds a third, READ-ONLY one — the **static** level
+/// (docs/design/config-allow.md §4.1): the agent's `allow:`, resolved at assembly and given to
+/// [`Grants::with_static`]. It is not a `Level` because nothing writes it after construction, it sits outside
+/// the lock because it never changes, and it is never persisted nor revoked from the chat — the user takes it
+/// back by editing the file.
 #[derive(Debug, Default)]
 pub struct Grants {
+    fixed: GrantSet,
     inner: Mutex<Inner>,
 }
 
@@ -203,7 +210,21 @@ impl Inner {
 }
 
 impl Grants {
-    /// The granted directories still in force, every level, each once: a directory is LIVE while its real
+    /// A store whose static level is `fixed` — the ONE time that level is written. Its directories are real
+    /// locations ([`crate::app::fs::physical`] at assembly), live by [`Self::live_dirs`]'s rule.
+    pub fn with_static(fixed: GrantSet) -> Self {
+        Self {
+            fixed,
+            inner: Mutex::default(),
+        }
+    }
+
+    /// The static level: what the descriptions and `/allow`'s `Static` tab show.
+    pub fn statics(&self) -> &GrantSet {
+        &self.fixed
+    }
+
+    /// The granted directories still in force, every level a door writes, each once: a directory is LIVE while its real
     /// location is the path that was granted. One replaced by a symlink, or under an ancestor that was, is
     /// stale — no real location lies under it any more — and left out until the directory comes back.
     pub fn live_dirs(&self) -> Vec<PathBuf> {
@@ -218,29 +239,36 @@ impl Grants {
         dirs.into_iter().filter(|d| is_live(d)).collect()
     }
 
-    /// Whether any level grants the tool `key` ([`GrantSet::allows`]).
+    /// Whether any level — the static one included — grants the tool `key` ([`GrantSet::allows`]).
     pub fn allows(&self, key: &ToolKey) -> bool {
-        lock(&self.inner)
-            .levels()
-            .into_iter()
-            .any(|s| s.allows(key))
+        self.fixed.allows(key)
+            || lock(&self.inner)
+                .levels()
+                .into_iter()
+                .any(|s| s.allows(key))
     }
 
     /// Whether any level grants a TOOL — some call runs without the question (docs/design/config-allow.md §4.4):
     /// what holds a message from another process (`repl::inbound`, the hold). A directory grant alone does not:
     /// a sandbox writing one more directory is not a waiver.
     pub fn waives(&self) -> bool {
-        lock(&self.inner)
-            .levels()
-            .into_iter()
-            .any(|s| !s.tools.is_empty())
+        !self.fixed.tools.is_empty()
+            || lock(&self.inner)
+                .levels()
+                .into_iter()
+                .any(|s| !s.tools.is_empty())
     }
 
     /// The write roots in force now: the static `statics` (the top-level `write_roots:`, then `--add-dir`), then
-    /// the live directory grants ([`Self::live_dirs`]) not already among them — what the code jail, the shell
-    /// sandbox and the harness's `write roots:` line read, each root once.
+    /// the static level's directories (`allow:`), then the live directory grants ([`Self::live_dirs`]) — what the
+    /// code jail, the shell sandbox, the protected table and the harness's `write roots:` line read, each root
+    /// once. A directory of the static level is live by the grant's rule: one replaced by a link since the
+    /// assembly is left out until it comes back.
     pub fn roots(&self, statics: &[PathBuf]) -> Vec<PathBuf> {
         let mut roots = statics.to_vec();
+        for d in self.fixed.dirs.iter().filter(|d| is_live(d)) {
+            push_new(&mut roots, d.clone());
+        }
         for d in self.live_dirs() {
             push_new(&mut roots, d);
         }
@@ -335,6 +363,72 @@ mod tests {
             }],
         });
         assert!(g.waives(), "a project grant of a whole server");
+    }
+
+    /// The static level answers every reader — `allows`, `waives`, `roots` — and no door reaches it: a write at
+    /// either level, a snapshot, a replacement or emptying both levels leaves it as it was built.
+    #[test]
+    fn the_static_level_is_read_and_never_written() {
+        let (_t, root, out) = fixture();
+        let shell = ToolKey::Builtin("shell".to_owned());
+        let github = mcp(ServerId::Config("github".to_owned()), "*");
+        let fixed = GrantSet {
+            dirs: vec![out.clone()],
+            tools: vec![shell.clone(), github],
+        };
+        let g = Arc::new(Grants::with_static(fixed.clone()));
+        assert!(g.allows(&shell));
+        assert!(g.allows(&mcp(ServerId::Config("github".to_owned()), "push")));
+        assert!(!g.allows(&ToolKey::Builtin("edit_file".to_owned())));
+        assert!(g.waives(), "a static tool grant waives");
+        assert_eq!(g.roots(&[]), std::slice::from_ref(&out));
+        assert!(g.live_dirs().is_empty(), "no door granted a directory");
+        assert!(inside(&jail(&root, &g), &out.join("x.txt")), "the jail reads it");
+
+        // Every door's write is to a `Level`; none is the static one.
+        for level in [Level::Session, Level::Project] {
+            assert!(g.snapshot(level).is_empty(), "{level:?} shows none of it");
+            g.update(level, |s| {
+                s.add_tool(shell.clone());
+                s.add_dir(out.clone());
+            });
+            g.update(level, |s| *s = GrantSet::default());
+        }
+        g.replace_session(GrantSet::default());
+        g.replace_project(GrantSet::default());
+        assert_eq!(g.statics(), &fixed);
+        assert!(g.allows(&shell));
+        assert_eq!(g.roots(&[]), std::slice::from_ref(&out));
+        let directory_only = Grants::with_static(GrantSet {
+            dirs: vec![out],
+            tools: Vec::new(),
+        });
+        assert!(!directory_only.waives(), "a directory is not a waiver");
+    }
+
+    /// A static directory is a real location, live by the grant's rule: replaced by a link it leaves the roots —
+    /// the jail and the sandbox read the same list — and comes back with the directory.
+    #[test]
+    fn a_static_directory_replaced_by_a_link_is_stale() {
+        let (t, root, out) = fixture();
+        let elsewhere = t.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).expect("elsewhere");
+        let g = Arc::new(Grants::with_static(GrantSet {
+            dirs: vec![out.clone()],
+            tools: Vec::new(),
+        }));
+        let cs = jail(&root, &g);
+        assert!(inside(&cs, &out.join("x.txt")));
+
+        std::fs::rename(&out, t.path().join("moved")).expect("move away");
+        std::os::unix::fs::symlink(&elsewhere, &out).expect("link in its place");
+        assert!(g.roots(&[]).is_empty(), "a stale static directory is no root");
+        assert!(!inside(&cs, &out.join("x.txt")));
+
+        std::fs::remove_file(&out).expect("unlink");
+        std::fs::create_dir(&out).expect("the directory again");
+        assert_eq!(g.roots(&[]), std::slice::from_ref(&out));
+        assert!(inside(&cs, &out.join("x.txt")));
     }
 
     fn inside(cs: &CodeSet, p: &Path) -> bool {

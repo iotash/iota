@@ -553,7 +553,7 @@ fn an_unknown_key_is_refused_with_its_coordinate() {
         ),
         (
             "agents:\n  coder: {model: m, sytem: hi}\n",
-            "agents.coder.sytem: unknown key (want model, choices, system, system_file, tools, mcp_servers, mode, no_save, notify, description, context_window, effort, temperature, top_p, max_tokens)",
+            "agents.coder.sytem: unknown key (want model, choices, system, system_file, tools, mcp_servers, mode, no_save, notify, description, context_window, effort, temperature, top_p, max_tokens, allow)",
         ),
         (
             "agnets:\n  coder: {}\n",

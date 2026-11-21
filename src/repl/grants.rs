@@ -75,7 +75,7 @@ pub(crate) fn enter(
 }
 
 /// What a chat's grant doors stand on, resolved ONCE at assembly beside the project load (`cmd`): the root, the
-/// project's file and the static write roots, kept apart by where they were declared so `/allow` can say which
+/// project's file, the static write roots and the agent's `allow:`, kept apart by where they were declared so `/allow` can say which
 /// one already covers a directory.
 #[derive(Clone, Debug)]
 pub struct Footing {
@@ -87,6 +87,11 @@ pub struct Footing {
     pub write_roots: Vec<PathBuf>,
     /// The `--add-dir` values, resolved (`ToolEnv::added_dirs`).
     pub added_dirs: Vec<PathBuf>,
+    /// The agent's `allow:`, resolved — the store's static level (`Grants::statics`), kept here with its source
+    /// so the `Static` tab and `/allow`'s refusals can say it is the config's.
+    pub config: GrantSet,
+    /// The agent's `agents:` name (`""` for none): where the `Static` tab says to edit `allow:`.
+    pub agent: String,
 }
 
 impl Footing {

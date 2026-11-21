@@ -15,6 +15,7 @@
 //! ignored line. Bool fields take the YAML 1.1 spellings through `crate::tool::yaml11` (DIVERGENCES I-01).
 
 pub mod agent;
+pub mod allow;
 pub mod edit;
 pub mod model;
 pub mod params;
@@ -290,7 +291,7 @@ impl Config {
             }
             cfg.merge_bytes(&path, &data, env, warn)?;
         }
-        cfg.validate(warn)?;
+        cfg.validate(env, warn)?;
         Ok(cfg)
     }
 
@@ -343,7 +344,7 @@ impl Config {
     ) -> Result<Config, ConfigError> {
         let mut cfg = Config::default();
         cfg.merge_document(decode(data)?, env)?;
-        cfg.validate(warn)?;
+        cfg.validate(env, warn)?;
         Ok(cfg)
     }
 
@@ -410,7 +411,7 @@ impl Config {
     /// The cross-layer rules, checked once: every reference resolves, and every `defer_mode` applies to the
     /// dialect of the provider its model points at (that mismatch used to be a runtime warning that silently
     /// downgraded to `normal`).
-    fn validate(&self, warn: &mut dyn FnMut(String)) -> Result<(), ConfigError> {
+    fn validate(&self, env: &Env, warn: &mut dyn FnMut(String)) -> Result<(), ConfigError> {
         for (name, m) in &self.models {
             let provider_name = m.provider_or(name);
             if !self.knows_provider(provider_name) {
@@ -517,6 +518,13 @@ impl Config {
             for r in &a.choices {
                 self.check_ref(name, "choices", r)?;
             }
+            for (i, entry) in a.allow.iter().enumerate() {
+                self.check_allow(a, entry, env)
+                    .map_err(|message| ConfigError::Key {
+                        at: format!("agents.{name}.allow[{i}]"),
+                        message,
+                    })?;
+            }
             // The choices are advice about what is good here, not a whitelist (decision of 2026-09-10, the
             // rule `-M` follows): a `model:` outside them is a warning, and the run starts on it anyway. Only
             // a WRITTEN `choices:` can leave it out — unwritten, they are the `model:` itself.
@@ -527,6 +535,74 @@ impl Config {
                     "Warning: config agents.{name}.model: {}:{} is not in choices (using it anyway)",
                     model.provider, model.id
                 ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The `mcp_servers:` names `agent` loads: its own list, else every top-level entry.
+    pub fn servers_of(&self, agent: &AgentConfig) -> Vec<String> {
+        agent
+            .mcp_servers
+            .clone()
+            .unwrap_or_else(|| self.mcp_servers.keys().cloned().collect())
+    }
+
+    /// One `allow:` entry of `agent` (docs/design/config-allow.md §3.3), read against the servers it
+    /// loads: its grammar ([`allow::parse`]), then whether it names something this agent has — a `~` a home
+    /// expands, a built-in of an enabled set, a server it loads. Every agent's entries are read at the load,
+    /// so a mistake in one nobody ran today is still found; what needs the run's filesystem is the assembly's.
+    fn check_allow(
+        &self,
+        agent: &AgentConfig,
+        entry: &str,
+        env: &Env,
+    ) -> Result<(), String> {
+        let servers = self.servers_of(agent);
+        match allow::parse(entry, &servers)? {
+            allow::Entry::Dir(dir) => {
+                if (dir == "~" || dir.starts_with("~/"))
+                    && env.home().is_none_or(|h| h.as_os_str().is_empty())
+                {
+                    return Err("\"~\" needs a home directory, and this run has none".to_owned());
+                }
+            }
+            allow::Entry::Builtin(tool) => {
+                let set = crate::tool::builtins::set_of(&tool);
+                let node = agent.tools.get(set);
+                if node.is_none_or(crate::tool::yaml11::is_false_scalar) {
+                    return Err(format!(
+                        "{tool} is not one of this agent's tools (tools.{set} is not enabled)"
+                    ));
+                }
+                if set == "code" && crate::tool::builtins::code::read_only(node) {
+                    return Err(format!(
+                        "{tool} is not one of this agent's tools (tools.code.read_only leaves the writers out)"
+                    ));
+                }
+            }
+            allow::Entry::Mcp { server, .. } => {
+                if !self.mcp_servers.contains_key(&server) {
+                    let entries: Vec<&str> = self.mcp_servers.keys().map(String::as_str).collect();
+                    let entries = if entries.is_empty() {
+                        "there are none".to_owned()
+                    } else {
+                        format!("entries: {}", entries.join(", "))
+                    };
+                    return Err(format!(
+                        "no mcp_servers entry named \"{server}\" ({entries})"
+                    ));
+                }
+                if !servers.contains(&server) {
+                    let loads = if servers.is_empty() {
+                        "it loads none".to_owned()
+                    } else {
+                        format!("it loads: {}", servers.join(", "))
+                    };
+                    return Err(format!(
+                        "\"{server}\" is not one of this agent's mcp_servers ({loads})"
+                    ));
+                }
             }
         }
         Ok(())

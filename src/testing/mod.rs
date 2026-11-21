@@ -39,6 +39,8 @@ pub fn footing(
         }),
         write_roots: Vec::new(),
         added_dirs: Vec::new(),
+        config: crate::tool::grants::GrantSet::default(),
+        agent: String::new(),
     }
 }
 
