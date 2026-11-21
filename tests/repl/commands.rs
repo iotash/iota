@@ -3617,7 +3617,9 @@ async fn the_bare_allow_with_nothing_to_list_prints_the_hint_and_opens_no_panel(
 }
 
 /// With static roots the bare `/allow` opens `Grants` + `Static` even with no grant — the `Grants` tab then
-/// says so — and keeps both once there is one. A commit focused on `Static` does nothing.
+/// says so — and keeps both once there is one. A commit focused on `Static` does nothing. The grant names `out`
+/// itself, not `link`: the fixture has the link on unix only, and where a typed path leads is not this test's
+/// subject.
 #[tokio::test]
 async fn the_bare_allow_adds_the_static_tab_when_there_are_static_roots() {
     let (t, root, out) = allow_fixture();
@@ -3630,7 +3632,7 @@ async fn the_bare_allow_adds_the_static_tab_when_there_are_static_roots() {
             focused: 1,
             panels: vec![PanelResult::default(), PanelResult::default()],
         }),
-        input("/allow ../link"),
+        input("/allow ../out"),
         input("/allow"),
         allow_cancel(),
         Reply::Interrupted,
