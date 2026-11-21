@@ -164,7 +164,10 @@ async fn panel(repl: &Repl) {
 /// the surface then has `Grants` alone.
 fn static_tab(footing: &Footing) -> Option<Panel> {
     let shown = |p: &PathBuf| p.display().to_string();
-    let w = footing.write_roots.iter().map(|r| ("write_roots:", shown(r)));
+    let w = footing
+        .write_roots
+        .iter()
+        .map(|r| ("write_roots:", shown(r)));
     let dirs = footing.config.dirs.iter().map(|d| ("allow:", shown(d)));
     let tools = footing.config.tools.iter().map(|k| ("allow:", label(k)));
     let a = footing.added_dirs.iter().map(|r| ("--add-dir", shown(r)));
@@ -397,7 +400,10 @@ impl Rows<'_> {
             server: server.id.clone(),
             tool,
         };
-        if server.auto_run || self.door.grants.statics().allows(&key(McpTool::Any)) || !typable(name) {
+        if server.auto_run
+            || self.door.grants.statics().allows(&key(McpTool::Any))
+            || !typable(name)
+        {
             return Vec::new();
         }
         let prefix = format!("/allow {name}:");
@@ -1598,7 +1604,10 @@ mod tests {
                 "/allow lin:list project",
             ]
         );
-        assert!(c.allow("write_file").is_ok(), "what it does not allow, /allow grants");
+        assert!(
+            c.allow("write_file").is_ok(),
+            "what it does not allow, /allow grants"
+        );
     }
 
     /// The scope is the LAST word: `project` there is the project level and the target is what precedes it,

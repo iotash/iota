@@ -27,6 +27,7 @@ pub use args::{
     Cli, Command, ConfigAction, Invocation, ListWhat, McpAction, McpAddCmd, McpAuthArg, McpCmd,
     McpListCmd, McpListScope, McpScope, Resume, RunArgs,
 };
+pub use assemble::static_grants;
 pub use error::{ArgsError, CliError, RunError, SetupError};
 pub use resolve::{RunSettings, resolve_run};
 

@@ -106,10 +106,19 @@ mod tests {
     #[test]
     fn an_entry_is_read_in_allows_order() {
         let s = names(&["github"]);
-        assert_eq!(parse("github:search_issues", &s), Ok(mcp("github", "search_issues")));
+        assert_eq!(
+            parse("github:search_issues", &s),
+            Ok(mcp("github", "search_issues"))
+        );
         assert_eq!(parse("github:*", &s), Ok(mcp("github", "*")));
-        assert_eq!(parse(" ~/scratch ", &s), Ok(Entry::Dir("~/scratch".to_owned())));
-        assert_eq!(parse("../shared-lib", &s), Ok(Entry::Dir("../shared-lib".to_owned())));
+        assert_eq!(
+            parse(" ~/scratch ", &s),
+            Ok(Entry::Dir("~/scratch".to_owned()))
+        );
+        assert_eq!(
+            parse("../shared-lib", &s),
+            Ok(Entry::Dir("../shared-lib".to_owned()))
+        );
         assert_eq!(parse("/tmp/out", &s), Ok(Entry::Dir("/tmp/out".to_owned())));
         // A server the agent does not load is still `<server>:<tool>`: the load says whose it is.
         assert_eq!(parse("gitlab:push", &s), Ok(mcp("gitlab", "push")));
@@ -118,7 +127,10 @@ mod tests {
             assert_eq!(parse(t, &s), Ok(Entry::Builtin(t.to_owned())));
         }
         let those = "(tools that ask: shell, edit_file, write_file)";
-        assert_eq!(parse("read_file", &s), Err(format!("read_file never asks {those}")));
+        assert_eq!(
+            parse("read_file", &s),
+            Err(format!("read_file never asks {those}"))
+        );
         assert_eq!(
             parse("shel", &s),
             Err(format!("no built-in tool named \"shel\" {those}"))

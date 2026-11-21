@@ -812,7 +812,9 @@ fn allow_refuses_a_server_the_agent_does_not_load() {
             "agents.a.allow[0]: no mcp_servers entry named \"gitlab\" (entries: github, linear)",
         ),
         (
-            format!("{servers}agents:\n  a:\n    mcp_servers: [linear]\n    allow: [\"github:*\"]\n"),
+            format!(
+                "{servers}agents:\n  a:\n    mcp_servers: [linear]\n    allow: [\"github:*\"]\n"
+            ),
             "agents.a.allow[0]: \"github\" is not one of this agent's mcp_servers (it loads: linear)",
         ),
         (
@@ -837,7 +839,9 @@ fn an_aliased_allow_list_is_each_agents_own() {
     assert_eq!(cfg.agents["a"].allow, ["/tmp/out", "edit_file"]);
     assert_eq!(cfg.agents["b"].allow, cfg.agents["a"].allow);
     assert_eq!(
-        refusal("agents:\n  a:\n    tools: {code: {}}\n    allow: &w [edit_file]\n  b:\n    allow: *w\n"),
+        refusal(
+            "agents:\n  a:\n    tools: {code: {}}\n    allow: &w [edit_file]\n  b:\n    allow: *w\n"
+        ),
         "agents.b.allow[0]: edit_file is not one of this agent's tools (tools.code is not enabled)"
     );
 }
@@ -861,7 +865,11 @@ fn a_project_agent_replaces_the_homes_allow() {
     assert_eq!(cfg.agents["coder"].allow, ["edit_file"]);
     assert_eq!(cfg.agents["other"].allow, ["/tmp/other"]);
 
-    fs::write(dir.path().join(".iota.yaml"), "agents:\n  coder:\n    tools: {shell: {}}\n").unwrap();
+    fs::write(
+        dir.path().join(".iota.yaml"),
+        "agents:\n  coder:\n    tools: {shell: {}}\n",
+    )
+    .unwrap();
     let cfg = Config::load(None, &env, &mut |_, _, _| true, &mut |_| {}).expect("loads");
     assert!(cfg.agents["coder"].allow.is_empty(), "replaced, not merged");
 }

@@ -211,6 +211,65 @@ pub(crate) fn build_dispatcher(
     merge(parts)
 }
 
+/// The static level of the run's grant store (docs/design/config-allow.md §4.1): the agent `name`'s `allow:`
+/// entries, resolved against the run's root and home (`env`), in the order written, a repeat kept once. A
+/// directory is stored as its REAL location (`fs::physical`) and refused — with the entry's coordinate — when
+/// it exists and is no directory, when its location cannot be worked out, or when it is itself on the
+/// protected table; one that does not exist yet is accepted, as the first build routinely creates `out/`. A
+/// built-in is its `ToolKey::Builtin`, an MCP entry its `ServerId::Config` key. The load has already refused
+/// every entry that names nothing this agent has ([`Config::check_allow`](crate::config::Config)).
+pub fn static_grants(
+    cfg: &Config,
+    name: &str,
+    agent: &AgentConfig,
+    env: &ToolEnv,
+) -> Result<crate::tool::grants::GrantSet, crate::config::ConfigError> {
+    use crate::config::allow::{Entry, parse};
+    use crate::tool::grants::{GrantSet, ServerId, ToolKey};
+    let servers = cfg.servers_of(agent);
+    let mut set = GrantSet::default();
+    for (i, written) in agent.allow.iter().enumerate() {
+        let refused = |message: String| crate::config::ConfigError::Key {
+            at: format!("agents.{name}.allow[{i}]"),
+            message,
+        };
+        match parse(written, &servers).map_err(refused)? {
+            Entry::Dir(dir) => {
+                set.add_dir(static_dir(&dir, env).map_err(refused)?);
+            }
+            Entry::Builtin(tool) => {
+                set.add_tool(ToolKey::Builtin(tool));
+            }
+            Entry::Mcp { server, tool } => {
+                set.add_tool(ToolKey::Mcp {
+                    server: ServerId::Config(server),
+                    tool,
+                });
+            }
+        }
+    }
+    Ok(set)
+}
+
+/// One `allow:` directory, as written, at its real location: `~` the home, a relative one off the run's root.
+fn static_dir(dir: &str, env: &ToolEnv) -> Result<std::path::PathBuf, String> {
+    let home = env.dirs.home.as_deref();
+    let root = env
+        .root()
+        .map_err(|_| format!("cannot work out where {dir} is"))?;
+    let typed = crate::app::paths::clean(&root.join(crate::tool::expand_home(dir, home)));
+    if typed.exists() && !typed.is_dir() {
+        return Err(format!("{dir} is not a directory"));
+    }
+    let real = crate::app::fs::physical(&typed)
+        .ok_or_else(|| format!("cannot work out where {dir} is"))?;
+    let table = crate::app::protected::table(&root, &[], home);
+    if let Some(why) = crate::app::protected::why_protected(&table, &real) {
+        return Err(format!("{} is protected: {}", real.display(), why.reason()));
+    }
+    Ok(real)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, sync::Arc};
@@ -625,61 +684,60 @@ mod tests {
         );
         assert!(d.tools().is_empty());
     }
-}
 
-/// The static level of the run's grant store (docs/design/config-allow.md §4.1): the agent `name`'s `allow:`
-/// entries, resolved against the run's root and home (`env`), in the order written, a repeat kept once. A
-/// directory is stored as its REAL location (`fs::physical`) and refused — with the entry's coordinate — when
-/// it exists and is no directory, when its location cannot be worked out, or when it is itself on the
-/// protected table; one that does not exist yet is accepted, as the first build routinely creates `out/`. A
-/// built-in is its `ToolKey::Builtin`, an MCP entry its `ServerId::Config` key. The load has already refused
-/// every entry that names nothing this agent has ([`Config::check_allow`](crate::config::Config)).
-pub(crate) fn static_grants(
-    cfg: &Config,
-    name: &str,
-    agent: &AgentConfig,
-    env: &ToolEnv,
-) -> Result<crate::tool::grants::GrantSet, crate::config::ConfigError> {
-    use crate::config::allow::{Entry, parse};
-    use crate::tool::grants::{GrantSet, ServerId, ToolKey};
-    let servers = cfg.servers_of(agent);
-    let mut set = GrantSet::default();
-    for (i, written) in agent.allow.iter().enumerate() {
-        let refused = |message: String| crate::config::ConfigError::Key {
-            at: format!("agents.{name}.allow[{i}]"),
-            message,
+    /// An `allow:` directory is resolved at assembly to its real location — relative to the root, a link
+    /// followed, a repeat kept once, one not made yet accepted — and refused, at the entry's coordinate, when it
+    /// is something else or is itself protected; built-ins and servers become their keys.
+    #[cfg(unix)]
+    #[test]
+    fn an_allow_directory_is_resolved_or_refused_at_assembly() {
+        use crate::tool::grants::{GrantSet, McpTool, ServerId, ToolKey};
+        let t = tempfile::tempdir().expect("tempdir");
+        let real = crate::app::fs::physical(t.path()).expect("real");
+        let root = real.join("proj");
+        std::fs::create_dir_all(root.join(".git/hooks")).expect("proj");
+        std::fs::create_dir_all(real.join("out")).expect("out");
+        std::fs::write(real.join("file"), "x").expect("file");
+        std::os::unix::fs::symlink(real.join("out"), real.join("link")).expect("link");
+        let env = ToolEnv {
+            project_root: Some(root.clone()),
+            ..ToolEnv::default()
         };
-        match parse(written, &servers).map_err(refused)? {
-            Entry::Dir(dir) => {
-                set.add_dir(static_dir(&dir, env).map_err(refused)?);
-            }
-            Entry::Builtin(tool) => {
-                set.add_tool(ToolKey::Builtin(tool));
-            }
-            Entry::Mcp { server, tool } => {
-                set.add_tool(ToolKey::Mcp {
-                    server: ServerId::Config(server),
-                    tool,
-                });
-            }
-        }
+        let resolve = |allow: &str| {
+            let yaml = format!(
+                "mcp_servers:\n  gh: {{command: gh}}\nagents:\n  a:\n    tools: {{shell: {{}}}}\n    allow: {allow}\n"
+            );
+            let cfg = Config::parse(
+                yaml.as_bytes(),
+                &crate::app::env::Env::default(),
+                &mut |_| {},
+            )
+            .expect("loads");
+            super::static_grants(&cfg, "a", &cfg.agents["a"], &env).map_err(|e| e.to_string())
+        };
+        assert_eq!(
+            resolve("[../out, ../link, ./new, shell, \"gh:*\"]"),
+            Ok(GrantSet {
+                dirs: vec![real.join("out"), root.join("new")],
+                tools: vec![
+                    ToolKey::Builtin("shell".to_owned()),
+                    ToolKey::Mcp {
+                        server: ServerId::Config("gh".to_owned()),
+                        tool: McpTool::Any,
+                    },
+                ],
+            })
+        );
+        assert_eq!(
+            resolve("[/tmp, ../file]"),
+            Err("agents.a.allow[1]: ../file is not a directory".to_owned())
+        );
+        assert_eq!(
+            resolve("[./.git/hooks]"),
+            Err(format!(
+                "agents.a.allow[0]: {} is protected: git executes the files in .git/hooks on the user's next git command",
+                root.join(".git/hooks").display()
+            ))
+        );
     }
-    Ok(set)
-}
-
-/// One `allow:` directory, as written, at its real location: `~` the home, a relative one off the run's root.
-fn static_dir(dir: &str, env: &ToolEnv) -> Result<std::path::PathBuf, String> {
-    let home = env.dirs.home.as_deref();
-    let root = env.root().map_err(|_| format!("cannot work out where {dir} is"))?;
-    let typed = crate::app::paths::clean(&root.join(crate::tool::expand_home(dir, home)));
-    if typed.exists() && !typed.is_dir() {
-        return Err(format!("{dir} is not a directory"));
-    }
-    let real =
-        crate::app::fs::physical(&typed).ok_or_else(|| format!("cannot work out where {dir} is"))?;
-    let table = crate::app::protected::table(&root, &[], home);
-    if let Some(why) = crate::app::protected::why_protected(&table, &real) {
-        return Err(format!("{} is protected: {}", real.display(), why.reason()));
-    }
-    Ok(real)
 }

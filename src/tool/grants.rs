@@ -383,7 +383,10 @@ mod tests {
         assert!(g.waives(), "a static tool grant waives");
         assert_eq!(g.roots(&[]), std::slice::from_ref(&out));
         assert!(g.live_dirs().is_empty(), "no door granted a directory");
-        assert!(inside(&jail(&root, &g), &out.join("x.txt")), "the jail reads it");
+        assert!(
+            inside(&jail(&root, &g), &out.join("x.txt")),
+            "the jail reads it"
+        );
 
         // Every door's write is to a `Level`; none is the static one.
         for level in [Level::Session, Level::Project] {
@@ -422,7 +425,10 @@ mod tests {
 
         std::fs::rename(&out, t.path().join("moved")).expect("move away");
         std::os::unix::fs::symlink(&elsewhere, &out).expect("link in its place");
-        assert!(g.roots(&[]).is_empty(), "a stale static directory is no root");
+        assert!(
+            g.roots(&[]).is_empty(),
+            "a stale static directory is no root"
+        );
         assert!(!inside(&cs, &out.join("x.txt")));
 
         std::fs::remove_file(&out).expect("unlink");

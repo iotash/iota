@@ -331,7 +331,18 @@ mod tests {
     #[test]
     fn status_rows_are_capability_gated() {
         let mut p = FakeProvider::looping(0, 1);
-        let items = status_lines(&mut p, AgentMode::Chat, 4, 0, 2, None, None, "", "", (0, 0, 0));
+        let items = status_lines(
+            &mut p,
+            AgentMode::Chat,
+            4,
+            0,
+            2,
+            None,
+            None,
+            "",
+            "",
+            (0, 0, 0),
+        );
         assert_eq!(
             names(&items),
             [
@@ -467,7 +478,18 @@ mod tests {
         assert_eq!(value(&ephemeral, "Session"), "not saved (ephemeral)");
         assert_eq!(names(&ephemeral).last(), Some(&"Title"));
         assert_eq!(value(&ephemeral, "Title"), "Fix the status page");
-        let ephemeral = status_lines(&mut p, AgentMode::Chat, 0, 0, 0, None, None, "", "", (0, 0, 0));
+        let ephemeral = status_lines(
+            &mut p,
+            AgentMode::Chat,
+            0,
+            0,
+            0,
+            None,
+            None,
+            "",
+            "",
+            (0, 0, 0),
+        );
         assert_eq!(value(&ephemeral, "Title"), "(untitled)");
     }
 

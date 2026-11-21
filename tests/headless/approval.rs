@@ -559,6 +559,85 @@ async fn a_project_builtin_grant_runs_unattended() {
     assert!(!out.join("x.txt").exists());
 }
 
+/// An agent's `allow:` is the static level of the run's store, resolved as the assembly resolves it: its
+/// directory is a root and its `write_file` runs with nobody to ask, inside the project root and in that
+/// directory alike — while a write outside both is still refused, and the same agent without the list is
+/// refused inside too.
+#[tokio::test]
+async fn a_config_allow_runs_unattended() {
+    use iota::cmd::{Config, static_grants};
+    use iota::tool::grants::Grants;
+    use iota::tool::{Registry, ToolEnv};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let real = iota::app::fs::physical(dir.path()).expect("real");
+    let (root, out, sibling) = (real.join("proj"), real.join("out"), real.join("sibling"));
+    for d in [&root, &out, &sibling] {
+        std::fs::create_dir_all(d).expect("dir");
+    }
+    let run = |allow: &str, path: std::path::PathBuf| {
+        let yaml = format!("agents:\n  coder:\n    tools: {{code: {{}}}}\n    allow: {allow}\n");
+        let cfg = Config::parse(
+            yaml.as_bytes(),
+            &iota::app::env::Env::default(),
+            &mut |_| {},
+        )
+        .expect("the config loads");
+        let agent = &cfg.agents["coder"];
+        let env = ToolEnv {
+            project_root: Some(root.clone()),
+            ..ToolEnv::default()
+        };
+        let fixed = static_grants(&cfg, "coder", agent, &env).expect("resolves");
+        let grants = Arc::new(Grants::with_static(fixed));
+        let env = ToolEnv {
+            grants: Arc::clone(&grants),
+            ..env
+        };
+        let d = Arc::new(Registry::build(&env, &agent.tools, &mut |w| panic!("{w}")));
+        let mut args = JsonObject::new();
+        args.insert("path".to_owned(), path.to_str().expect("utf-8").into());
+        args.insert("content".to_owned(), "x".into());
+        async move {
+            let mut history = vec![Message::user("go")];
+            let mut host = QuietHost {
+                grants,
+                ..QuietHost::new()
+            };
+            execute_with_tools(
+                TurnParams {
+                    cx: &RunCtx::default(),
+                    tp: &writing(args),
+                    dispatch: d.clone(),
+                    tools: d.tools(),
+                    harness: "",
+                    overlay: "",
+                    max_turns: None,
+                },
+                &mut history,
+                &mut host,
+            )
+            .await
+            .expect("loop");
+            history[2].clone()
+        }
+    };
+
+    let allowed = "[../out, write_file]";
+    for target in [root.join("x.txt"), out.join("deep/y.txt")] {
+        let result = run(allowed, target.clone()).await;
+        assert!(!result.is_error(), "{}", result.content);
+        assert!(target.exists(), "{} landed", target.display());
+    }
+    let result = run(allowed, sibling.join("x.txt")).await;
+    assert!(result.is_error(), "outside both roots");
+    assert!(!sibling.join("x.txt").exists());
+
+    let result = run("[]", root.join("z.txt")).await;
+    assert!(result.is_error(), "without allow: an inside write asks");
+    assert!(!root.join("z.txt").exists());
+}
+
 /// A minimal MCP server in POSIX `sh`: `initialize`, `tools/list` (one tool `echo`) and `tools/call`
 /// (`"pong"`), exiting on stdin EOF.
 #[cfg(unix)]

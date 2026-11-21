@@ -552,12 +552,7 @@ impl Config {
     /// loads: its grammar ([`allow::parse`]), then whether it names something this agent has — a `~` a home
     /// expands, a built-in of an enabled set, a server it loads. Every agent's entries are read at the load,
     /// so a mistake in one nobody ran today is still found; what needs the run's filesystem is the assembly's.
-    fn check_allow(
-        &self,
-        agent: &AgentConfig,
-        entry: &str,
-        env: &Env,
-    ) -> Result<(), String> {
+    fn check_allow(&self, agent: &AgentConfig, entry: &str, env: &Env) -> Result<(), String> {
         let servers = self.servers_of(agent);
         match allow::parse(entry, &servers)? {
             allow::Entry::Dir(dir) => {

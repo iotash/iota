@@ -250,11 +250,13 @@ fn allow_lines(doc: &Value, name: &str, agent: &Value) -> Vec<String> {
                 Ok(Entry::Builtin(t)) if t == crate::tool::builtins::shell::SHELL_TOOL_NAME => {
                     "runs without asking, outside the sandbox too".to_owned()
                 }
-                Ok(Entry::Builtin(_)
-                | Entry::Mcp {
-                    tool: McpTool::Named(_),
-                    ..
-                }) => "runs without asking".to_owned(),
+                Ok(
+                    Entry::Builtin(_)
+                    | Entry::Mcp {
+                        tool: McpTool::Named(_),
+                        ..
+                    },
+                ) => "runs without asking".to_owned(),
                 Ok(Entry::Mcp {
                     server,
                     tool: McpTool::Any,
