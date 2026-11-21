@@ -57,7 +57,7 @@ pub fn parse(entry: &str, servers: &[String]) -> Result<Entry, String> {
     if let Some((server, tool)) = named {
         return mcp(server, tool);
     }
-    if entry.starts_with(['~', '.']) || Path::new(entry).is_absolute() {
+    if spells_dir(entry) {
         return Ok(Entry::Dir(entry.to_owned()));
     }
     if let Some((server, tool)) = entry.rsplit_once(':') {
@@ -74,6 +74,13 @@ pub fn parse(entry: &str, servers: &[String]) -> Result<Entry, String> {
     } else {
         Err(format!("no built-in tool named \"{entry}\" ({those})"))
     }
+}
+
+/// Whether `target` is spelled as a directory (rule 2 of the module's order): it starts with `~` or `.`, or is
+/// absolute ([`Path::is_absolute`]). `/allow`'s typed target reads the same rule, so the chat, `allow:` and
+/// `--allow` agree on every platform.
+pub fn spells_dir(target: &str) -> bool {
+    target.starts_with(['~', '.']) || Path::new(target).is_absolute()
 }
 
 /// `<server>:<tool>`, the tool being a name or `*`; an empty one names nothing.

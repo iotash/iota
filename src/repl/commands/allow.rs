@@ -32,6 +32,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::app::{fs, paths, protected};
+use crate::config::allow::spells_dir;
 use crate::mcp::{ConnectedServer, Manager};
 use crate::repl::grants::{Door, Footing, Unsaved, label, unsaved_session};
 use crate::repl::run::Repl;
@@ -43,7 +44,7 @@ use crate::ui::facade::{Panel, Suggestion, TabbedSpec};
 use crate::ui::render::label::sgr_if;
 
 /// What the user is told when the argument is not something `/allow` takes.
-const EXPECTED: &str = "expected a directory (starting with /, ~ or .) or <server>:<tool>";
+const EXPECTED: &str = "expected a directory (~/…, ./… or an absolute path) or <server>:<tool>";
 
 /// What the bare `/allow` says when nothing is granted — the hint printed in place of the surface, or the
 /// `Grants` tab's prompt beside a `Static` tab — in a run with a project.
@@ -192,9 +193,9 @@ fn say(repl: &Repl, done: Done) {
 }
 
 /// The typed `arg` as an absolute, cleaned path: `~` is `home`, a relative one hangs off the project root.
-/// `None` when `arg` is not spelled as a directory.
+/// `None` when `arg` is not spelled as a directory — the config's rule, [`spells_dir`].
 fn typed_path(footing: &Footing, home: Option<&Path>, arg: &str) -> Option<PathBuf> {
-    if !arg.starts_with(['/', '~', '.']) {
+    if !spells_dir(arg) {
         return None;
     }
     let p = crate::tool::expand_home(arg, home);
@@ -205,8 +206,9 @@ fn typed_path(footing: &Footing, home: Option<&Path>, arg: &str) -> Option<PathB
 /// word `project` ([`scope`]), for this project: the notice line, or why not. `workspace` is whether the run's
 /// agent has one (`mode: agent` or `bot`); a run with no project refuses the scope whatever precedes it
 /// ([`no_project`]). `servers` is the run's MCP manager, `None` in a run with no server; `tools` the run's
-/// dispatcher. The target is read in this order: a connected server's name, a directory (a leading `/`, `~` or
-/// `.`), `<server>:<tool>` (any other `:`), then a bare word, a built-in tool. A directory is never guessed:
+/// dispatcher. The target is read in this order: a connected server's name, a directory ([`spells_dir`], the
+/// config's rule: a leading `~` or `.`, or absolute — `/x`, and on Windows `C:\x` or `\\server\share`),
+/// `<server>:<tool>` (any other `:`), then a bare word, a built-in tool. A directory is never guessed:
 /// when the whole of `arg`, scope word and all, is itself an existing directory (`~/my project` beside `~/my`),
 /// the line is refused naming both spellings — a trailing `/` keeps it whole (`~/my project/`).
 fn allow(
@@ -2065,6 +2067,48 @@ mod tests {
         assert!(
             !rows_of(&c).iter().any(|r| r.0.contains("my server")),
             "a name with a space has no row"
+        );
+    }
+
+    /// On Windows a drive path is absolute, so `/allow` reads it as a directory — the config's rule
+    /// ([`spells_dir`]) — before any `:` rule takes the drive's colon for a server's; `C:x`, relative to a drive,
+    /// stays `<server>:<tool>`. A platform expectation, not a skipped test: off Windows the drive spelling is
+    /// `<server>:<tool>` (pinned below).
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_drive_path_is_a_directory() {
+        let (t, root, out) = fixture();
+        let c = Chat::new(&t, &root);
+        let back = out.display().to_string();
+        assert!(
+            back.as_bytes().get(1) == Some(&b':'),
+            "a drive path: {back}"
+        );
+        assert_eq!(
+            c.allow(&back).unwrap(),
+            format!("✓ {back} is writable for this session")
+        );
+        assert_eq!(c.g().live_dirs(), std::slice::from_ref(&out));
+        let forward = back.replace('\\', "/");
+        assert_eq!(
+            c.allow(&forward).unwrap_err(),
+            format!("{back} is already writable (this session)")
+        );
+        assert_eq!(
+            c.allow("C:x").unwrap_err(),
+            "no MCP server named \"C\" is connected"
+        );
+    }
+
+    /// Off Windows a drive spelling is not absolute: it is `<server>:<tool>`, as in the config.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_drive_spelling_is_no_directory_off_windows() {
+        let (t, root, _out) = fixture();
+        let c = Chat::new(&t, &root);
+        assert_eq!(
+            c.allow(r"C:\x").unwrap_err(),
+            "no MCP server named \"C\" is connected"
         );
     }
 }

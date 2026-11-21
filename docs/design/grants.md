@@ -292,7 +292,8 @@ is /, the home directory or an ancestor of it, which is never a project`; withou
   matches, then `:` and the tool — a `--mcp` server is named by its URL or `argv[0]`, which
   may hold a `:` and start with `/` or `.` (`/allow https://h/mcp:push`, `/allow
   ./srv.py:*`), so a server's name wins over the directory spelling. (2) A directory: it
-  starts with `/`, `~` or `.` (`~` is home, a relative one hangs off the project root, as
+  starts with `~` or `.`, or is absolute (`allow:`'s rule, config-allow.md §3.2: `/x`, and
+  `C:\x` or `\\server\share` on Windows) (`~` is home, a relative one hangs off the project root, as
   the tools read a path); it must exist and be a directory, and its REAL location is what
   is stored and shown. (3) Holding a `:`: `<server>:<tool>`, split at its last `:`; an
   empty half is refused. (4) Otherwise a bare word: a built-in tool by its wire name, one
@@ -372,7 +373,7 @@ Refusals (prefixed `/allow: `):
 ```
 the scope goes last: /allow <target> project
 "<arg>" is a directory too: write "<arg>/" for it, or "<dir>/ project" for <dir> in this project
-expected a directory (starting with /, ~ or .) or <server>:<tool>
+expected a directory (~/…, ./… or an absolute path) or <server>:<tool>
 <arg> is not a directory
 <dir> is protected: <why>
 <dir> is already writable (the project root | allow: | --allow | this project | this session)

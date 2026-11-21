@@ -71,6 +71,8 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 - **A Windows path is a directory in `allow:` and `--allow`.** `C:\Users\me\out`,
   `C:/out` and `\\server\share` were read as a server named `C` and failed the load.
+- **A Windows path is a directory in the chat's `/allow` too.** `/allow C:\out` was
+  refused as `<server>:<tool>`; the chat now reads a directory as `allow:` does.
 - **Two `shell` calls in one round are asked about, one by one.** Without a sandbox
   (Windows, `sandbox: off`) and without `auto_run`, consecutive `shell` calls went
   out together as a parallel batch and ran unasked; a call that would be asked now
