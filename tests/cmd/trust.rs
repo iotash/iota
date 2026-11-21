@@ -317,7 +317,7 @@ fn the_record_is_private_and_config_path_names_the_skip() {
     );
     // `--path` names a file elsewhere.
     let elsewhere = dir.path().join("other.yaml");
-    fs::write(&elsewhere, "outside_writes: refuse\n").expect("write");
+    fs::write(&elsewhere, "mouse: false\n").expect("write");
     let o = iota(&home, &home)
         .args([
             "config",

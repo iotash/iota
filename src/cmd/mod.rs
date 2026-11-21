@@ -557,7 +557,6 @@ fn assemble_tools(
         ..ToolEnv::default()
     }
     .with_write_roots(&cfg.write_roots, &inv.args.add_dir);
-    tool_env.outside_writes = cfg.outside_writes;
     // The project's grants (docs/design/grants.md §4.2), of a run that has a project and before any tool or the
     // harness reads the store: what the user granted for this project holds from the first call — in `-m` too,
     // which has no door of its own, and so in a child `iota run … -m` of the same agent in the same project.

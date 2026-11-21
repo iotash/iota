@@ -93,8 +93,8 @@ you trust it:
   the url it connects to), its `env`, any `headers` or `client_secret` value
   holding a `${…}`, and its `auto_run`; a provider's `url` and a `${…}` key;
   an agent's `system_file` and its tools' `sandbox` (other than `auto`),
-  `auto_run`, `network` and `auto_write`; `write_roots` and
-  `outside_writes`. Trust it, or skip it for this run.
+  `auto_run`, `network` and `auto_write`; `write_roots`. Trust it, or skip it
+  for this run.
 - Without a terminal (`-m`, a script, a bot), iota never asks: it skips the
   file with one warning and runs on `~/.iota.yaml`. `iota mcp list --probe`
   lists an untrusted file's servers without starting them, and `iota mcp

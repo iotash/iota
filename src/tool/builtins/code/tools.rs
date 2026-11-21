@@ -282,7 +282,7 @@ impl Tool for EditFile {
         Box::pin(async move { Ok(edit_file_call(&self.0, cx, args)) })
     }
 
-    /// Inside the roots `!auto_write`; outside them always under `outside_writes: ask` (see
+    /// Inside the roots `!auto_write`; outside them always when the run has somebody to ask (see
     /// [`CodeSet::write_asks`]).
     fn requires_approval(&self, args: Option<&JsonObject>) -> bool {
         self.0.write_asks(args)
@@ -346,7 +346,7 @@ impl Tool for WriteFile {
         Box::pin(async move { Ok(write_file_call(&self.0, cx, args)) })
     }
 
-    /// Inside the roots `!auto_write`; outside them always under `outside_writes: ask` (see
+    /// Inside the roots `!auto_write`; outside them always when the run has somebody to ask (see
     /// [`CodeSet::write_asks`]).
     fn requires_approval(&self, args: Option<&JsonObject>) -> bool {
         self.0.write_asks(args)
@@ -1140,7 +1140,7 @@ mod tests {
         assert!(!match_include(&with_slash, "cmd/**", "tool/main.rs"));
     }
 
-    // Under `refuse`, the writers go through `CodeSet::write_target` and refuse a symlink out of the root — nothing
+    // With nobody to ask, the writers go through `CodeSet::write_target` and refuse a symlink out of the root — nothing
     // outside is created or changed — while `read_file` reads through the same link (reads are open).
     #[cfg(unix)]
     #[test]
@@ -1158,7 +1158,7 @@ mod tests {
             root.clone(),
             Vec::new(),
             true,
-            super::super::Outside::Refuse,
+            false,
             None,
             std::sync::Arc::default(),
         )
@@ -1166,8 +1166,9 @@ mod tests {
         let cx = RunCtx::default();
         let refused = |arg: &str| {
             ToolOutput::err(format!(
-                "path is outside the project root ({}): {arg}",
-                root.display()
+                "path is outside the project root ({}): {arg}{}",
+                root.display(),
+                super::super::tests::UNATTENDED
             ))
         };
         // The overlong links: Linux resolves them and finds them outside, macOS cannot resolve them.
@@ -1266,7 +1267,7 @@ mod tests {
             root.clone(),
             Vec::new(),
             false,
-            super::super::Outside::Refuse,
+            false,
             None,
             std::sync::Arc::default(),
         )
@@ -1295,7 +1296,7 @@ mod tests {
         }
     }
 
-    /// A set under `outside_writes: ask` with a user (the interactive case), over the jail fixture with
+    /// A set with somebody to ask (the interactive case), over the jail fixture with
     /// `root/outdir -> out` and `out2/` beside it.
     #[cfg(unix)]
     fn asking_set(
@@ -1313,7 +1314,7 @@ mod tests {
             root.clone(),
             Vec::new(),
             auto_write,
-            super::super::Outside::Ask,
+            true,
             None,
             std::sync::Arc::default(),
         )
@@ -1552,17 +1553,17 @@ mod tests {
         assert!(!out.join("a.txt").exists() && !out.join("b.txt").exists());
     }
 
-    /// The protected table (X-95) under the writers. Each protected path is its own class: asked under `ask`
-    /// with a user — whatever `auto_write` says, whether `write_roots:` names `.git` or the root again — with a
-    /// prompt that names the file and why and offers no session grant; refused under `refuse` and with
-    /// nobody to ask, saying why and that the user can make the change. Without "allow once" for exactly that
+    /// The protected table (X-95) under the writers. Each protected path is its own class: asked when the run
+    /// has a user — whatever `auto_write` says, whether `write_roots:` names `.git` or the root again — with a
+    /// prompt that names the file and why and offers no session grant; refused with nobody to ask,
+    /// saying why and that the user can make the change. Without "allow once" for exactly that
     /// file nothing lands: not with no approval, not with a session grant for the root or for the file's own
     /// directory, not with "allow once" for another file. The trust record is never asked about and never
     /// written, approval or not.
     #[cfg(unix)]
     #[test]
     fn a_protected_write_needs_allow_once_for_that_file() {
-        use super::super::{CodeSet, Outside};
+        use super::super::CodeSet;
         use super::write_file_call;
         use crate::app::protected::Why;
         use crate::tool::context::{Approved, RunCtx};
@@ -1587,13 +1588,13 @@ mod tests {
         let extras = [vec![], vec![root.join(".git")], vec![root.clone()]];
         for auto_write in [false, true] {
             for extra in &extras {
-                for policy in [Outside::Ask, Outside::Unattended, Outside::Refuse] {
-                    let at = format!("auto_write={auto_write} extra={extra:?} {policy:?}");
+                for attended in [true, false] {
+                    let at = format!("auto_write={auto_write} extra={extra:?} attended={attended}");
                     let cs = CodeSet::new(
                         root.clone(),
                         extra.clone(),
                         auto_write,
-                        policy,
+                        attended,
                         Some(user_home.clone()),
                         std::sync::Arc::default(),
                     )
@@ -1602,11 +1603,10 @@ mod tests {
                     for (path, why) in protected {
                         let real = root.join(path);
                         let a = args(json!({"path": path, "content": "x"}));
-                        let ask = policy == Outside::Ask;
-                        assert_eq!(tool.requires_approval(Some(&a)), ask, "{at} {path}");
+                        assert_eq!(tool.requires_approval(Some(&a)), attended, "{at} {path}");
                         assert_eq!(
                             tool.approval_subject(&a),
-                            ask.then(|| ApprovalSubject {
+                            attended.then(|| ApprovalSubject {
                                 detail: format!("{} (protected): {}", real.display(), why.reason()),
                                 target: real.clone(),
                                 scope: None,
@@ -1615,7 +1615,7 @@ mod tests {
                         );
                         assert_eq!(
                             tool.header_summary(&a).map(|h| h.contains("(protected)")),
-                            Some(ask),
+                            Some(attended),
                             "{at} {path}"
                         );
                         // The protected table beats every root: a grant of the project root or of the
@@ -1636,12 +1636,10 @@ mod tests {
                                 got.is_error && got.text.starts_with(&want),
                                 "{at} {path} {approved:?}: {got:?}"
                             );
-                            let rest = match policy {
-                                Outside::Ask => "this call has none for",
-                                Outside::Unattended => {
-                                    "which this non-interactive run cannot ask for"
-                                }
-                                Outside::Refuse => "`outside_writes: refuse`",
+                            let rest = if attended {
+                                "this call has none for"
+                            } else {
+                                "which this non-interactive run cannot ask for"
                             };
                             assert!(got.text.contains(rest), "{at} {path}: {got:?}");
                         }
@@ -1674,7 +1672,7 @@ mod tests {
             root.clone(),
             Vec::new(),
             true,
-            Outside::Ask,
+            true,
             Some(user_home),
             std::sync::Arc::default(),
         )
@@ -1702,7 +1700,7 @@ mod tests {
     /// `.GIT` everywhere too). Nothing protected exists here, and nothing is created.
     #[test]
     fn a_protected_name_in_another_case_is_still_protected() {
-        use super::super::{CodeSet, Outside};
+        use super::super::CodeSet;
         use super::write_file_call;
         use crate::app::protected::Why;
         use crate::tool::context::RunCtx;
@@ -1744,7 +1742,7 @@ mod tests {
             root.clone(),
             vec![other.clone()],
             true,
-            Outside::Refuse,
+            false,
             Some(home.clone()),
             std::sync::Arc::default(),
         )
@@ -1782,13 +1780,13 @@ mod tests {
     }
 
     /// `~/.iota/sessions` (X-95 amended, grants.md §9 Q11) under the writers: a session bundle and a project
-    /// bucket's grants file are never asked about and never written — whatever `auto_write`, the policy, a
+    /// bucket's grants file are never asked about and never written — whatever `auto_write`, whether anyone can be asked, a
     /// project root that IS the home, `write_roots:` naming the home or the sessions tree, a directory grant of
     /// the tree, or "allow once" for exactly that file says. Refused saying iota alone writes it.
     #[cfg(unix)]
     #[test]
     fn the_sessions_tree_has_no_approval_path() {
-        use super::super::{CodeSet, Outside};
+        use super::super::CodeSet;
         use super::{edit_file_call, write_file_call};
         use crate::tool::Tool;
         use crate::tool::context::{Approved, RunCtx};
@@ -1808,15 +1806,15 @@ mod tests {
         for root in [elsewhere, home.clone()] {
             for extra in [vec![], vec![home.clone()], vec![sessions.clone()]] {
                 for auto_write in [false, true] {
-                    for policy in [Outside::Ask, Outside::Unattended, Outside::Refuse] {
+                    for attended in [true, false] {
                         let at = format!(
-                            "root={root:?} extra={extra:?} auto_write={auto_write} {policy:?}"
+                            "root={root:?} extra={extra:?} auto_write={auto_write} attended={attended}"
                         );
                         let cs = CodeSet::new(
                             root.clone(),
                             extra.clone(),
                             auto_write,
-                            policy,
+                            attended,
                             Some(home.clone()),
                             std::sync::Arc::default(),
                         )
@@ -1871,14 +1869,14 @@ mod tests {
         }
     }
 
-    /// Who asks, per call: inside the roots `!auto_write`; outside them always under `ask` with a user,
+    /// Who asks, per call: inside the roots `!auto_write`; outside them always when the run has a user,
     /// never otherwise (refused at the call); an unverifiable path never (refused at the call). The session
     /// grant of an outside write is its real directory.
     #[cfg(unix)]
     #[test]
     fn the_writers_ask_matrix() {
+        use super::super::CodeSet;
         use super::super::tests::jail_fixture;
-        use super::super::{CodeSet, Outside};
         use crate::tool::Tool;
 
         let (_t, root, out) = jail_fixture();
@@ -1889,17 +1887,17 @@ mod tests {
         let outside = args(json!({"path": format!("{}/deep/x.txt", out.display())}));
         let looped = args(json!({"path": "la/x.txt"}));
         for auto_write in [false, true] {
-            for policy in [Outside::Ask, Outside::Unattended, Outside::Refuse] {
+            for attended in [true, false] {
                 let cs = CodeSet::new(
                     root.clone(),
                     Vec::new(),
                     auto_write,
-                    policy,
+                    attended,
                     None,
                     std::sync::Arc::default(),
                 )
                 .expect("set");
-                let at = format!("auto_write={auto_write} {policy:?}");
+                let at = format!("auto_write={auto_write} attended={attended}");
                 for tool in [
                     std::sync::Arc::new(super::WriteFile(std::sync::Arc::clone(&cs)))
                         as std::sync::Arc<dyn Tool>,
@@ -1912,7 +1910,7 @@ mod tests {
                     );
                     assert_eq!(
                         tool.requires_approval(Some(&outside)),
-                        policy == Outside::Ask,
+                        attended,
                         "{at} outside"
                     );
                     assert!(!tool.requires_approval(Some(&looped)), "{at} unverifiable");
@@ -1920,14 +1918,14 @@ mod tests {
                     assert_eq!(tool.approval_subject(&inside), None, "{at}");
                     assert_eq!(
                         tool.approval_subject(&outside).and_then(|s| s.scope),
-                        (policy == Outside::Ask).then(|| real_out.join("deep")),
+                        (attended).then(|| real_out.join("deep")),
                         "{at}"
                     );
                     // The header names the real location only when it is what a prompt is about.
                     let header = tool.header_summary(&outside).expect("summary");
                     assert_eq!(
                         header.ends_with(" (outside the project root)"),
-                        policy == Outside::Ask,
+                        attended,
                         "{at} {header}"
                     );
                 }
@@ -1935,20 +1933,20 @@ mod tests {
         }
     }
 
-    /// The writers' descriptions are model-facing: under `outside_writes: ask` with a user they say that a
-    /// path outside the roots asks the user first, so a model does not take a refusal there as final; with
-    /// nobody to ask, or under `refuse`, they say nothing of it (the pinned texts).
+    /// The writers' descriptions are model-facing: in a run with a user they say that a path outside the roots
+    /// asks the user first, so a model does not take a refusal there as final; with nobody to ask they say
+    /// nothing of it (the pinned texts).
     #[test]
     fn the_writers_say_an_outside_write_asks_only_when_it_does() {
-        use super::super::{CodeSet, Outside};
+        use super::super::CodeSet;
         use crate::tool::Tool;
         let clause = " Outside that, the user is asked to approve a write there first.";
-        for policy in [Outside::Ask, Outside::Unattended, Outside::Refuse] {
+        for attended in [true, false] {
             let cs = CodeSet::new(
                 std::path::PathBuf::from("/proj"),
                 Vec::new(),
                 false,
-                policy,
+                attended,
                 None,
                 std::sync::Arc::default(),
             )
@@ -1959,8 +1957,8 @@ mod tests {
             ] {
                 assert_eq!(
                     d.description.ends_with(clause),
-                    policy == Outside::Ask,
-                    "{policy:?} {}",
+                    attended,
+                    "attended={attended} {}",
                     d.description
                 );
                 assert!(

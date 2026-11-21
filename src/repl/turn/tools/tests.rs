@@ -2351,13 +2351,13 @@ struct CodeChat {
 }
 
 impl CodeChat {
-    /// The chat under `outside_writes: policy` and `auto_write`, with no home directory.
-    fn new(policy: crate::tool::OutsideWrites, auto_write: bool) -> Self {
-        Self::homed(policy, auto_write, None)
+    /// The chat under `auto_write`, with no home directory.
+    fn new(auto_write: bool) -> Self {
+        Self::homed(auto_write, None)
     }
 
     /// [`Self::new`] with `home` (relative to `<t>`) as the user's home directory.
-    fn homed(policy: crate::tool::OutsideWrites, auto_write: bool, home: Option<&str>) -> Self {
+    fn homed(auto_write: bool, home: Option<&str>) -> Self {
         let t = tempfile::tempdir().expect("tempdir");
         let root = t.path().join("proj");
         std::fs::create_dir_all(&root).expect("root");
@@ -2371,7 +2371,6 @@ impl CodeChat {
                 ..crate::app::HostDirs::default()
             },
             interactor: Some(crate::repl::Interactor::new() as Arc<dyn crate::tool::Interactor>),
-            outside_writes: policy,
             grants: Arc::clone(&grants),
             ..crate::tool::ToolEnv::default()
         };
@@ -2416,94 +2415,75 @@ fn prompts(events: &[UiEvent]) -> Vec<(String, String)> {
 }
 
 // The interactive matrix: inside the root `auto_write` decides whether the user is asked; outside it the
-// user is asked ALWAYS under `outside_writes: ask` — `auto_write` or not — with the resolved real path,
-// marked, and the write lands there once allowed; under `refuse` nobody is asked and the jail's text
-// stands, exactly as before.
+// user is asked ALWAYS — `auto_write` or not — with the resolved real path, marked, and the write lands there
+// once allowed.
 #[tokio::test]
 async fn an_outside_write_is_asked_always_and_lands_where_the_prompt_said() {
-    use crate::tool::OutsideWrites::{Ask, Refuse};
-    for policy in [Ask, Refuse] {
-        for auto_write in [false, true] {
-            let at = format!("{policy:?} auto_write={auto_write}");
-            let c = CodeChat::new(policy, auto_write);
-            let (root, real_out) = (&c.root, &c.real_out);
-            let asks = usize::from(!auto_write) + usize::from(policy == Ask);
-            let mut script: Vec<Reply> = (0..asks).map(|_| choose(0)).collect();
-            script.extend(quiet(1));
-            let fx = c.fx(script);
-            let p = stream(vec![
-                Round::calls(vec![
-                    call(
-                        "c1",
-                        "write_file",
-                        serde_json::json!({"path": "in.txt", "content": "i"}),
-                    ),
-                    call(
-                        "c2",
-                        "write_file",
-                        serde_json::json!({"path": "../out/a.txt", "content": "o"}),
-                    ),
-                ]),
-                Round::text("done"),
-            ]);
-            let mut history = vec![Message::user("write")];
-            fx.turn(&p, &mut history).await.outcome.expect("turn");
+    for auto_write in [false, true] {
+        let at = format!("auto_write={auto_write}");
+        let c = CodeChat::new(auto_write);
+        let (root, real_out) = (&c.root, &c.real_out);
+        let asks = usize::from(!auto_write) + 1;
+        let mut script: Vec<Reply> = (0..asks).map(|_| choose(0)).collect();
+        script.extend(quiet(1));
+        let fx = c.fx(script);
+        let p = stream(vec![
+            Round::calls(vec![
+                call(
+                    "c1",
+                    "write_file",
+                    serde_json::json!({"path": "in.txt", "content": "i"}),
+                ),
+                call(
+                    "c2",
+                    "write_file",
+                    serde_json::json!({"path": "../out/a.txt", "content": "o"}),
+                ),
+            ]),
+            Round::text("done"),
+        ]);
+        let mut history = vec![Message::user("write")];
+        fx.turn(&p, &mut history).await.outcome.expect("turn");
 
-            let mut want = Vec::new();
-            if !auto_write {
-                want.push((
-                    "write_file in.txt — allow?".to_owned(),
-                    "Allow for this session".to_owned(),
-                ));
-            }
-            if policy == Ask {
-                want.push((
-                    format!(
-                        "write_file {} (outside the project root) — allow?",
-                        real_out.join("a.txt").display()
-                    ),
-                    format!(
-                        "Allow, and make {} writable for this session",
-                        real_out.display()
-                    ),
-                ));
-            }
-            assert_eq!(prompts(&fx.events()), want, "{at}");
-            assert_eq!(
-                std::fs::read_to_string(root.join("in.txt")).ok().as_deref(),
-                Some("i"),
-                "{at}"
-            );
-            let results: Vec<&Message> =
-                history.iter().filter(|m| m.role() == Role::Tool).collect();
-            if policy == Ask {
-                assert_eq!(
-                    std::fs::read_to_string(real_out.join("a.txt"))
-                        .ok()
-                        .as_deref(),
-                    Some("o"),
-                    "{at}"
-                );
-                assert_eq!(
-                    results[1].content,
-                    format!(
-                        "wrote 1 B to {} (created)",
-                        real_out.join("a.txt").display()
-                    ),
-                    "{at}"
-                );
-            } else {
-                assert!(!real_out.join("a.txt").exists(), "{at}");
-                assert_eq!(
-                    results[1].content,
-                    format!(
-                        "path is outside the project root ({}): ../out/a.txt",
-                        root.display()
-                    ),
-                    "{at}"
-                );
-            }
+        let mut want = Vec::new();
+        if !auto_write {
+            want.push((
+                "write_file in.txt — allow?".to_owned(),
+                "Allow for this session".to_owned(),
+            ));
         }
+        want.push((
+            format!(
+                "write_file {} (outside the project root) — allow?",
+                real_out.join("a.txt").display()
+            ),
+            format!(
+                "Allow, and make {} writable for this session",
+                real_out.display()
+            ),
+        ));
+        assert_eq!(prompts(&fx.events()), want, "{at}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("in.txt")).ok().as_deref(),
+            Some("i"),
+            "{at}"
+        );
+        let results: Vec<&Message> = history.iter().filter(|m| m.role() == Role::Tool).collect();
+        assert_eq!(
+            std::fs::read_to_string(real_out.join("a.txt"))
+                .ok()
+                .as_deref(),
+            Some("o"),
+            "{at}"
+        );
+        assert_eq!(
+            results[1].content,
+            format!(
+                "wrote 1 B to {} (created)",
+                real_out.join("a.txt").display()
+            ),
+            "{at}"
+        );
     }
 }
 
@@ -2512,7 +2492,7 @@ async fn an_outside_write_is_asked_always_and_lands_where_the_prompt_said() {
 // second item is Deny), and it is asked again on the next call; only "Allow once" lands it.
 #[tokio::test]
 async fn a_protected_write_is_asked_every_time_and_never_granted_for_the_session() {
-    let c = CodeChat::new(crate::tool::OutsideWrites::Ask, false);
+    let c = CodeChat::new(false);
     let root = &c.root;
     let mut script = vec![choose(1), choose(1), choose(0)];
     script.extend(quiet(1));
@@ -2663,7 +2643,7 @@ async fn a_builtin_tool_granted_for_the_project_is_kept_in_its_file() {
 // inside grant (the tool's) never covers an outside write.
 #[tokio::test]
 async fn a_directory_granted_in_the_dialog_is_a_root_for_both_writers() {
-    let c = CodeChat::new(crate::tool::OutsideWrites::Ask, true);
+    let c = CodeChat::new(true);
     let real_out = &c.real_out;
     let mut script = vec![choose(1), choose(3)];
     script.extend(quiet(1));
@@ -2728,7 +2708,7 @@ async fn a_directory_granted_in_the_dialog_is_a_root_for_both_writers() {
 
     // Without `auto_write`, a write under the granted directory is asked like any inside write — the tool's
     // question, whose session item is the tool grant — and a tool grant then never covers an outside write.
-    let c = CodeChat::new(crate::tool::OutsideWrites::Ask, false);
+    let c = CodeChat::new(false);
     let real_out = &c.real_out;
     let mut script = vec![choose(1), choose(1), choose(0)];
     script.extend(quiet(1));
@@ -2787,7 +2767,7 @@ async fn a_directory_granted_in_the_dialog_is_a_root_for_both_writers() {
 // grants nothing — the call it answered runs once, and the next write is asked again.
 #[tokio::test]
 async fn a_directory_granted_for_the_project_is_kept_in_its_file() {
-    let c = CodeChat::new(crate::tool::OutsideWrites::Ask, true);
+    let c = CodeChat::new(true);
     let real_out = &c.real_out;
     let mut script = vec![choose(2)];
     script.extend(quiet(1));
@@ -2826,7 +2806,7 @@ async fn a_directory_granted_for_the_project_is_kept_in_its_file() {
     }
 
     // Nowhere to keep it: allowed once, granted nothing.
-    let c = CodeChat::new(crate::tool::OutsideWrites::Ask, true);
+    let c = CodeChat::new(true);
     let mut script = vec![choose(2), choose(0)];
     script.extend(quiet(1));
     let fx = Fx::new(Arc::clone(&c.dispatch), script).granting(&c.grants);
@@ -2859,7 +2839,7 @@ async fn a_directory_granted_for_the_project_is_kept_in_its_file() {
 // only; a directory under the home is offered as usual.
 #[tokio::test]
 async fn the_dialog_never_offers_the_home_directory() {
-    let c = CodeChat::homed(crate::tool::OutsideWrites::Ask, true, Some("home"));
+    let c = CodeChat::homed(true, Some("home"));
     std::fs::create_dir_all(c.t.path().join("home/sub")).expect("home");
     let real_t = crate::app::canonical(c.t.path()).expect("real t");
     // The offered directory as the product resolves it: `real_t.join("home/sub")` keeps its `/` on Windows.
@@ -3003,7 +2983,7 @@ async fn the_dialog_offers_the_project_level_only_with_a_project() {
         assert_eq!(grants.snapshot(Level::Project).is_empty(), !project);
 
         // A directory: a `code` write outside every root.
-        let c = CodeChat::new(crate::tool::OutsideWrites::Ask, true);
+        let c = CodeChat::new(true);
         let fx = with(c.fx(script()), project);
         let write = call(
             "c1",
@@ -3084,7 +3064,7 @@ impl Dispatcher for Flipping {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_link_swapped_after_a_grant_writes_nothing() {
-    let c = CodeChat::new(crate::tool::OutsideWrites::Ask, true);
+    let c = CodeChat::new(true);
     let out2 = c.t.path().join("out2");
     std::fs::create_dir(&out2).expect("out2");
     let real_out2 = crate::app::canonical(&out2).expect("real out2");
@@ -3146,7 +3126,7 @@ async fn a_link_swapped_after_a_grant_writes_nothing() {
 // project root's own topmost ancestor, never a fixed drive.
 #[tokio::test]
 async fn an_inside_grant_does_not_cover_a_parentless_target() {
-    let c = CodeChat::new(crate::tool::OutsideWrites::Ask, false);
+    let c = CodeChat::new(false);
     let root = &c.root;
     let top = root.ancestors().last().expect("a topmost ancestor");
     let top = crate::app::canonical(top).expect("real /");

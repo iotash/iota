@@ -56,7 +56,7 @@ mod tests {
     use super::{Gate, gate};
     use crate::provider::model::JsonObject;
     use crate::tool::Registry;
-    use crate::tool::builtins::code::{CodeSet, EditFile, Outside, WriteFile};
+    use crate::tool::builtins::code::{CodeSet, EditFile, WriteFile};
     use crate::tool::grants::{Grants, Level, ToolKey};
 
     fn args(path: &str) -> JsonObject {
@@ -79,7 +79,7 @@ mod tests {
             root.clone(),
             Vec::new(),
             false,
-            Outside::Ask,
+            true,
             None,
             Arc::clone(&grants),
         )

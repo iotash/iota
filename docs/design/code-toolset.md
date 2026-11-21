@@ -104,17 +104,15 @@ A protected write is its own class (`Write::Protected`):
   covers it — neither the writer's tool grant nor a directory grant over it
   (the table is classified before inside/outside, and a granted repository
   gets the git rows a `write_roots:` entry gets).
-- **Asked one file at a time** under `outside_writes: ask` with a user: the
+- **Asked one file at a time** in a run with a user to ask: the
   prompt names the real path, `(protected)` and why, e.g. `write_file
   /p/.git/hooks/pre-commit (protected): git executes the files in .git/hooks
   on the user's next git command — allow?`, and offers only `Allow once` /
   `Deny` (`ApprovalSubject::scope` is `None`, the dialog's `Offer::Nothing`). The
   call lands only with `Approved::Once` naming exactly that real path.
-- **Refused otherwise**: `<path> is protected: <why> — …`, ending, under
-  `refuse`, ``outside_writes: refuse` refuses every write that needs
-  approval; ask the user to make the change themselves`, with nobody to ask
-  (`-m`, the SDK) `…which this non-interactive run cannot ask for; ask the
-  user to make the change themselves`.
+- **Refused otherwise**: `<path> is protected: <why> — …`, ending, with
+  nobody to ask (`-m`, the SDK) `…which this non-interactive run cannot ask
+  for; ask the user to make the change themselves`.
 - **The trust record and the sessions tree are never written**
   (`Why::approvable` is false for both): no prompt, no approval path — not
   "allow once", a directory grant or `auto_write` — `… no tool may write it;
@@ -134,10 +132,11 @@ unsandboxed command) is not seen by this path check; the sandbox refuses to
 make one (shell-toolset.md), and the writers cannot make links.
 
 A refused outside path is `path is outside the project root (<root>) and the
-extra write roots (<e1>, <e2>): <path>` (the extras clause only when there
-are extras). The writers' descriptions name the same roots, and under
-`outside_writes: ask` in a chat they add that a write outside them asks the
-user first, so the model does not take a refusal as final.
+extra write roots (<e1>, <e2>): <path> — <why>` (the extras clause only when
+there are extras; `<why>` says that this call has no approval, or that nobody
+can be asked and how to allow it). The writers' descriptions name the same
+roots, and in a chat they add that a write outside them asks the user first,
+so the model does not take a refusal as final.
 
 Results and headers stay anchored on the project root: a path outside it —
 a read anywhere, a write under an extra root — is shown absolute (`~/…` in a
@@ -185,10 +184,9 @@ project root, a `write_roots:` entry or a live directory grant:
 | class | chat (a user to ask) | `-m`, the SDK path (nobody to ask) |
 |---|---|---|
 | INSIDE | asked unless `tools.code.auto_write` | refused unless `auto_write`, saying to set it |
-| OUTSIDE, `outside_writes: ask` | asked ALWAYS — `auto_write` does not waive it | refused, saying to list the directory in `write_roots:` |
-| OUTSIDE, `outside_writes: refuse` | refused, no prompt | refused |
-| PROTECTED (not the trust record or the sessions tree), `ask` | asked ALWAYS, "allow once" only | refused, saying the user can make the change |
-| PROTECTED, `refuse`; the trust record; the sessions tree | refused, no prompt | refused |
+| OUTSIDE | asked ALWAYS — `auto_write` does not waive it | refused, saying to pass `--add-dir` or list the directory in `write_roots:` |
+| PROTECTED (not the trust record or the sessions tree) | asked ALWAYS, "allow once" only | refused, saying the user can make the change |
+| the trust record; the sessions tree | refused, no prompt | refused |
 | UNVERIFIABLE | refused, no prompt | refused |
 
 - **The prompt** for an outside write names the RESOLVED real path,
@@ -239,11 +237,13 @@ project root, a `write_roots:` entry or a live directory grant:
   at call time.
 - A denial becomes an isError tool result ("The user declined this call."),
   so the provider still receives a result for every call id.
-- **`outside_writes: refuse`** restores the jail as it was before writes
-  could be approved: the existing refusal text, no prompt, `auto_write`
-  unchanged. The other way to admit a directory — silently, in every mode — is
-  to list it in `write_roots:`, read when the tools are assembled; a running
-  chat gains a root only through the dialog's directory grant.
+- **No standing refusal.** There is no key that refuses an outside write
+  without asking (`outside_writes:` was removed, config-allow.md §5 Q5, and
+  now fails the load): with a user, the user is asked and can deny; with
+  nobody to ask, the write is refused. The way to admit a directory —
+  silently, in every mode — is to list it in `write_roots:`, read when the
+  tools are assembled; a running chat gains a root only through the dialog's
+  directory grant.
 - **The hold** (`waives_approval`, docs/design/agent-messaging.md §4) still
   reads `auto_write`: it waives writes inside the roots, which then run
   unasked; an outside write is asked or refused, never waived.
@@ -254,15 +254,10 @@ project root, a `write_roots:` entry or a live directory grant:
 write_roots:           # top level, every agent; shared with the shell sandbox
   - ~/scratch          # `~` is home
   - ../shared-lib      # relative = against the project root
-outside_writes: ask    # top level, every agent: ask (default) | refuse
 tools:
   code:                # empty = writes inside the roots confirmed
     # auto_write: true # skip confirmations inside the roots (and allow them in -m)
 ```
-
-`outside_writes:` is top-level like `write_roots:` and refused under
-`agents:`/`models:` by the key audit. It can only tighten: once a file of the
-stack says `refuse`, a later `ask` changes nothing.
 
 `write_roots:` is ONE list for both questions "where may the code tools
 write" and "where may a sandboxed shell write" — the split Cursor has
@@ -320,8 +315,9 @@ the chat matrix and the directory grant
 `a_link_swapped_after_a_grant_writes_nothing`; the store itself in
 `tool::grants::tests`, the gate in `tool::approval::tests`), the headless
 matrix (`tests/headless/approval.rs::the_quiet_loop_never_writes_outside_the_roots`),
-the key (`outside_writes_is_a_top_level_key_only`,
-`tests/cmd/config.rs::outside_writes_defaults_to_ask_and_only_tightens_across_the_stack`)
+the retired key (`config::strict::tests::outside_writes_is_retired_at_both_coordinates`,
+`tests/cmd/config.rs::outside_writes_fails_the_load`), the refusal's two
+shapes (`code::tests::an_outside_write_asks_or_says_how_to_allow_it`)
 (`src/tool/builtins/code/{mod,tools}.rs` tests,
 `tests/tool/code.rs`; `write_roots:` end to end in
 `tests/cmd/cli.rs::cli_write_roots_open_a_directory_outside_the_project`).

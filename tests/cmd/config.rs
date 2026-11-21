@@ -557,7 +557,7 @@ fn an_unknown_key_is_refused_with_its_coordinate() {
         ),
         (
             "agnets:\n  coder: {}\n",
-            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, write_roots:, outside_writes:, mouse:)",
+            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, write_roots:, mouse:)",
         ),
     ] {
         assert_eq!(
@@ -655,44 +655,18 @@ fn write_roots_load_as_written_and_add_up_across_the_stack() {
     let _ = dir;
 }
 
-/// `outside_writes:` is `ask` (the default) or `refuse`, and a stack keeps the strictest value any file
-/// names: a later `ask` cannot loosen an earlier `refuse`, a later `refuse` tightens an earlier `ask`.
+/// `outside_writes:` was removed: a file that still sets it fails the load, whatever the value, naming what
+/// happens instead — a write outside every root asks, or is refused when nobody can be asked.
 #[test]
-fn outside_writes_defaults_to_ask_and_only_tightens_across_the_stack() {
-    use iota::tool::OutsideWrites::{Ask, Refuse};
-    assert_eq!(parse("").expect("parses").outside_writes, Ask);
-    assert_eq!(
-        parse("outside_writes: ask\n")
-            .expect("parses")
-            .outside_writes,
-        Ask
-    );
-    assert_eq!(
-        parse("outside_writes: refuse\n")
-            .expect("parses")
-            .outside_writes,
-        Refuse
-    );
-    assert!(
-        parse("outside_writes: allow\n").is_err(),
-        "ask or refuse only"
-    );
-    for (home, cwd, want) in [
-        ("outside_writes: refuse\n", "outside_writes: ask\n", Refuse),
-        ("outside_writes: ask\n", "outside_writes: refuse\n", Refuse),
-        ("outside_writes: refuse\n", "", Refuse),
-        ("", "outside_writes: ask\n", Ask),
-    ] {
-        let (dir, dirs) = temp_project(&[("home/.iota.yaml", home), (".iota.yaml", cwd)]);
-        let cfg = Config::load(
-            None,
-            &Env::default().with_dirs(dirs),
-            &mut |_, _, _| true,
-            &mut |_| {},
-        )
-        .expect("loads");
-        assert_eq!(cfg.outside_writes, want, "{home:?} then {cwd:?}");
-        let _ = dir;
+fn outside_writes_fails_the_load() {
+    for value in ["ask", "refuse"] {
+        assert_eq!(
+            parse(&format!("outside_writes: {value}\n"))
+                .expect_err("a retired key fails the load")
+                .to_string(),
+            "outside_writes: `outside_writes` was removed — a write outside every root asks the user, and a run with nobody to ask refuses it; delete the key",
+            "{value}"
+        );
     }
 }
 

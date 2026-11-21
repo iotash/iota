@@ -12,7 +12,7 @@ use iota::provider::model::JsonObject;
 use iota::tool::builtins::code::{CODE_MAX_OUTPUT, new_code_set};
 use iota::tool::context::RunCtx;
 use iota::tool::sets::{RawNode, ToolsConfig};
-use iota::tool::{Dispatcher, OutsideWrites, Presentation, Tool, ToolEnv, ToolOutput};
+use iota::tool::{Dispatcher, Presentation, Tool, ToolEnv, ToolOutput};
 use iota::tool::{Registry, merge};
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -113,26 +113,17 @@ fn set_mtime(path: &Path, when: SystemTime) {
 }
 /// Reads are open: an absolute path and a `..` escape both read a file outside the project, while a
 /// write to the very same paths lands nothing in a run with nobody to ask (no interactor: `-m`, the SDK
-/// path), `auto_write` or not. Under `outside_writes: ask` the refusal says how to allow it; under
-/// `refuse` it is the jail's text as it always was.
+/// path), `auto_write` or not, and the refusal says how to allow it.
 #[tokio::test]
 async fn reads_reach_outside_the_project_root_and_writes_do_not() {
-    for (policy, auto_write) in [
-        (OutsideWrites::Ask, "auto_write: true\n"),
-        (OutsideWrites::Ask, ""),
-        (OutsideWrites::Refuse, "auto_write: true\n"),
-        (OutsideWrites::Refuse, ""),
-    ] {
-        outside_writes_are_refused_headlessly(policy, auto_write).await;
+    for auto_write in ["auto_write: true\n", ""] {
+        outside_writes_are_refused_headlessly(auto_write).await;
     }
 }
 
-async fn outside_writes_are_refused_headlessly(policy: OutsideWrites, cfg: &str) {
+async fn outside_writes_are_refused_headlessly(cfg: &str) {
     let (dir, root, _) = code_project(&[("a.txt", "hello\n")], cfg);
-    let env = ToolEnv {
-        outside_writes: policy,
-        ..env_at(&root)
-    };
+    let env = env_at(&root);
     let tools: Tools = new_code_set(&env, node(cfg).as_ref())
         .expect("code set")
         .into_iter()
@@ -140,19 +131,14 @@ async fn outside_writes_are_refused_headlessly(policy: OutsideWrites, cfg: &str)
         .collect();
     let outside = dir.path().join("outside.txt");
     fs::write(&outside, "secret").expect("write outside");
-    let hint = match policy {
-        OutsideWrites::Ask => {
-            " — writing there needs the user's approval, which this non-interactive run cannot ask for; pass --add-dir <dir>, or list its directory in the top-level `write_roots:`, to allow it"
-        }
-        OutsideWrites::Refuse => "",
-    };
+    let hint = " — writing there needs the user's approval, which this non-interactive run cannot ask for; pass --add-dir <dir>, or list its directory in the top-level `write_roots:`, to allow it";
 
     for path in [
         outside.to_string_lossy().into_owned(),
         "../outside.txt".to_owned(),
         "a/../../outside.txt".to_owned(),
     ] {
-        let at = format!("{policy:?} {cfg:?} {path:?}");
+        let at = format!("{cfg:?} {path:?}");
         let out = call(&tools, "read_file", json!({ "path": path })).await;
         assert_eq!(out, ToolOutput::ok("     1\tsecret"), "read {at}");
         let refused = ToolOutput::err(format!(

@@ -16,21 +16,17 @@ use crate::provider::MODERATION_LEVELS;
 use crate::tool::sets::SET_NAMES;
 
 /// The top-level maps.
-const TOP_KEYS: [&str; 7] = [
+const TOP_KEYS: [&str; 6] = [
     "providers",
     "models",
     "agents",
     "mcp_servers",
     WRITE_ROOTS,
-    OUTSIDE_WRITES,
     MOUSE,
 ];
 /// The top-level key that is a list, not a map of entries: the extra roots the code tools and the shell
 /// sandbox share. The typed decode checks its shape; the audit only keeps it out of the layers.
 const WRITE_ROOTS: &str = "write_roots";
-/// The top-level scalar `ask | refuse`: what the code writers do outside every root. Like `write_roots`, it
-/// applies to every agent, so the audit keeps it out of the layers and the typed decode checks its value.
-const OUTSIDE_WRITES: &str = "outside_writes";
 /// The top-level bool: whether the full screen captures the mouse. A terminal setting, not an agent's, so
 /// the audit keeps it out of the layers and the typed decode checks its value.
 const MOUSE: &str = "mouse";
@@ -87,10 +83,18 @@ const MCP_KEYS: [&str; 12] = [
     "auto_run",
 ];
 
-/// Keys a redesign retired — `(section, key, replacement)`, `section` being `""` for "any" — and the
-/// sentence that tells the user what to write instead. They are checked before the "belongs under" table,
-/// so the message names the replacement rather than a layer; a key the section still owns never gets here.
-const RETIRED_KEYS: [(&str, &str, &str); 3] = [
+/// The `section` of a [`RETIRED_KEYS`] row that retires a top-level key.
+const TOP: &str = ".";
+
+/// The sentence of a retired `outside_writes:`, at the top level and in an agent alike.
+const OUTSIDE_WRITES_GONE: &str = "`outside_writes` was removed — a write outside every root asks the user, and a run with nobody to ask refuses it; delete the key";
+
+/// Keys a redesign retired — `(section, key, replacement)`, `section` being `""` for "any entry of any
+/// section" and [`TOP`] for the top level — and the sentence that tells the user what to write instead. They
+/// are checked whatever the key's value, before the "belongs under" table (and, at the top level, before
+/// `unknown top-level key`), so the message names the replacement rather than a layer; a key the section
+/// still owns never gets here.
+const RETIRED_KEYS: [(&str, &str, &str); 5] = [
     (
         "",
         "model",
@@ -107,6 +111,9 @@ const RETIRED_KEYS: [(&str, &str, &str); 3] = [
         "agent",
         "`agent` is now `mode: agent` on an `agents:` entry",
     ),
+    // 2026-11-21: a write outside every root asks, or is refused when nobody can be asked (X-92).
+    (TOP, "outside_writes", OUTSIDE_WRITES_GONE),
+    ("agents", "outside_writes", OUTSIDE_WRITES_GONE),
 ];
 
 /// Toolsets that were removed or renamed; anything else unknown gets the generic refusal.
@@ -130,6 +137,12 @@ pub(crate) fn audit(doc: &Value) -> Result<(), ConfigError> {
     };
     for (key, section) in top {
         let Some(name) = key.as_str() else { continue };
+        if let Some(hint) = retired(TOP, name) {
+            return Err(ConfigError::Key {
+                at: name.to_owned(),
+                message: hint.to_owned(),
+            });
+        }
         if !TOP_KEYS.contains(&name) {
             return Err(ConfigError::Key {
                 at: name.to_owned(),
@@ -195,16 +208,13 @@ fn check_key(section: &str, entry: &str, key: &str) -> Result<(), ConfigError> {
         return Ok(());
     }
     let at = format!("{section}.{entry}.{key}");
-    if let Some((_, _, hint)) = RETIRED_KEYS
-        .iter()
-        .find(|(s, k, _)| (s.is_empty() || *s == section) && *k == key)
-    {
+    if let Some(hint) = retired(section, key) {
         return Err(ConfigError::Key {
             at,
-            message: (*hint).to_owned(),
+            message: hint.to_owned(),
         });
     }
-    if key == WRITE_ROOTS || key == OUTSIDE_WRITES {
+    if key == WRITE_ROOTS {
         return Err(ConfigError::Key {
             at,
             message: format!("`{key}` is a top-level key: it applies to every agent"),
@@ -224,6 +234,14 @@ fn check_key(section: &str, entry: &str, key: &str) -> Result<(), ConfigError> {
         at,
         message: format!("unknown key (want {})", own.join(", ")),
     })
+}
+
+/// The sentence of a retired `key` in `section` ([`TOP`] for the top level), if it is one.
+fn retired(section: &str, key: &str) -> Option<&'static str> {
+    RETIRED_KEYS
+        .iter()
+        .find(|(s, k, _)| *k == key && (*s == section || (s.is_empty() && section != TOP)))
+        .map(|(_, _, hint)| *hint)
 }
 
 /// `agents.<name>.tools`: every key names a built-in toolset.
@@ -397,7 +415,7 @@ mod tests {
         );
         assert_eq!(
             check("agnets:\n  a: {}\n"),
-            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, write_roots:, outside_writes:, mouse:)"
+            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, write_roots:, mouse:)"
         );
         assert_eq!(
             check("mcp_servers:\n  fs: {commadn: npx}\n"),
@@ -422,18 +440,29 @@ mod tests {
         );
     }
 
-    /// `outside_writes:` is a top-level scalar — for every agent, so a layer refuses it by name.
+    /// `outside_writes:` was removed: the load fails on it at the top level and in an agent, whatever its value
+    /// (`ask` too — the key, not its value, is what is gone), naming what happens instead.
     #[test]
-    fn outside_writes_is_a_top_level_key_only() {
-        assert_eq!(check("outside_writes: refuse\n"), "");
-        assert_eq!(check("outside_writes: ask\nagents:\n  a: {model: m}\n"), "");
-        assert_eq!(
-            check("agents:\n  a: {model: m, outside_writes: refuse}\n"),
-            "agents.a.outside_writes: `outside_writes` is a top-level key: it applies to every agent"
-        );
-        assert_eq!(
-            check("models:\n  m: {provider: p, id: i, outside_writes: ask}\n"),
-            "models.m.outside_writes: `outside_writes` is a top-level key: it applies to every agent"
+    fn outside_writes_is_retired_at_both_coordinates() {
+        let gone = "`outside_writes` was removed — a write outside every root asks the user, and a run with nobody to ask refuses it; delete the key";
+        for value in ["ask", "refuse", "nonsense", "[]"] {
+            assert_eq!(
+                check(&format!("outside_writes: {value}\n")),
+                format!("outside_writes: {gone}"),
+                "{value}"
+            );
+            assert_eq!(
+                check(&format!(
+                    "agents:\n  coder: {{model: m, outside_writes: {value}}}\n"
+                )),
+                format!("agents.coder.outside_writes: {gone}"),
+                "{value}"
+            );
+        }
+        // Elsewhere it never was a key, and it is simply not one.
+        assert!(
+            check("models:\n  m: {provider: p, id: i, outside_writes: ask}\n")
+                .starts_with("models.m.outside_writes: unknown key (want provider, ")
         );
     }
 

@@ -286,7 +286,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::{GrantSet, Grants, Level, McpTool, ServerId, ToolKey};
-    use crate::tool::builtins::code::{CodeSet, Outside, Write};
+    use crate::tool::builtins::code::{CodeSet, Write};
 
     /// A temp dir holding `proj/` (the project) and `out/` beside it; `out`'s real location.
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -303,7 +303,7 @@ mod tests {
             root.to_path_buf(),
             Vec::new(),
             true,
-            Outside::Ask,
+            true,
             None,
             Arc::clone(grants),
         )

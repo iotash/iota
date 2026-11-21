@@ -143,8 +143,6 @@ struct ConfigFile {
     mcp_servers: BTreeMap<String, McpServerConfig>,
     /// `write_roots:` — extra roots the code tools and the shell sandbox may write.
     write_roots: Vec<String>,
-    /// `outside_writes:` — `ask` or `refuse`; absent leaves the stack's value as it is.
-    outside_writes: Option<crate::tool::OutsideWrites>,
     /// `mouse:` — whether the full screen captures the mouse; absent leaves the stack's value as it is.
     #[serde(deserialize_with = "crate::tool::yaml11::deserialize_opt_bool")]
     mouse: Option<bool>,
@@ -171,10 +169,6 @@ pub struct Config {
     /// against the run's home and project root by `ToolEnv::with_write_roots`, which also drops repeats).
     /// Every file of the stack adds its entries, first file first.
     pub write_roots: Vec<String>,
-    /// `outside_writes:` — whether a code-tool write outside the project root and every write root asks the
-    /// user (`ask`, the default) or is refused (`refuse`, the jail's old behaviour), for every agent. It can
-    /// only tighten: once a file of the stack says `refuse`, a later `ask` changes nothing.
-    pub outside_writes: crate::tool::OutsideWrites,
     /// `mouse:` — whether the full screen captures the mouse (the wheel scrolls the conversation, a click
     /// places the cursor or picks a row, a drag selects and copies); `false` requests no mouse reporting at
     /// all, so the terminal keeps its own selection. The last file of the stack that sets it wins; `None`
@@ -407,9 +401,6 @@ impl Config {
             check_write_root(format!("write_roots[{i}]"), root, env)?;
         }
         self.write_roots.extend(file.write_roots);
-        if let Some(o) = file.outside_writes {
-            self.outside_writes = self.outside_writes.max(o);
-        }
         if file.mouse.is_some() {
             self.mouse = file.mouse;
         }

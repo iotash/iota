@@ -396,9 +396,6 @@ pub struct ToolEnv {
     /// The `--add-dir` values, absolute, after [`write_roots`](Self::write_roots) and none of them: kept apart
     /// so a door can say which declaration already covers a directory.
     pub added_dirs: Vec<PathBuf>,
-    /// The top-level `outside_writes:`: whether a code-tool write outside every root is put to the user or
-    /// refused outright.
-    pub outside_writes: OutsideWrites,
     /// The run's ONE grant store ([`grants::Grants`]): the `code` set reads its directory grants at every call,
     /// beside the static [`write_roots`](Self::write_roots); the walks read and write it through
     /// [`approval::gate`]. `Default` is an empty store.
@@ -417,19 +414,6 @@ pub struct ApprovalSubject {
     /// write directly in `/`, the home directory or an ancestor of it is never offered as a root — and the
     /// gate offers only "allow once".
     pub scope: Option<PathBuf>,
-}
-
-/// The top-level `outside_writes:` — what the `code` writers do with a path whose real location is known and
-/// lies outside the project root and every `write_roots:` entry. Ordered by strictness: a config stack keeps
-/// the strictest value any of its files names (`refuse` cannot be loosened by a later file).
-#[derive(serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "lowercase")]
-pub enum OutsideWrites {
-    /// Ask the user (`auto_write` does not waive it); a run with nobody to ask refuses.
-    #[default]
-    Ask,
-    /// Refuse, as the jail always did: no prompt.
-    Refuse,
 }
 
 impl ToolEnv {

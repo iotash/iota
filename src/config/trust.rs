@@ -126,7 +126,7 @@ fn hash(bytes: &[u8]) -> String {
 /// - `agents.<name>`: `system_file` (read, `${…}`-expanded, into the prompt sent to the provider),
 ///   `tools.shell.sandbox` other than `auto`, `tools.shell.auto_run`, `tools.shell.network`,
 ///   `tools.code.auto_write` (not false);
-/// - `write_roots`, `outside_writes`.
+/// - `write_roots`.
 ///
 /// Never shortened: a long list is the file's, and hiding part of it would defeat the question. Empty when
 /// the file sets none of them.
@@ -216,9 +216,6 @@ pub fn summary(bytes: &[u8]) -> Vec<String> {
         if !roots.is_empty() {
             out.push(format!("write_roots: {}", roots.join(", ")));
         }
-    }
-    if let Some(v) = scalar(doc.get("outside_writes")) {
-        out.push(format!("outside_writes: {v}"));
     }
     out
 }
@@ -345,7 +342,6 @@ agents:
     tools:
       shell: {sandbox: auto, auto_run: false, network: false}
 write_roots: [/tmp/out, ~/notes]
-outside_writes: ask
 "#,
         );
         assert_eq!(
@@ -366,7 +362,6 @@ outside_writes: ask
                 "agents.coder.tools.code.auto_write: true",
                 "agents.calm.system_file: ${HOME}/.ssh/id_rsa (read into the prompt sent to the provider)",
                 "write_roots: /tmp/out, ~/notes",
-                "outside_writes: ask",
             ]
         );
         assert!(summary(b"models:\n  m: openai:gpt\n").is_empty());

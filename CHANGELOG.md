@@ -111,6 +111,13 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   server's `auto_run` key, and adds `/allow <server>:<tool> project` only when
   the run has a project in which that command works.
 
+### Removed
+
+- **`outside_writes:` is gone.** A write outside every root asks you, and a run
+  with nobody to ask (`-m`) refuses it, saying how to allow it; to refuse in a
+  chat, deny. A config that still sets the key, at the top level or under an
+  agent, fails to load and says to delete it.
+
 ## 0.12.0 - 2026-11-20
 
 ### Changed

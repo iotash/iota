@@ -16,7 +16,7 @@ use crate::app::protected::{self, Why};
 use crate::app::{fs, paths};
 use crate::tool::context::{Approved, RunCtx};
 use crate::tool::grants::Grants;
-use crate::tool::{ApprovalSubject, OutsideWrites, Tool, ToolEnv, ToolOutput};
+use crate::tool::{ApprovalSubject, Tool, ToolEnv, ToolOutput};
 use serde::Deserialize;
 
 use crate::sync::lock;
@@ -83,18 +83,6 @@ impl Root {
     }
 }
 
-/// What the writers do with a path outside every root whose real location is known: the top-level
-/// `outside_writes:` met with whether the run has a user to ask.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Outside {
-    /// `ask` with a user (an interactor is bound): the write is put to the user, every time.
-    Ask,
-    /// `ask` with nobody to ask (`-m`, the SDK path): refused, saying how to allow it (`--add-dir`, `write_roots:`).
-    Unattended,
-    /// `refuse`: refused with the jail's own text, no prompt — the behaviour before writes could be approved.
-    Refuse,
-}
-
 /// Where a write argument lands, classified by its real location (see [`fs::physical`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Write {
@@ -116,8 +104,8 @@ pub(crate) enum Write {
     Unverifiable,
 }
 
-/// State shared by the six tools: the project root, the extra write roots, the grant store, the approval
-/// policy and the read ledger.
+/// State shared by the six tools: the project root, the extra write roots, the grant store, whether anyone
+/// can be asked and the read ledger.
 pub(crate) struct CodeSet {
     root: Root,
     /// `ToolEnv::static_roots`: further roots the write jail accepts, fixed at assembly. Relative arguments and
@@ -130,7 +118,10 @@ pub(crate) struct CodeSet {
     /// (captured at set construction), not an execution dir.
     cwd: PathBuf,
     auto_write: bool,
-    outside: Outside,
+    /// Whether the run has somebody to ask (an interactor is bound). A write outside every root, or to an
+    /// approvable protected path, is put to the user when there is one, every time; with nobody to ask (`-m`,
+    /// the SDK path) it is refused, saying how to allow it.
+    attended: bool,
     /// The user's home, whose config and trust record the protected table names; None without one.
     home: Option<PathBuf>,
     reads: Mutex<HashMap<PathBuf, SystemTime>>,
@@ -141,13 +132,13 @@ impl CodeSet {
     /// when it cannot be read it stays empty and the ladder skips its rungs). A root whose real
     /// location cannot be worked out (see [`fs::physical`]) fails the set — `CodeRoot` for the
     /// project root, there being nothing to jail paths to, `WriteRoot` for an extra one, which is
-    /// never silently dropped. `home` is the user's home, for the protected table; `grants` the run's store,
-    /// whose directory grants the jail reads per call.
+    /// never silently dropped. `attended` is whether the run has somebody to ask; `home` is the user's home,
+    /// for the protected table; `grants` the run's store, whose directory grants the jail reads per call.
     pub(crate) fn new(
         root: PathBuf,
         extra: Vec<PathBuf>,
         auto_write: bool,
-        outside: Outside,
+        attended: bool,
         home: Option<PathBuf>,
         grants: Arc<Grants>,
     ) -> Result<Arc<Self>, SetError> {
@@ -162,7 +153,7 @@ impl CodeSet {
             grants,
             cwd: std::env::current_dir().unwrap_or_default(),
             auto_write,
-            outside,
+            attended,
             home,
             reads: Mutex::new(HashMap::new()),
         }))
@@ -275,11 +266,12 @@ impl CodeSet {
 
     /// Where a writer's call may write, decided at call time — after any prompt, so a link swapped since is
     /// caught: `(ledger path, target)`. Inside a root (a directory grant included) both are the lexical path.
-    /// Outside every root the call is admitted only under `outside_writes: ask` and only when
+    /// Outside every root the call is admitted only when the run has somebody to ask and
     /// [`RunCtx::approved`] names exactly the real location resolved NOW ("allow once"); then the target is
     /// that real location. Err texts: `missing required argument: path`,
-    /// `path is outside the project root ({root}): {arg}` (alone under `refuse`; followed under `ask` by why
-    /// it was not approved), `cannot verify {arg} inside the project root ({root})` — `{root}` followed,
+    /// `path is outside the project root ({root}): {arg} — ` followed by why it was not approved (this call
+    /// has no approval, or nobody can be asked and how to allow it), `cannot verify {arg} inside the project
+    /// root ({root})` — `{root}` followed,
     /// when `write_roots:` lists any or a directory is granted, by `) and the extra write roots ({e1}, {e2}`.
     ///
     /// A protected path ([`Write::Protected`]) is admitted only when "allow once" named exactly its real
@@ -295,27 +287,24 @@ impl CodeSet {
             Write::Inside(p) => Ok((p.clone(), p)),
             Write::Outside { path, real } => {
                 let refusal = format!("path is outside the project root ({roots}): {arg}");
-                let why = match self.outside {
-                    Outside::Ask if cx.approved.as_ref() == Some(&Approved::Once(real.clone())) => {
-                        return Ok((path, real));
-                    }
-                    Outside::Ask => format!(
+                let why = if !self.attended {
+                    " — writing there needs the user's approval, which this \
+                    non-interactive run cannot ask for; pass --add-dir <dir>, or list its \
+                    directory in the top-level `write_roots:`, to allow it"
+                        .to_owned()
+                } else if cx.approved.as_ref() == Some(&Approved::Once(real.clone())) {
+                    return Ok((path, real));
+                } else {
+                    format!(
                         " — writing there needs the user's approval, and this call has none for {}",
                         real.display()
-                    ),
-                    Outside::Unattended => {
-                        " — writing there needs the user's approval, which this \
-                        non-interactive run cannot ask for; pass --add-dir <dir>, or list its \
-                        directory in the top-level `write_roots:`, to allow it"
-                            .to_owned()
-                    }
-                    Outside::Refuse => String::new(),
+                    )
                 };
                 Err(ToolOutput::err(format!("{refusal}{why}")))
             }
             Write::Protected { path, real, why } => {
                 if why.approvable()
-                    && self.outside == Outside::Ask
+                    && self.attended
                     && cx.approved.as_ref() == Some(&Approved::Once(real.clone()))
                 {
                     return Ok((path, real));
@@ -324,7 +313,7 @@ impl CodeSet {
                     arg,
                     &real,
                     why,
-                    self.outside,
+                    self.attended,
                 )))
             }
             Write::Unverifiable => Err(ToolOutput::err(format!(
@@ -334,12 +323,12 @@ impl CodeSet {
     }
 
     /// What a write the user would be asked about is bound to, from one resolution of its real location:
-    /// `Some` only under `outside_writes: ask` with a user to ask, for a path outside every root whose location
+    /// `Some` only in a run with somebody to ask, for a path outside every root whose location
     /// is known (named [`OUTSIDE_ROOT_MARK`]; its real directory offered as a directory grant unless that is
     /// `/`, the home directory or an ancestor of it — [`offers_root`]) or a protected path that is
     /// [`Why::approvable`] (named [`PROTECTED_MARK`] and why, "allow once" only).
     pub(crate) fn approvable(&self, arg: &str) -> Option<ApprovalSubject> {
-        if self.outside != Outside::Ask {
+        if !self.attended {
             return None;
         }
         match self.write_path(arg) {
@@ -360,7 +349,7 @@ impl CodeSet {
     }
 
     /// Whether the writers' calls are put to the user: inside the roots unless `auto_write`, outside
-    /// them always under `outside_writes: ask` with a user to ask; an unverifiable or empty path never
+    /// them always when the run has somebody to ask; an unverifiable or empty path never
     /// (it is refused at the call). `None` (the argument-less probe) is `!auto_write`: whether an inside
     /// write asks — the one a tool grant answers.
     pub(crate) fn write_asks(&self, args: Option<&crate::provider::model::JsonObject>) -> bool {
@@ -370,24 +359,25 @@ impl CodeSet {
         let arg = crate::tool::args::str_arg(args, "path");
         match self.write_path(arg) {
             Ok(Write::Inside(_)) => !self.auto_write,
-            Ok(Write::Outside { .. }) => self.outside == Outside::Ask,
-            Ok(Write::Protected { why, .. }) => why.approvable() && self.outside == Outside::Ask,
+            Ok(Write::Outside { .. }) => self.attended,
+            Ok(Write::Protected { why, .. }) => why.approvable() && self.attended,
             Ok(Write::Unverifiable) | Err(_) => false,
         }
     }
 
     /// `auto_write`: what the writers waive is the approval of writes INSIDE the roots. A write outside
-    /// them, or to a protected path, is still asked (`outside_writes: ask`) or refused, never waived.
+    /// them, or to a protected path, is still asked (or refused when nobody can be asked), never waived.
     pub(crate) fn waives(&self) -> bool {
         self.auto_write
     }
 
-    /// The writers' description sentence on writes outside the roots: under `outside_writes: ask` with a
-    /// user, that such a write asks first (so a model does not take a refusal as final); else nothing.
+    /// The writers' description sentence on writes outside the roots: in a run with somebody to ask, that
+    /// such a write asks first (so a model does not take a refusal as final); else nothing.
     pub(crate) fn outside_clause(&self) -> &'static str {
-        match self.outside {
-            Outside::Ask => " Outside that, the user is asked to approve a write there first.",
-            Outside::Unattended | Outside::Refuse => "",
+        if self.attended {
+            " Outside that, the user is asked to approve a write there first."
+        } else {
+            ""
         }
     }
 
@@ -479,16 +469,11 @@ pub fn new_code_set(env: &ToolEnv, node: Option<&RawNode>) -> Result<Vec<Arc<dyn
         return Err(SetError::CodeContradiction);
     }
     let root = env.root().unwrap_or_else(|_| PathBuf::from("."));
-    let outside = match (env.outside_writes, env.interactor.is_some()) {
-        (OutsideWrites::Refuse, _) => Outside::Refuse,
-        (OutsideWrites::Ask, true) => Outside::Ask,
-        (OutsideWrites::Ask, false) => Outside::Unattended,
-    };
     let cs = CodeSet::new(
         root,
         env.static_roots(),
         cfg.auto_write,
-        outside,
+        env.interactor.is_some(),
         env.dirs.home.clone(),
         Arc::clone(&env.grants),
     )?;
@@ -538,28 +523,23 @@ pub(crate) fn grant_dir(real: &Path) -> &Path {
 
 /// A protected write's refusal: `{arg} is protected: {reason} — ` and then what is left to do. The trust
 /// record and the sessions tree have no approval path at all; another protected path needs the user's approval
-/// of this one file, which `refuse` and a run with nobody to ask cannot give — the user edits it themselves.
-fn protected_refusal(arg: &str, real: &Path, why: Why, outside: Outside) -> String {
-    let rest = match (why, outside) {
+/// of this one file, which a run with nobody to ask cannot give — the user edits it themselves.
+fn protected_refusal(arg: &str, real: &Path, why: Why, attended: bool) -> String {
+    let rest = match (why, attended) {
         (Why::Trust, _) => "no tool may write it; the user trusts a project config by running \
                             `iota config trust` themselves"
             .to_owned(),
         (Why::Grants, _) => "no tool may write it; iota alone writes the sessions and the \
                              grants they hold"
             .to_owned(),
-        (_, Outside::Ask) => format!(
+        (_, true) => format!(
             "writing it needs the user's approval of this file, and this call has none for {}",
             real.display()
         ),
-        (_, Outside::Unattended) => "writing it needs the user's approval, which this \
-                                     non-interactive run cannot ask for; ask the user to make the \
-                                     change themselves"
+        (_, false) => "writing it needs the user's approval, which this \
+                       non-interactive run cannot ask for; ask the user to make the \
+                       change themselves"
             .to_owned(),
-        (_, Outside::Refuse) => {
-            "`outside_writes: refuse` refuses every write that needs approval; \
-                                 ask the user to make the change themselves"
-                .to_owned()
-        }
     };
     format!("{arg} is protected: {} — {rest}", why.reason())
 }
@@ -593,11 +573,13 @@ mod tests {
     use crate::tool::ToolOutput;
     use std::path::{Path, PathBuf};
 
-    use super::{CodeSet, Outside, byte_count, looks_binary};
+    use super::{CodeSet, byte_count, looks_binary};
     use crate::tool::context::RunCtx;
 
-    /// What a writer's call is told about `arg` with no approval: under `Outside::Refuse`, exactly the jail
-    /// as it was before writes could be approved — the cleaned path, or the refusal.
+    /// What follows a refused outside path in a run with nobody to ask: how to allow it.
+    pub(crate) const UNATTENDED: &str = " — writing there needs the user's approval, which this non-interactive run cannot ask for; pass --add-dir <dir>, or list its directory in the top-level `write_roots:`, to allow it";
+
+    /// What a writer's call is told about `arg` with no approval: the cleaned path, or the refusal.
     pub(crate) fn jail(cs: &CodeSet, arg: &str) -> Result<PathBuf, ToolOutput> {
         cs.write_target(&RunCtx::default(), arg).map(|(p, _)| p)
     }
@@ -633,7 +615,7 @@ mod tests {
             PathBuf::from("/proj"),
             Vec::new(),
             false,
-            Outside::Refuse,
+            false,
             None,
             std::sync::Arc::default(),
         )
@@ -666,7 +648,7 @@ mod tests {
             assert_eq!(
                 jail(&cs, arg),
                 Err(ToolOutput::err(format!(
-                    "path is outside the project root (/proj): {arg}"
+                    "path is outside the project root (/proj): {arg}{UNATTENDED}"
                 ))),
                 "{arg}"
             );
@@ -692,7 +674,7 @@ mod tests {
     #[cfg(unix)]
     fn outside(root: &Path, arg: &str) -> Result<PathBuf, ToolOutput> {
         Err(ToolOutput::err(format!(
-            "path is outside the project root ({}): {arg}",
+            "path is outside the project root ({}): {arg}{UNATTENDED}",
             root.display()
         )))
     }
@@ -722,7 +704,7 @@ mod tests {
             root.clone(),
             Vec::new(),
             false,
-            Outside::Ask,
+            true,
             None,
             std::sync::Arc::default(),
         )
@@ -752,6 +734,75 @@ mod tests {
         );
     }
 
+    /// An outside write in a run with a user is asked — the subject names its real location and offers its
+    /// real directory — and lands only with "allow once" for exactly that location, refused without saying this
+    /// call has none; in a run with nobody to ask it is never asked, and its refusal says how to allow it (a
+    /// directory to pass or list), "allow once" or not. There is no third way: no run refuses without either.
+    #[cfg(unix)]
+    #[test]
+    fn an_outside_write_asks_or_says_how_to_allow_it() {
+        use crate::tool::context::Approved;
+        let (_t, root, out) = jail_fixture();
+        let real = crate::app::canonical(&out).expect("real out").join("x.txt");
+        let arg = "../out/x.txt";
+        let refusal = format!(
+            "path is outside the project root ({}): {arg}",
+            root.display()
+        );
+        let once = RunCtx {
+            approved: Some(Approved::Once(real.clone())),
+            ..RunCtx::default()
+        };
+        let set = |attended| {
+            CodeSet::new(
+                root.clone(),
+                Vec::new(),
+                true,
+                attended,
+                None,
+                std::sync::Arc::default(),
+            )
+            .expect("set")
+        };
+
+        let attended = set(true);
+        let mut args = crate::provider::model::JsonObject::new();
+        args.insert("path".to_owned(), arg.into());
+        assert!(
+            attended.write_asks(Some(&args)),
+            "asked, `auto_write` or not"
+        );
+        assert_eq!(
+            attended.approvable(arg),
+            Some(crate::tool::ApprovalSubject {
+                detail: format!("{} (outside the project root)", real.display()),
+                target: real.clone(),
+                scope: real.parent().map(Path::to_path_buf),
+            })
+        );
+        assert_eq!(
+            jail(&attended, arg),
+            Err(ToolOutput::err(format!(
+                "{refusal} — writing there needs the user's approval, and this call has none for {}",
+                real.display()
+            )))
+        );
+        assert_eq!(
+            attended.write_target(&once, arg),
+            Ok((out.join("x.txt"), real.clone()))
+        );
+
+        let unattended = set(false);
+        assert!(!unattended.write_asks(Some(&args)), "nobody to ask");
+        assert_eq!(unattended.approvable(arg), None);
+        for cx in [RunCtx::default(), once] {
+            assert_eq!(
+                unattended.write_target(&cx, arg).map(|(p, _)| p),
+                Err(ToolOutput::err(format!("{refusal}{UNATTENDED}")))
+            );
+        }
+    }
+
     /// `write_roots:`: a path under an extra root is accepted (relative arguments still hang off
     /// the project root), a path under no root is refused naming every root, a link inside an
     /// extra root that leaves every root is refused, and the display stays root-anchored.
@@ -769,7 +820,7 @@ mod tests {
             root.clone(),
             vec![other.clone(), missing.clone()],
             false,
-            Outside::Refuse,
+            false,
             None,
             std::sync::Arc::default(),
         )
@@ -799,7 +850,7 @@ mod tests {
             assert_eq!(
                 jail(&cs, &arg),
                 Err(ToolOutput::err(format!(
-                    "path is outside the project root ({roots}): {arg}"
+                    "path is outside the project root ({roots}): {arg}{UNATTENDED}"
                 ))),
                 "{arg}"
             );
@@ -832,7 +883,7 @@ mod tests {
                 root,
                 vec![looped.clone()],
                 false,
-                Outside::Refuse,
+                false,
                 None,
                 std::sync::Arc::default()
             )
@@ -859,7 +910,7 @@ mod tests {
             root.clone(),
             Vec::new(),
             false,
-            Outside::Refuse,
+            false,
             None,
             std::sync::Arc::default(),
         )
@@ -890,7 +941,7 @@ mod tests {
             root.clone(),
             Vec::new(),
             false,
-            Outside::Refuse,
+            false,
             None,
             std::sync::Arc::default(),
         )
@@ -919,7 +970,7 @@ mod tests {
             via.clone(),
             Vec::new(),
             false,
-            Outside::Refuse,
+            false,
             None,
             std::sync::Arc::default(),
         )
@@ -937,7 +988,7 @@ mod tests {
             tmp.path().to_path_buf(),
             Vec::new(),
             false,
-            Outside::Refuse,
+            false,
             None,
             std::sync::Arc::default(),
         )
@@ -965,7 +1016,7 @@ mod tests {
             via.clone(),
             Vec::new(),
             false,
-            Outside::Refuse,
+            false,
             None,
             std::sync::Arc::default(),
         )
@@ -1033,7 +1084,7 @@ mod tests {
             root.clone(),
             Vec::new(),
             false,
-            Outside::Refuse,
+            false,
             None,
             std::sync::Arc::default(),
         )
@@ -1051,15 +1102,14 @@ mod tests {
             assert_eq!(jail(&cs, arg), unverified(&root, arg), "{arg}");
         }
 
-        // Under `outside_writes: ask` an unknown location is still refused: it is never approvable, never
+        // With a user to ask an unknown location is still refused: it is never approvable, never
         // asked about, and neither an approval the call could carry nor a directory grant over it admits it.
         let grants = std::sync::Arc::new(crate::tool::grants::Grants::default());
         let real_t = crate::app::canonical(t.path()).expect("real t");
         grants.update(crate::tool::grants::Level::Session, |s| {
             s.add_dir(real_t.clone())
         });
-        let asking =
-            CodeSet::new(root.clone(), Vec::new(), true, Outside::Ask, None, grants).expect("set");
+        let asking = CodeSet::new(root.clone(), Vec::new(), true, true, None, grants).expect("set");
         let mut unknown = vec!["la", "la/new.txt"];
         if cfg!(target_os = "macos") {
             unknown.extend(["L/S/secret.txt", "L/S/planted.txt", "L2"]);
@@ -1104,7 +1154,7 @@ mod tests {
                 looped.clone(),
                 Vec::new(),
                 false,
-                Outside::Refuse,
+                false,
                 None,
                 std::sync::Arc::default()
             )
