@@ -57,6 +57,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **A protected file written in another case is still protected.** In a project
+  with no `.iota.yaml`, `write_file` could create `.IOTA.YAML` (or `.GIT`,
+  `.git/HOOKS/…`), which macOS and Windows then read as the protected file; the
+  code tools now match protected names in any case, on every volume.
 - **Four tests expect a shown path with the platform's separator.** Three
   approval-dialog tests and one cancelled-`grep` test built the expected path
   with `join("a/b")`, which keeps its `/` on Windows where iota prints `\`; they

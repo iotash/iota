@@ -1693,6 +1693,94 @@ mod tests {
         assert_eq!(std::fs::read_to_string(hook).expect("hook"), "x");
     }
 
+    /// A protected name written in another case (X-95, amended 2026-11-21). A path that exists comes back from
+    /// `physical` in its on-disk case, but a missing tail keeps the case it was written in — so in a project
+    /// with no `.iota.yaml`, `.IOTA.YAML` would miss the table, and on a case-insensitive volume (macOS's
+    /// default, Windows) the next run reads it as `.iota.yaml`. The table compares names case-folded
+    /// (Unicode: the Kelvin sign is a `k` and `ſ` an `s` to APFS too), on every volume: on a case-sensitive
+    /// one `.IOTA.YAML` is a legal different file and is refused all the same — deliberately (git refuses a
+    /// `.GIT` everywhere too). Nothing protected exists here, and nothing is created.
+    #[test]
+    fn a_protected_name_in_another_case_is_still_protected() {
+        use super::super::{CodeSet, Outside};
+        use super::write_file_call;
+        use crate::app::protected::Why;
+        use crate::tool::context::RunCtx;
+
+        let t = tempfile::tempdir().expect("tempdir");
+        let base = crate::app::canonical(t.path()).expect("real");
+        let root = base.join("root");
+        let home = base.join("home");
+        // A `write_roots:` repository whose `.git` exists (so it has rows) but whose hooks do not.
+        let other = base.join("other");
+        for d in [&root, &home, &other.join(".git")] {
+            std::fs::create_dir_all(d).expect("dir");
+        }
+        let kelvin = "\u{212a}";
+        let long_s = "\u{17f}";
+        let cases = [
+            (root.join(".IOTA.YAML"), Why::ProjectConfig),
+            (root.join(".Iota.Yml"), Why::ProjectConfig),
+            (root.join(".GIT"), Why::GitDir),
+            (root.join(".Git/CONFIG"), Why::GitConfig),
+            (root.join(".git/Config.Worktree"), Why::GitConfig),
+            (root.join(".git/HOOKS/pre-commit"), Why::GitHooks),
+            (
+                root.join(format!(".git/hoo{kelvin}s/pre-commit")),
+                Why::GitHooks,
+            ),
+            (other.join(".git/Hooks/pre-commit"), Why::GitHooks),
+            (other.join(".GIT/config"), Why::GitConfig),
+            (home.join(".IOTA.yaml"), Why::HomeConfig),
+            (home.join(".IOTA"), Why::Trust),
+            (home.join(".iota/TRUSTED.JSON"), Why::Trust),
+            (
+                home.join(format!(".iota/se{long_s}sions/g.json")),
+                Why::Grants,
+            ),
+            (home.join(".Iota/Sessions/x/grants.json"), Why::Grants),
+        ];
+        let cs = CodeSet::new(
+            root.clone(),
+            vec![other.clone()],
+            true,
+            Outside::Refuse,
+            Some(home.clone()),
+            std::sync::Arc::default(),
+        )
+        .expect("set");
+        for (path, why) in cases {
+            let arg = path.display().to_string();
+            let got = write_file_call(
+                &cs,
+                &RunCtx::default(),
+                &args(json!({"path": arg, "content": "x"})),
+            );
+            assert!(
+                got.is_error
+                    && got
+                        .text
+                        .starts_with(&format!("{arg} is protected: {}", why.reason())),
+                "{arg}: {got:?}"
+            );
+        }
+        let listed = |d: &std::path::Path| std::fs::read_dir(d).expect("dir").count();
+        assert_eq!(
+            (listed(&root), listed(&home), listed(&other.join(".git"))),
+            (0, 0, 0),
+            "a protected name in another case was written"
+        );
+        // Folding only widens a match: a name that merely resembles a protected one stays an ordinary write.
+        for name in [".iota.yaml.bak", ".GITIGNORE", ".git-blame-ignore-revs"] {
+            let got = write_file_call(
+                &cs,
+                &RunCtx::default(),
+                &args(json!({"path": name, "content": "x"})),
+            );
+            assert!(!got.is_error, "{name}: {got:?}");
+        }
+    }
+
     /// `~/.iota/sessions` (X-95 amended, grants.md §9 Q11) under the writers: a session bundle and a project
     /// bucket's grants file are never asked about and never written — whatever `auto_write`, the policy, a
     /// project root that IS the home, `write_roots:` naming the home or the sessions tree, a directory grant of

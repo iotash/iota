@@ -92,17 +92,41 @@ pub struct Protected {
 /// Why the real location `real` is protected by `table`, if it is: it lies under a [`Reach::Tree`] entry, or IS
 /// an entry. Each entry is compared at its own real location, so a protected path reached through a link is
 /// still found.
+///
+/// Both sides are compared case-folded (`folded`), on every volume. A path that exists already reads in its
+/// on-disk case (`physical` canonicalizes it), but a missing tail keeps the case it was written in, and on a
+/// case-insensitive volume (macOS's default, Windows) `.IOTA.YAML` created now is `.iota.yaml` on the next
+/// run. On a case-sensitive volume the fold refuses a legal different file (`.IOTA.YAML`, `.GIT`) as
+/// protected — deliberately: git refuses a `.GIT` on every platform too, and probing each volume would be a
+/// guess (a project can span mounts) that costs more than a refusal the user can resolve.
 pub fn why_protected(table: &[Protected], real: &Path) -> Option<Why> {
+    let real = folded(real);
     table
         .iter()
         .find(|e| {
-            let at = super::fs::physical(&e.path).unwrap_or_else(|| e.path.clone());
+            let at = folded(&super::fs::physical(&e.path).unwrap_or_else(|| e.path.clone()));
             match e.reach {
-                Reach::Tree => super::paths::within(&at, real),
+                Reach::Tree => super::paths::within(&at, &real),
                 Reach::Entry => at == real,
             }
         })
         .map(|e| e.why)
+}
+
+/// `p` with every component case-folded the way a case-insensitive volume folds a name: upper- then
+/// lower-cased, so `.IOTA.YAML` is `.iota.yaml` and the Kelvin sign `K` and the long `ſ` are `k` and `s`, as
+/// APFS reads them (a fold wider than a volume's only refuses more). A component that is not UTF-8 is kept as
+/// it is.
+fn folded(p: &Path) -> PathBuf {
+    p.components()
+        .map(|c| {
+            let name = c.as_os_str();
+            name.to_str().map_or_else(
+                || name.to_owned(),
+                |s| s.to_uppercase().to_lowercase().into(),
+            )
+        })
+        .collect()
 }
 
 /// The table for a run rooted at `root`, with the extra write roots (`write_roots:`) and the user's `home` when
@@ -242,6 +266,31 @@ mod tests {
         assert_eq!(got, want);
         // No home: no home config, trust record or sessions tree to protect.
         assert_eq!(table(Path::new("/r"), &[], None).len(), 6);
+    }
+
+    /// The fold is unconditional: on a case-sensitive volume (Linux's, here `/r` that does not exist at all)
+    /// `.IOTA.YAML` and `.GIT` are legal files of their own and are refused all the same — deliberately, the
+    /// false positive the rule accepts so a case-insensitive volume never reads one as the protected name. A
+    /// name that only resembles a protected one is not folded into it.
+    #[test]
+    fn a_protected_name_matches_in_any_case_on_every_volume() {
+        let t = table(Path::new("/r"), &[], Some(Path::new("/h")));
+        let why = |p: &str| super::why_protected(&t, Path::new(p));
+        assert_eq!(why("/r/.IOTA.YAML"), Some(Why::ProjectConfig));
+        assert_eq!(why("/r/.GIT"), Some(Why::GitDir));
+        assert_eq!(why("/r/.Git/Hooks/pre-commit"), Some(Why::GitHooks));
+        assert_eq!(why("/r/.git/CONFIG.WORKTREE"), Some(Why::GitConfig));
+        assert_eq!(why("/h/.IOTA/SESSIONS/x"), Some(Why::Grants));
+        assert_eq!(why("/h/.iota/truſted.json"), Some(Why::Trust));
+        assert_eq!(why("/r/.git/hoo\u{212a}s/x"), Some(Why::GitHooks));
+        for p in [
+            "/r/.iota.yaml.bak",
+            "/r/.GITIGNORE",
+            "/r/.GIT/objects/x",
+            "/h/.IOTA/other",
+        ] {
+            assert_eq!(why(p), None, "{p}");
+        }
     }
 
     /// `~/.iota/sessions` (X-95, amended by grants.md §9 Q11) is a tree — every bundle and project bucket under

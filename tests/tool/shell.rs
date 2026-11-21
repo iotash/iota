@@ -967,6 +967,51 @@ async fn the_sandbox_isolates_the_filesystem_and_the_network() {
     );
     assert!(outside.join("g.txt").exists());
 }
+/// A protected name in another case, none of them existing (X-95, amended 2026-11-21): Seatbelt matches a path
+/// rule the way the volume names files, so on a case-insensitive volume (macOS's default) `.IOTA.YAML` is the
+/// project config and is refused like it — the code writers fold by hand (`app::protected::why_protected`).
+/// Skipped on a case-sensitive volume, where `.IOTA.YAML` is another file and Seatbelt lets it be.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn the_sandbox_refuses_a_protected_name_in_another_case() {
+    let (_dir, root, _outside, sb) = sandbox_fixture();
+    if skip_unless_sandboxed(
+        "the_sandbox_refuses_a_protected_name_in_another_case",
+        &sb,
+        &root,
+    )
+    .await
+    {
+        return;
+    }
+    fs::write(root.join("probe"), "").expect("probe");
+    if !root.join("PROBE").exists() {
+        println!(
+            "SKIP: the_sandbox_refuses_a_protected_name_in_another_case — a case-sensitive volume"
+        );
+        return;
+    }
+    fs::remove_file(root.join("probe")).expect("probe");
+    for command in ["echo x > .IOTA.YAML", "echo x > .Iota.Yml", "mkdir .GIT"] {
+        let res = run(Options {
+            command: command.to_owned(),
+            dir: root.clone(),
+            timeout: None,
+            sandbox: Some(sb.clone()),
+        })
+        .await;
+        assert!(
+            res.outcome != Outcome::Exited(0) && res.output.contains("Operation not permitted"),
+            "{command}: {res:?}"
+        );
+    }
+    assert_eq!(
+        fs::read_dir(&root).expect("root").count(),
+        0,
+        "a protected name landed"
+    );
+}
+
 /// The protected table (`iota::app::protected`, DIVERGENCES X-95) under the real sandbox: a command can write the
 /// project root, run `git add`/`git commit` and write under `~/.iota`, but not the hooks git would execute, the
 /// file that points git at other programs, the project config or the trust record — not even with
