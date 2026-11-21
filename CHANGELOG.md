@@ -40,6 +40,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   `/allow <dir>`. The panel keeps `Grants` (check and press Enter to take back)
   and, when there are any, `Static`; with nothing to list it opens no panel and
   prints a one-line hint: `No grants. /allow <dir> makes a directory writable …`.
+- **`/allow` takes the scope last: `/allow <target> project`.** `/allow shell
+  project`, `/allow ../lib project`, `/allow github:* project` grant for the
+  project; the old order, `/allow project shell`, is refused and says the line
+  to type. A directory whose name ends in ` project` takes a trailing `/`
+  (`/allow ~/my project/`); without it, when both readings exist, `/allow`
+  refuses and names both.
 
 ### Fixed
 
@@ -50,13 +56,13 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   every later run under it. Now only an agent with `mode: agent` (or `bot`)
   has project grants, and never when its project root is your home directory
   or a directory above it. Elsewhere the prompt offers `Allow once`, the
-  session grant and `Deny`, and `/allow project …` says why it cannot. Session
+  session grant and `Deny`, and `/allow … project` says why it cannot. Session
   grants, `write_roots:` and `--add-dir` work as before. A project grant made
   from a plain chat in 0.12.0 no longer applies to plain chats, and one made
   for your home directory applies to nothing.
-- **A `-m` run without a project no longer suggests `/allow project`.** When
+- **A `-m` run without a project no longer suggests a project grant.** When
   an MCP tool is refused because nobody can approve it, the message names the
-  server's `auto_run` key, and adds `/allow project <server>:<tool>` only when
+  server's `auto_run` key, and adds `/allow <server>:<tool> project` only when
   the run has a project in which that command works.
 
 ## 0.12.0 - 2026-11-20

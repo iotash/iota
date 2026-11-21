@@ -3,14 +3,15 @@
 //! The only door the shell has: a sandboxed command cannot be prompted mid-run, so a directory it must write
 //! is made writable here, typed by the user. `/allow <dir>` grants the directory's REAL location and its
 //! subtree for this session — the code jail and the shell sandbox read it at their next call, the harness's
-//! `write roots:` line at the next turn (`refresh_harness`). `/allow project <dir>` grants it for the project,
-//! in every session of it — in a run that HAS a project (§4.2); one without is refused, saying why
-//! ([`no_project`]). `/allow [project] <server>:<tool>` stops the question for one MCP tool,
+//! `write roots:` line at the next turn (`refresh_harness`). `/allow <dir> project` grants it for the project,
+//! in every session of it, in a run that HAS a project (§4.2); one without is refused, saying why
+//! ([`no_project`]). The scope is the LAST word (docs/design/allow-completion.md §5): a line whose first word
+//! is `project` is refused naming the line to type ([`scope`]). `/allow <server>:<tool> [project]` stops the question for one MCP tool,
 //! `<server>:*` for every tool of the server, those it exposes later included: `<server>` is resolved against
 //! the CONNECTED servers' names before the argument is read as a directory (a `--mcp` server is named by its
 //! URL or `argv[0]`: [`named_server`]), and `<tool>` against its current tool list, so a typo is refused instead
 //! of stored, and the grant is keyed by the server's identity (its configured name, or a `--mcp` server's whole flag value),
-//! never the wire segment. `/allow [project] <tool>` — a bare word, neither a directory nor `<server>:<tool>` —
+//! never the wire segment. `/allow <tool> [project]` — a bare word, neither a directory nor `<server>:<tool>` —
 //! stops the question for a built-in tool, named by its wire name: one the run has and that asks about a call
 //! bound to no location ([`asking`]), so a typo, or a tool that never asks, is refused naming those that do.
 //!
@@ -43,7 +44,7 @@ const EXPECTED: &str = "expected a directory (starting with /, ~ or .) or <serve
 
 /// What the bare `/allow` says when nothing is granted — the hint printed in place of the surface, or the
 /// `Grants` tab's prompt beside a `Static` tab — in a run with a project.
-const NONE: &str = "No grants. /allow <dir> makes a directory writable for this session; /allow project <dir> for this project.";
+const NONE: &str = "No grants. /allow <dir> makes a directory writable for this session; /allow <dir> project for this project.";
 
 /// [`NONE`] in a run with no project: there is no project level to point at.
 const NONE_NO_PROJECT: &str =
@@ -181,12 +182,14 @@ fn typed_path(footing: &Footing, home: Option<&Path>, arg: &str) -> Option<PathB
     Some(paths::clean(&footing.root.join(p)))
 }
 
-/// Grants the directory, the MCP tool or the built-in tool `arg` for this session — or, after the keyword
-/// `project`, for this project: the notice line, or why not. `workspace` is whether the run's agent has one
-/// (`mode: agent` or `bot`); a run with no project refuses the keyword whatever follows it ([`no_project`]).
-/// `servers` is the run's MCP manager, `None` in a run
-/// with no server; `tools` the run's dispatcher. The order: a connected server's name, a directory (a leading
-/// `/`, `~` or `.`), `<server>:<tool>` (any other `:`), then a bare word, a built-in tool.
+/// Grants the directory, the MCP tool or the built-in tool `arg` names for this session — or, with the last
+/// word `project` ([`scope`]), for this project: the notice line, or why not. `workspace` is whether the run's
+/// agent has one (`mode: agent` or `bot`); a run with no project refuses the scope whatever precedes it
+/// ([`no_project`]). `servers` is the run's MCP manager, `None` in a run with no server; `tools` the run's
+/// dispatcher. The target is read in this order: a connected server's name, a directory (a leading `/`, `~` or
+/// `.`), `<server>:<tool>` (any other `:`), then a bare word, a built-in tool. A directory is never guessed:
+/// when the whole of `arg`, scope word and all, is itself an existing directory (`~/my project` beside `~/my`),
+/// the line is refused naming both spellings — a trailing `/` keeps it whole (`~/my project/`).
 fn allow(
     door: &Door,
     footing: &Footing,
@@ -196,28 +199,57 @@ fn allow(
     tools: &dyn Dispatcher,
     arg: &str,
 ) -> Result<Done, String> {
-    let (level, arg) = match arg.strip_prefix("project") {
-        Some(rest) if rest.starts_with(char::is_whitespace) => (Level::Project, rest.trim_start()),
-        _ => (Level::Session, arg),
-    };
+    let (level, target) = scope(arg)?;
     if level == Level::Project && footing.project.is_none() {
         return Err(no_project(footing, home, workspace));
     }
     let names = servers.map(Manager::connected_names).unwrap_or_default();
-    if let Some((server, tool)) = named_server(arg, &names) {
+    if let Some((server, tool)) = named_server(target, &names) {
         return allow_tool(door, servers, level, server, tool);
     }
-    if typed_path(footing, home, arg).is_some() {
-        return allow_dir(door, footing, home, level, arg);
+    if typed_path(footing, home, target).is_some() {
+        if target != arg && typed_path(footing, home, arg).is_some_and(|p| p.is_dir()) {
+            let dir = target
+                .strip_suffix('/')
+                .filter(|d| !d.is_empty())
+                .unwrap_or(target);
+            return Err(format!(
+                "\"{arg}\" is a directory too: write \"{arg}/\" for it, or \"{dir}/ {PROJECT}\" for {dir} in this project"
+            ));
+        }
+        return allow_dir(door, footing, home, level, target);
     }
-    if !arg.contains(':') {
-        return allow_builtin(door, tools, level, arg);
+    if !target.contains(':') {
+        return allow_builtin(door, tools, level, target);
     }
-    let (server, tool) = server_tool(arg).ok_or_else(|| EXPECTED.to_owned())?;
+    let (server, tool) = server_tool(target).ok_or_else(|| EXPECTED.to_owned())?;
     allow_tool(door, servers, level, server, tool)
 }
 
-/// Why a run with no project file has none (docs/design/grants.md §4.2), as `/allow project …` refuses: the
+/// The level and the target of the trimmed `arg`: a last word `project` is the project level, the target what
+/// precedes it; otherwise the session, the target all of `arg` (docs/design/allow-completion.md §5). A first
+/// word `project` is refused naming the line to type — the scope word never starts a target, so `project` alone
+/// and the old order, the scope before the target, grant nothing.
+fn scope(arg: &str) -> Result<(Level, &str), String> {
+    if let Some(rest) = arg.strip_prefix(PROJECT)
+        && (rest.is_empty() || rest.starts_with(char::is_whitespace))
+    {
+        let rest = rest.trim_start();
+        let target = if rest.is_empty() { "<target>" } else { rest };
+        return Err(format!("the scope goes last: /allow {target} {PROJECT}"));
+    }
+    match arg.strip_suffix(PROJECT) {
+        Some(target) if target.ends_with(char::is_whitespace) => {
+            Ok((Level::Project, target.trim_end()))
+        }
+        _ => Ok((Level::Session, arg)),
+    }
+}
+
+/// The scope word: the last word of a project grant.
+const PROJECT: &str = "project";
+
+/// Why a run with no project file has none (docs/design/grants.md §4.2), as `/allow … project` refuses: the
 /// agent has no workspace; or its root is one no project stands on — the dialog's own rule for a directory
 /// ([`offers_root`]); or there is no home to keep the file in.
 fn no_project(footing: &Footing, home: Option<&Path>, workspace: bool) -> String {
@@ -820,8 +852,8 @@ mod tests {
         assert!(c.g().live_dirs().is_empty());
     }
 
-    /// `/allow project …` needs a project (docs/design/grants.md §4.2). A `mode: chat` run has none: the keyword
-    /// is refused whatever follows it — a directory, a built-in tool, an MCP tool — saying why and what has one,
+    /// `/allow … project` needs a project (docs/design/grants.md §4.2). A `mode: chat` run has none: the scope
+    /// is refused whatever precedes it — a directory, a built-in tool, an MCP tool — saying why and what has one,
     /// nothing is written under the sessions root, and the session level works as ever. The same line in a
     /// `mode: agent` run is granted.
     #[test]
@@ -829,7 +861,7 @@ mod tests {
         const WHY: &str = "this run has no project (mode: chat); an agent with mode: agent has one";
         let (t, root, out) = fixture();
         let chat = Chat::new(&t, &root, &[], &[]).without_project(false, None);
-        for arg in ["project ../out", "project shell", "project srv:push"] {
+        for arg in ["../out project", "shell project", "srv:push project"] {
             assert_eq!(chat.allow(arg).unwrap_err(), WHY, "{arg}");
         }
         assert!(chat.g().snapshot(Level::Project).is_empty());
@@ -846,7 +878,7 @@ mod tests {
 
         let agent = Chat::new(&t, &root, &[], &[]);
         assert_eq!(
-            agent.allow("project ../out").unwrap(),
+            agent.allow("../out project").unwrap(),
             format!(
                 "✓ {} is writable for this project ({})",
                 out.display(),
@@ -861,14 +893,14 @@ mod tests {
 
     /// An agent whose root is the home directory, or an ancestor of it, has no project either — the rule the
     /// dialog keeps for a directory (`repl::turn::tools::tests::the_dialog_never_offers_the_home_directory`),
-    /// by the same predicate: `/allow project …` is refused naming the root, and nothing is written. Without a
+    /// by the same predicate: `/allow … project` is refused naming the root, and nothing is written. Without a
     /// home there is nowhere to keep a project's grants, and the refusal says that instead.
     #[test]
     fn allow_project_is_refused_at_the_home_directory_or_above() {
         let (t, root, out) = fixture();
         for home in [root.clone(), root.join("users/me")] {
             let c = Chat::new(&t, &root, &[], &[]).without_project(true, Some(home.clone()));
-            for arg in ["project ../out", "project shell"] {
+            for arg in ["../out project", "shell project"] {
                 assert_eq!(
                     c.allow(arg).unwrap_err(),
                     format!(
@@ -887,12 +919,12 @@ mod tests {
         }
         let c = Chat::new(&t, &root, &[], &[]).without_project(true, None);
         assert_eq!(
-            c.allow("project ../out").unwrap_err(),
+            c.allow("../out project").unwrap_err(),
             "this run has no project (no home directory to keep its grants in)"
         );
     }
 
-    /// `project` is a keyword: the grant goes to the project's file first, then memory. A project grant covers a
+    /// `project` is the scope word: the grant goes to the project's file first, then memory. A project grant covers a
     /// session one asked for later, but a session grant does not stop a project one; committing the `Grants` tab
     /// takes a checked directory from every level that holds it, and the file with it.
     #[test]
@@ -905,7 +937,7 @@ mod tests {
             format!("✓ {} is writable for this session", out.display())
         );
         assert_eq!(
-            c.allow("project ../out").unwrap(),
+            c.allow("../out project").unwrap(),
             format!(
                 "✓ {} is writable for this project ({})",
                 out.display(),
@@ -918,7 +950,7 @@ mod tests {
         );
         assert_eq!(g.snapshot(Level::Project).dirs, std::slice::from_ref(&out));
         assert_eq!(
-            c.allow("project ../out/sub").unwrap_err(),
+            c.allow("../out/sub project").unwrap_err(),
             format!(
                 "{} is already writable (this project)",
                 out.join("sub").display()
@@ -952,7 +984,7 @@ mod tests {
         // A file that cannot be read is never replaced: the grant is refused, saying why.
         let path = pf.store.grants_path(&root);
         std::fs::write(&path, "{broken").unwrap();
-        let err = c.allow("project ../out").unwrap_err();
+        let err = c.allow("../out project").unwrap_err();
         assert!(
             err.starts_with(&format!(
                 "could not save the grant (cannot read {}",
@@ -1016,14 +1048,14 @@ mod tests {
             s.add_dir(gone.clone());
             s.add_tool(star.clone());
         });
-        c.allow("project ../out/sub").unwrap();
+        c.allow("../out/sub project").unwrap();
         c.door
             .apply(Level::Project, |s| {
                 s.add_tool(star.clone());
                 s.add_tool(flag.clone());
             })
             .unwrap();
-        c.allow("project shell").unwrap();
+        c.allow("shell project").unwrap();
         assert_eq!(
             c.rows(),
             [
@@ -1137,7 +1169,7 @@ mod tests {
         );
     }
 
-    /// A bare word is a built-in tool: `project` grants it in the project's file by its wire name, a session grant
+    /// A bare word is a built-in tool: a last word `project` grants it in the project's file by its wire name, a session grant
     /// after it is refused as covered; without `project` it is the session's. An unknown name and a tool that
     /// never asks are refused, naming the tools that do; nothing is stored for them.
     #[test]
@@ -1147,7 +1179,7 @@ mod tests {
         let (g, pf) = (c.g(), c.pf());
         let shell = ToolKey::Builtin("shell".to_owned());
         assert_eq!(
-            c.allow("project shell").unwrap(),
+            c.allow("shell project").unwrap(),
             format!(
                 "✓ shell runs without asking in this project ({})",
                 root.display()
@@ -1174,7 +1206,7 @@ mod tests {
             "no built-in tool named \"shel\" (tools that ask: shell, write_file)"
         );
         assert_eq!(
-            c.allow("project read_file").unwrap_err(),
+            c.allow("read_file project").unwrap_err(),
             "read_file never asks (tools that ask: shell, write_file)"
         );
         assert_eq!(
@@ -1207,5 +1239,113 @@ mod tests {
             ]
         );
         assert!(Chat::new(&t, &root, &[], &[]).fixed().is_none());
+    }
+
+    /// The scope is the LAST word: `project` there is the project level and the target is what precedes it,
+    /// whatever the target is and however many spaces stand between; without it the grant is the session's.
+    /// A last word that is not exactly `project` is part of the target.
+    #[test]
+    fn the_scope_is_the_last_word() {
+        let (t, root, out) = fixture();
+        let c = Chat::new(&t, &root, &[], &[]);
+        let shown = root.display();
+        assert_eq!(
+            c.allow("shell").unwrap(),
+            "✓ shell runs without asking in this session"
+        );
+        assert_eq!(
+            c.allow("write_file   project").unwrap(),
+            format!("✓ write_file runs without asking in this project ({shown})")
+        );
+        assert_eq!(
+            c.allow("../out project").unwrap(),
+            format!("✓ {} is writable for this project ({shown})", out.display())
+        );
+        assert_eq!(
+            c.allow("shell projects").unwrap_err(),
+            "no built-in tool named \"shell projects\" (tools that ask: shell, write_file)"
+        );
+        assert_eq!(
+            c.g().snapshot(Level::Session).tools,
+            [ToolKey::Builtin("shell".to_owned())]
+        );
+        let file = c.pf().store.project_grants(&root).unwrap();
+        assert_eq!(file.tools, [ToolKey::Builtin("write_file".to_owned())]);
+        assert_eq!(file.dirs, std::slice::from_ref(&out));
+    }
+
+    /// A first word `project` — alone, or before a target, the order the command once had — is refused naming
+    /// the line to type, before anything else is read: in a run with a project and in one without, nothing is
+    /// granted and nothing is written.
+    #[test]
+    fn project_first_is_refused_and_grants_nothing() {
+        let (t, root, _out) = fixture();
+        let with = Chat::new(&t, &root, &[], &[]);
+        let without = Chat::new(&t, &root, &[], &[]).without_project(false, None);
+        for c in [&with, &without] {
+            for (arg, why) in [
+                ("project", "the scope goes last: /allow <target> project"),
+                ("project shell", "the scope goes last: /allow shell project"),
+                (
+                    "project  ../out",
+                    "the scope goes last: /allow ../out project",
+                ),
+                ("project srv:*", "the scope goes last: /allow srv:* project"),
+            ] {
+                assert_eq!(c.allow(arg).unwrap_err(), why, "{arg}");
+            }
+            assert!(c.g().snapshot(Level::Session).is_empty());
+            assert!(c.g().snapshot(Level::Project).is_empty());
+        }
+        assert!(!t.path().join("sessions").exists());
+    }
+
+    /// A directory whose name ends in ` project` is never guessed: beside `my`, `../my project` is refused naming
+    /// both spellings and grants nothing; a trailing `/` keeps the name whole (a session grant), and `../my/
+    /// project` is `my` for the project. A directory named `project` is `../project`, for the project `../project
+    /// project`.
+    #[test]
+    fn a_directory_ending_in_project_is_never_guessed() {
+        let (t, root, _out) = fixture();
+        for d in ["my", "my project", "project"] {
+            std::fs::create_dir(t.path().join(d)).unwrap();
+        }
+        let real = |d: &str| std::fs::canonicalize(t.path().join(d)).unwrap();
+        let c = Chat::new(&t, &root, &[], &[]);
+        let shown = root.display();
+        assert_eq!(
+            c.allow("../my project").unwrap_err(),
+            "\"../my project\" is a directory too: write \"../my project/\" for it, or \"../my/ project\" for ../my in this project"
+        );
+        assert!(c.g().snapshot(Level::Session).is_empty());
+        assert!(c.g().snapshot(Level::Project).is_empty());
+        assert_eq!(
+            c.allow("../my project/").unwrap(),
+            format!(
+                "✓ {} is writable for this session",
+                real("my project").display()
+            )
+        );
+        assert_eq!(
+            c.allow("../my/ project").unwrap(),
+            format!(
+                "✓ {} is writable for this project ({shown})",
+                real("my").display()
+            )
+        );
+        assert_eq!(
+            c.allow("../project").unwrap(),
+            format!(
+                "✓ {} is writable for this session",
+                real("project").display()
+            )
+        );
+        assert_eq!(
+            c.allow("../project project").unwrap(),
+            format!(
+                "✓ {} is writable for this project ({shown})",
+                real("project").display()
+            )
+        );
     }
 }

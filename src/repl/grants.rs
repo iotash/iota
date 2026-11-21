@@ -116,7 +116,7 @@ pub(crate) enum Unsaved {
     /// The project's file could not be read or written: nothing changed.
     Project(SessionError),
     /// The run has no project: nothing changed. No door asks for it — the dialog does not offer the level and
-    /// `/allow project` refuses first.
+    /// `/allow … project` refuses first.
     NoProject,
 }
 

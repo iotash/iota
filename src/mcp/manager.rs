@@ -297,7 +297,7 @@ pub struct ManagerOptions {
     /// unless the command sets it.
     pub child_env: ChildEnv,
     /// Whether this run has a project level (`cmd::project_file`, docs/design/grants.md §4.2) — what
-    /// [`unattended_refusal`](crate::tool::Dispatcher::unattended_refusal) may advise: `/allow project …` only
+    /// [`unattended_refusal`](crate::tool::Dispatcher::unattended_refusal) may advise: `/allow … project` only
     /// where it can work. False unless the command says so.
     pub project: bool,
 }
@@ -1066,7 +1066,7 @@ impl Dispatcher for Manager {
     /// The tool's server and what would let its calls run here (the outside-write refusal's shape): the
     /// entry's `auto_run` key — or, for a `--mcp` server, which has no entry, writing it as one — and, in a run
     /// with a project ([`ManagerOptions::project`]), a project grant made from a chat, which a later unattended
-    /// run inherits. A run without one is never told to relay `/allow project …`: it is refused there.
+    /// run inherits. A run without one is never told to relay `/allow … project`: it is refused there.
     fn unattended_refusal(&self, name: &str) -> Option<String> {
         let (cfg, raw) = self.server_of(name)?;
         let server = &cfg.name;
@@ -1076,7 +1076,7 @@ impl Dispatcher for Manager {
             format!("set `mcp_servers.{server}.auto_run: true`")
         };
         let grant = if self.opts.project {
-            format!(", or allow it for the project from a chat (/allow project {server}:{raw})")
+            format!(", or allow it for the project from a chat (/allow {server}:{raw} project)")
         } else {
             String::new()
         };
@@ -1244,7 +1244,7 @@ mod tests {
             Some(
                 "mcp__srv__push was not executed: the tools of MCP server \"srv\" need the user's approval, \
                  which this non-interactive run cannot ask for; set `mcp_servers.srv.auto_run: true`, or allow it \
-                 for the project from a chat (/allow project srv:push)."
+                 for the project from a chat (/allow srv:push project)."
             )
         );
         assert_eq!(asks.unattended_refusal("search_tools"), None);
@@ -1262,7 +1262,7 @@ mod tests {
 
     /// The unattended refusal names what would let the call run HERE: the `auto_run` key (for a `--mcp` server,
     /// writing it as an entry) and, only in a run with a project, the project grant a chat can make — a run
-    /// without one (`mode: chat`, a root at or above the home directory) refuses `/allow project …`.
+    /// without one (`mode: chat`, a root at or above the home directory) refuses `/allow … project`.
     #[test]
     fn the_unattended_refusal_names_a_project_grant_only_with_a_project() {
         use crate::mcp::testutil::approval_manager_for;
@@ -1282,7 +1282,7 @@ mod tests {
             refusal(&entry, true, "mcp__srv__push"),
             "mcp__srv__push was not executed: the tools of MCP server \"srv\" need the user's approval, which \
              this non-interactive run cannot ask for; set `mcp_servers.srv.auto_run: true`, or allow it for the \
-             project from a chat (/allow project srv:push)."
+             project from a chat (/allow srv:push project)."
         );
         assert_eq!(
             refusal(&entry, false, "mcp__srv__push"),
@@ -1295,7 +1295,7 @@ mod tests {
                 "{flag_wire} was not executed: the tools of MCP server \"https://mcp.example.com/mcp\" need the \
                  user's approval, which this non-interactive run cannot ask for; write it as an `mcp_servers` \
                  entry with `auto_run: true`, or allow it for the project from a chat \
-                 (/allow project https://mcp.example.com/mcp:push)."
+                 (/allow https://mcp.example.com/mcp:push project)."
             )
         );
         assert_eq!(

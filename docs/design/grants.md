@@ -211,7 +211,7 @@ assembly (`cmd::project_file`):
 
 A run without one has NO project level anywhere: no `grants.json` is read at the start
 (one left there by 0.12.0 is ignored, not deleted), none is written, the dialog offers no
-`…for this project` item (§5.1), `/allow project …` is refused saying why (§5.2), and the
+`…for this project` item (§5.1), `/allow … project` is refused saying why (§5.2), and the
 `Grants` tab and `/status` — which read the store — have no project row to show. The
 session level, the directory, built-in and MCP grants at it, `write_roots:` and
 `--add-dir` are the same in every mode. A `-m` run of an agent with a project still
@@ -256,7 +256,10 @@ open `~/.ssh` and every shell rc file; `/allow ~`, typed out, still works.
 > added the bare-word form for a built-in tool. There is no `/revoke`: typed, it is an
 > unregistered `/xyz`. **Amended 2026-11-21 (allow-no-browser):** the surface's `Add` tab, a
 > directory browser, is gone — granting is the typed forms only; the bare `/allow` lists and
-> takes back.
+> takes back. **Amended 2026-11-21 (allow-scope-last, docs/design/allow-completion.md §5):**
+> the scope is the LAST word, `/allow <target> [project]`; a line whose first word is
+> `project` is refused naming the line to type, and a directory spelling that reads two
+> ways is refused naming both.
 
 The only door for the shell, since a sandboxed command cannot be prompted mid-run, and the
 only one for `server:*`.
@@ -267,11 +270,20 @@ only one for `server:*`.
 /allow <server>:<tool>              stop asking for one MCP tool (session)
 /allow <server>:*                   …for every tool of the server, those it exposes later included
 /allow <tool>                       stop asking for a built-in tool (session)
-/allow project <…>                  any of the four above, for this project, in every session
+/allow <…> project                  any of the four above, for this project, in every session
 ```
 
-`/allow project …` needs a project (§4.2). In a run without one it is refused before the
-rest is read: `/allow: this run has no project (mode: chat); an agent with mode: agent
+The scope is the last word: when the last whitespace-separated word is exactly `project`,
+the level is the project and the target is what precedes it; otherwise the session, and the
+target is the whole argument. A first word `project` — alone or before anything — is
+refused before anything else is read, naming the line to type: `/allow: the scope goes
+last: /allow shell project` (with nothing after it, `/allow <target> project`); a target
+never starts with the scope word. A directory named `project` is `./project` (for the
+project, `./project project`); one whose name ends in ` project` takes a trailing `/`
+(`/allow ~/my project/`).
+
+`/allow … project` needs a project (§4.2). In a run without one it is refused before the
+target is read: `/allow: this run has no project (mode: chat); an agent with mode: agent
 has one`; for an agent whose root is too wide, `/allow: this run has no project: <root>
 is /, the home directory or an ancestor of it, which is never a project`; without a home,
 `/allow: this run has no project (no home directory to keep its grants in)`.
@@ -287,11 +299,13 @@ is /, the home directory or an ancestor of it, which is never a project`; withou
   the run has and whose argument-less `requires_approval` probe asks (`shell` without
   `auto_run`, `edit_file`/`write_file` without `auto_write`) — a tool grant never answers
   a call bound to a location (§3.4). `<tool>` of a server is resolved against its current
-  tool list (`*` excepted), so a typo is refused instead of stored. `project` is a
-  keyword, not a path.
+  tool list (`*` excepted), so a typo is refused instead of stored. A directory is never
+  guessed: when the scope was taken off a target spelled as a directory and the WHOLE
+  argument is itself an existing directory (`~/my project` beside `~/my`), the line is
+  refused naming both spellings.
 - **The bare `/allow`** grants nothing. With no grant and no static root it opens no
   surface and prints one line: `No grants. /allow <dir> makes a directory writable for this
-  session; /allow project <dir> for this project.` (in a run with no project: `No grants.
+  session; /allow <dir> project for this project.` (in a run with no project: `No grants.
   /allow <dir> makes a directory writable for this session.`). Otherwise it opens a tabbed
   surface, Enter committing the focused tab:
   - `Grants` — a multi-select of every grant in effect, one row each, the level then the
@@ -323,11 +337,11 @@ Output (each one transcript notice line):
 ```
 /allow ~/scratch            ✓ /Users/x/scratch is writable for this session
 /allow ~/link               ✓ /data/x is writable for this session (~/link leads there)
-/allow project ../lib       ✓ /Users/x/lib is writable for this project (/Users/x/proj)
+/allow ../lib project       ✓ /Users/x/lib is writable for this project (/Users/x/proj)
 /allow github:*             ✓ every tool of github runs without asking in this session
-/allow project github:search_issues
+/allow github:search_issues project
                             ✓ github:search_issues runs without asking in this project (/Users/x/proj)
-/allow project shell        ✓ shell runs without asking in this project (/Users/x/proj)
+/allow shell project        ✓ shell runs without asking in this project (/Users/x/proj)
 Grants tab, two checked     ✓ revoked /Users/x/scratch (this session)
                             ✓ revoked github:* (this session, this project)
 ```
@@ -335,6 +349,8 @@ Grants tab, two checked     ✓ revoked /Users/x/scratch (this session)
 Refusals (prefixed `/allow: `):
 
 ```
+the scope goes last: /allow <target> project
+"<arg>" is a directory too: write "<arg>/" for it, or "<dir>/ project" for <dir> in this project
 expected a directory (starting with /, ~ or .) or <server>:<tool>
 <arg> is not a directory
 <dir> is protected: <why>
@@ -448,9 +464,9 @@ print nothing about the grants they loaded. `/status`'s `Grants` row and the bar
 - **An MCP tool, nobody to ask** — `<name> was not executed: the tools of MCP server
   "<server>" need the user's approval, which this non-interactive run cannot ask for;
   set `mcp_servers.<server>.auto_run: true`, or allow it for the project from a chat
-  (/allow project <server>:<tool>).` For a `--mcp` server the first clause stays
+  (/allow <server>:<tool> project).` For a `--mcp` server the first clause stays
   `write it as an `mcp_servers` entry with `auto_run: true``. In a run without a project
-  (§4.2) — where `/allow project …` is refused — the sentence ends after that first
+  (§4.2) — where `/allow … project` is refused — the sentence ends after that first
   clause: `…; set `mcp_servers.<server>.auto_run: true`.`
 - **The grants themselves** — `Why::Grants`: `<path> is protected: it holds the
   permissions the user granted — no tool may write it; the user grants with /allow`.

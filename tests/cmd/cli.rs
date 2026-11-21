@@ -1788,7 +1788,7 @@ impl Drop for Pane {
 }
 
 /// `--no-save` keeps the CONVERSATION off the disk, not what the user granted for the project (grants.md §9 Q4):
-/// a real ephemeral chat's `/allow project <dir>` writes the project's `grants.json` — and nothing else under
+/// a real ephemeral chat's `/allow <dir> project` writes the project's `grants.json` — and nothing else under
 /// the sessions root — and the next run in the project, an unattended `-m` with no door of its own, writes
 /// into that directory unasked and says that it loaded the grant. The agent is `mode: agent`: only a run with
 /// a workspace has a project (§4.2).
@@ -1856,7 +1856,7 @@ async fn an_ephemeral_chat_still_writes_a_project_grant() {
         "-t",
         "s",
         "-l",
-        &format!("/allow project {}", lib.display()),
+        &format!("/allow {} project", lib.display()),
     ]);
     pane.tm(&["send-keys", "-t", "s", "Enter"]);
     pane.wait("the grant's notice", |s| {

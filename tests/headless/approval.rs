@@ -678,7 +678,7 @@ async fn a_project_mcp_grant_runs_unattended() {
         format!(
             "{wire} was not executed: the tools of MCP server \"gh\" need the user's approval, which this \
              non-interactive run cannot ask for; set `mcp_servers.gh.auto_run: true`, or allow it for the \
-             project from a chat (/allow project gh:echo)."
+             project from a chat (/allow gh:echo project)."
         )
     );
     manager.close().await;
@@ -718,7 +718,7 @@ impl wiremock::Respond for EchoTheToolResult {
     }
 }
 
-/// The refusal of a real `-m` run names `/allow project …` only where that command can work: a `mode: chat`
+/// The refusal of a real `-m` run names `/allow … project` only where that command can work: a `mode: chat`
 /// agent has no project level, so it is told the `auto_run` key alone; a `mode: agent` one in a project of
 /// its own is told the grant too (docs/design/grants.md §4.2, §8).
 #[cfg(unix)]
@@ -744,7 +744,7 @@ async fn the_unattended_mcp_refusal_follows_the_mode() {
         ("chat", ".".to_owned()),
         (
             "agent",
-            ", or allow it for the project from a chat (/allow project gh:echo).".to_owned(),
+            ", or allow it for the project from a chat (/allow gh:echo project).".to_owned(),
         ),
     ] {
         std::fs::write(

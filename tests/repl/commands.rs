@@ -3483,7 +3483,7 @@ async fn allow_refuses_what_is_not_a_directory() {
         input("/allow ./missing"),
         input("/allow github:search_issues"),
         input("/allow github"),
-        input("/allow project ./file.txt"),
+        input("/allow ./file.txt project"),
         input("/allow ."),
         Reply::Interrupted,
     ]);
@@ -3598,7 +3598,7 @@ async fn the_bare_allow_with_nothing_to_list_prints_the_hint_and_opens_no_panel(
         .expect("clean exit");
 
     assert!(grants.live_dirs().is_empty());
-    let hint = "No grants. /allow <dir> makes a directory writable for this session; /allow project <dir> for this project.";
+    let hint = "No grants. /allow <dir> makes a directory writable for this session; /allow <dir> project for this project.";
     let printed = printed(&f.ui);
     let grant = format!("✓ {} is writable for this session", out.display());
     let revoked = format!("✓ revoked {} (this session)", out.display());
@@ -3667,14 +3667,14 @@ async fn the_bare_allow_adds_the_static_tab_when_there_are_static_roots() {
     );
 }
 
-/// `/allow project <dir>` writes the directory's real location into `grants.json` in the project's bucket,
+/// `/allow <dir> project` writes the directory's real location into `grants.json` in the project's bucket,
 /// under the project's real root, before it takes effect; the session's meta does not get it; the `Grants` tab
 /// lists it as the project's. Revoking it there takes it out of the file.
 #[tokio::test]
 async fn allow_project_writes_the_bucket_file() {
     let (_t, root, out) = allow_fixture();
     let f = Fixture::new(vec![
-        input("/allow project ../out"),
+        input("/allow ../out project"),
         input("/allow"),
         allow_cancel(),
         input("/allow ../out/sub"),
@@ -3755,7 +3755,7 @@ async fn allow_project_writes_the_bucket_file() {
     assert!(shown.contains(&want), "{want:?} missing:\n{shown:#?}");
 }
 
-/// `/allow project <tool>` grants a built-in tool for the project: its WIRE name goes into the project's
+/// `/allow <tool> project` grants a built-in tool for the project: its WIRE name goes into the project's
 /// `grants.json` (the session's meta does not get it), the notice names the project, and the `Grants` tab lists
 /// it as the project's. A typo and a tool that never asks are refused, naming the tools that do, and nothing
 /// is stored for them.
@@ -3763,9 +3763,9 @@ async fn allow_project_writes_the_bucket_file() {
 async fn allow_project_grants_a_builtin_tool() {
     let (_t, root, _out) = allow_fixture();
     let f = Fixture::new(vec![
-        input("/allow project shell"),
+        input("/allow shell project"),
         input("/allow shel"),
-        input("/allow project read_file"),
+        input("/allow read_file project"),
         input("/allow"),
         allow_cancel(),
         Reply::Interrupted,
@@ -3864,7 +3864,7 @@ async fn allow_server_star_covers_every_tool() {
     let f = Fixture::new(vec![
         input("/allow gh:*"),
         input("/allow gh:echo"),
-        input("/allow project gh:*"),
+        input("/allow gh:* project"),
         input("/allow"),
         allow_cancel(),
         Reply::Interrupted,
@@ -3983,7 +3983,7 @@ async fn allow_refuses_a_server_that_is_not_connected() {
         input("/allow nope:echo"),
         input("/allow down:echo"),
         input("/allow gh:nope"),
-        input("/allow project auto:*"),
+        input("/allow auto:* project"),
         input("/allow sh:echo"),
         Reply::Interrupted,
     ]);
