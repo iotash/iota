@@ -194,8 +194,8 @@ pub(crate) async fn tool_loop(
 }
 
 /// Executes one round's calls (chat/run.go:1487-1637): runs of consecutive
-/// parallel-capable calls go out as one batch, everything else takes the serial path where
-/// approval, interactive surfaces and expanded diffs live.
+/// parallel-capable calls the gate runs unasked go out as one batch (`parallel_run`), everything
+/// else takes the serial path where approval, interactive surfaces and expanded diffs live.
 async fn walk(
     t: &Turn<'_>,
     calls: &[ToolCall],
@@ -208,7 +208,7 @@ async fn walk(
         // Batching a RUN rather than partitioning the round keeps a writer separating the
         // readers before it from the readers after, and leaves the serial path — where
         // approval, surfaces and file mutation all live — untouched.
-        let j = parallel_run(&*dispatch, calls, i);
+        let j = parallel_run(&*dispatch, &t.cx.door.grants, calls, i);
         if j - i >= 2 {
             let msgs = run_parallel_batch(t, &calls[i..j]).await;
             for m in &msgs {

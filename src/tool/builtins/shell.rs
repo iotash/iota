@@ -289,17 +289,13 @@ impl Tool for ShellTool {
     }
 
     /// Always — a deliberate break with the earlier rule that only read-only tools batch
-    /// (DIVERGENCES X-05). A round's consecutive `shell` calls run in ONE batch, results still in
-    /// call order. The judgement that rule made for the model (is this command safe beside that one?) is the
-    /// model's own here: it wrote both command lines, and `&`/`wait`/`xargs -P` inside a single
-    /// call were never gated either.
-    ///
-    /// The one exception to the exception: a sandboxed set's iota call that must be asked about takes the
-    /// serial path, because the batch has no approval gate and the sandbox no longer stands in for one.
-    fn supports_parallel(&self, args: Option<&JsonObject>) -> bool {
-        !(self.sandboxed
-            && !self.shell_cfg.auto_run
-            && args.is_some_and(|a| self.leaves_sandbox(str_arg(a, "command"))))
+    /// (DIVERGENCES X-05). A round's consecutive `shell` calls the gate runs unasked go out in ONE batch,
+    /// results still in call order. The judgement that rule made for the model (is this command safe beside
+    /// that one?) is the model's own here: it wrote both command lines, and `&`/`wait`/`xargs -P` inside a
+    /// single call were never gated either. A call that is asked — every call of an unsandboxed set without
+    /// `auto_run`, a sandboxed set's iota call — is kept out of the batch by the walk, not here.
+    fn supports_parallel(&self, _args: Option<&JsonObject>) -> bool {
+        true
     }
 
     /// The D-12 lift: the call IS the command — `"[shell git

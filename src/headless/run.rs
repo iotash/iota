@@ -405,7 +405,7 @@ pub async fn execute_with_tools(
         while i < tool_calls.len() {
             // A run of concurrent-safe calls goes out together; a run of length 1 (or 0) falls through to the
             // serial path with its approval gate (chat.go:333-345).
-            let j = parallel_run(&*dispatch, &tool_calls, i);
+            let j = parallel_run(&*dispatch, &host.grants, &tool_calls, i);
             if j - i >= 2 {
                 let batch = &tool_calls[i..j];
                 let outcomes = run_batch(cx, &*dispatch, batch).await;

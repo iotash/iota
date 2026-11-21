@@ -156,7 +156,11 @@ pub trait Tool: Send + Sync {
     fn presentation(&self) -> Presentation {
         Presentation::Group
     }
-    /// Per-CALL answer; `None` is the argument-less probe (a registry asking about the tool, not a call).
+    /// Whether this call may run concurrently with the round's other calls — a property of what the call
+    /// does, never of whether it is asked: the walk batches a call only when this says yes AND
+    /// [`crate::tool::approval::gate`] runs it unasked (`crate::headless::batch::parallel_run`), so no tool
+    /// reads an approval setting here. Per-CALL answer; `None` is the argument-less probe (a registry asking
+    /// about the tool, not a call).
     fn supports_parallel(&self, _args: Option<&JsonObject>) -> bool {
         false
     }
@@ -212,10 +216,11 @@ pub trait Dispatcher: Send + Sync {
     fn presentation(&self, _name: &str) -> Presentation {
         Presentation::Group
     }
-    /// Whether this CALL may run concurrently with the round's other calls. An MCP call must stay `false`:
-    /// the parallel batch is the one path without an approval gate, and the defer wrappers rely on this
-    /// default rather than forwarding it — a parallel (or location-scoped) MCP tool has to change both the
-    /// batch path and the wrappers.
+    /// Whether this CALL may run concurrently with the round's other calls ([`Tool::supports_parallel`]):
+    /// what the call does, never whether it is asked — the walk batches only calls
+    /// [`crate::tool::approval::gate`] runs unasked. An MCP call must stay `false`: the defer wrappers rely
+    /// on this default rather than forwarding it — a parallel (or location-scoped) MCP tool has to change
+    /// the wrappers too.
     fn supports_parallel(&self, _name: &str, _args: Option<&JsonObject>) -> bool {
         false
     }

@@ -471,8 +471,10 @@ fn shell_background_header_is_marked() {
     );
 }
 
-// New (DIVERGENCES X-05): the `shell` tool opts every call into the round's parallel batch, whatever it was
-// asked to run — the answer is not a property of the arguments.
+// New (DIVERGENCES X-05): the `shell` tool says every call may run beside the round's others, whatever it
+// was asked to run — the answer is not a property of the arguments, nor of whether the call is asked: this
+// `sandbox: off` set asks for every call, and the walk keeps those out of the batch
+// (repl::turn::tools::tests::shell_calls_the_gate_would_ask_never_batch).
 #[test]
 fn shell_calls_batch() {
     let (_dir, _root, tool) = new_shell("sandbox: off\n");
@@ -1835,10 +1837,9 @@ async fn the_sandbox_lets_iota_itself_out_and_nothing_else() {
         !header.contains(iota::tool::builtins::shell::OUTSIDE_SANDBOX_MARK),
         "{header:?}"
     );
-    assert!(
-        !tool.supports_parallel(Some(&args(json!({"command": self_call})))),
-        "a call that must be asked about cannot ride a batch"
-    );
+    // Batching is the walk's to refuse (it batches only what `gate` runs unasked), so the tool says yes
+    // to every call, the asked one included (repl::turn::tools::tests::shell_calls_the_gate_would_ask_never_batch).
+    assert!(tool.supports_parallel(Some(&args(json!({"command": self_call})))));
     assert!(tool.supports_parallel(Some(&args(json!({"command": piped})))));
     assert!(tool.supports_parallel(None));
 
@@ -1867,7 +1868,7 @@ async fn the_sandbox_lets_iota_itself_out_and_nothing_else() {
     );
     assert!(!mark.exists(), "the sandboxed write landed anyway");
 
-    // `auto_run: true`: nothing is asked, and the call batches — the mark stays on the header.
+    // `auto_run: true`: nothing is asked, so the call may batch — the mark stays on the header.
     let auto = shell_set("auto_run: true\n");
     assert!(!auto.requires_approval(Some(&args(json!({"command": self_call})))));
     assert!(auto.supports_parallel(Some(&args(json!({"command": self_call})))));

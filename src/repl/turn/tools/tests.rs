@@ -1037,6 +1037,68 @@ async fn shell_calls_share_one_parallel_batch() {
     assert_eq!(ids, ["b1", "b2"]);
 }
 
+// The batch has no approval gate, so a call the gate would ask is never in one (DIVERGENCES X-05): two
+// `shell` calls of an UNSANDBOXED set without `auto_run` — every call asks — are put to the user one by one,
+// and the denied commands never run. Before the walk checked `gate`, the shell's own `supports_parallel`
+// said yes for them and the pair ran unasked as a batch.
+#[tokio::test]
+async fn shell_calls_the_gate_would_ask_never_batch() {
+    let node: crate::tool::sets::RawNode =
+        serde_norway::from_str("sandbox: off\n").expect("shell config");
+    let mut cfg = crate::tool::sets::ToolsConfig::new();
+    cfg.insert("shell".to_owned(), node);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let env = crate::tool::ToolEnv {
+        jobs: Some(crate::shell::jobs::Jobs::new(dir.path())),
+        ..crate::tool::ToolEnv::default()
+    };
+    let registry =
+        crate::tool::Registry::build(&env, &cfg, &mut |w| panic!("the shell set complained: {w}"));
+    let dispatch: Arc<dyn Dispatcher> = Arc::new(registry);
+
+    let mark = dir.path().join("ran");
+    let touch = format!("echo x >> '{}'", mark.display());
+    let mut script = vec![choose(3), choose(3)];
+    script.extend(quiet(1));
+    let fx = Fx::new(dispatch, script);
+    let p = stream(vec![
+        Round::calls(vec![
+            call("s1", "shell", serde_json::json!({"command": touch})),
+            call("s2", "shell", serde_json::json!({"command": touch})),
+        ]),
+        Round::text("done"),
+    ]);
+    let mut history = vec![Message::user("go")];
+    fx.turn(&p, &mut history).await.outcome.expect("turn");
+
+    let asks: Vec<String> = fx
+        .events()
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Tabbed(s) => Some(s.panels[0].title.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        asks.len(),
+        2,
+        "each gated call is asked on its own: {asks:?}"
+    );
+    assert!(!mark.exists(), "a denied command ran");
+    let results: Vec<(&str, &str)> = history
+        .iter()
+        .filter(|m| m.role() == Role::Tool)
+        .map(|m| (m.tool_call_id(), m.content.as_str()))
+        .collect();
+    assert_eq!(
+        results,
+        [
+            ("s1", "The user declined this call."),
+            ("s2", "The user declined this call.")
+        ]
+    );
+}
+
 // An expanded call is a group
 // boundary that settles into its posted DIFF artifact (T-35): the header carries the ±
 // counts and the diff rows follow. The artifact never reaches the model.
