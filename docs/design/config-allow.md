@@ -107,7 +107,10 @@ config's own name list in place of the connected one:
 
 1. **A server's whole name, the longest that matches, then `:` and the tool** — among the
    `mcp_servers:` entries this agent loads.
-2. **A directory** — it starts with `/`, `~` or `.`. `~` is the home; a relative one hangs
+2. **A directory** — it starts with `~` or `.`, or is absolute (`Path::is_absolute`: `/x`
+   on Unix; `C:\x`, `C:/x` and `\\server\share` on Windows, so a drive's `:` never reaches
+   rule 3 there; `C:x`, relative to a drive, is not absolute and is no directory; on Unix
+   `C:\x` is not absolute and is read by rule 3). `~` is the home; a relative one hangs
    off the project root (`ToolEnv::root`), exactly as `/allow` and today's `write_roots:`
    read it.
 3. **Holding a `:`** — `<server>:<tool>`, split at its last `:`; `<tool>` is the server's

@@ -7,11 +7,15 @@
 //! in place of the connected ones:
 //!
 //! 1. a server's whole name — the longest that matches — then `:` and the tool;
-//! 2. a directory: it starts with `/`, `~` or `.`;
+//! 2. a directory: it starts with `~` or `.`, or is absolute ([`Path::is_absolute`]: `/x` on Unix; `C:\x`,
+//!    `C:/x` and `\\server\share` on Windows — so a drive's `:` is never a server's, and `C:x`, relative to a
+//!    drive, is not a directory);
 //! 3. anything else holding a `:` — `<server>:<tool>`, split at its LAST `:`;
 //! 4. a bare word — a built-in tool, by its wire name.
 //!
 //! There is no scope word: in a file the level is the file's, so a last word `project` is part of the target.
+
+use std::path::Path;
 
 use crate::tool::builtins::{ASKING, NAMES};
 use crate::tool::grants::McpTool;
@@ -53,7 +57,7 @@ pub fn parse(entry: &str, servers: &[String]) -> Result<Entry, String> {
     if let Some((server, tool)) = named {
         return mcp(server, tool);
     }
-    if entry.starts_with(['/', '~', '.']) {
+    if entry.starts_with(['~', '.']) || Path::new(entry).is_absolute() {
         return Ok(Entry::Dir(entry.to_owned()));
     }
     if let Some((server, tool)) = entry.rsplit_once(':') {
@@ -177,5 +181,27 @@ mod tests {
             parse("github:push project", &names(&["github"])),
             Ok(mcp("github", "push project"))
         );
+    }
+
+    /// On Windows a drive path and a UNC path are absolute, so they are a directory before any `:` rule reads
+    /// the drive's colon as a server's. A platform-specific expectation, not a skipped test: off Windows the
+    /// same spellings are not absolute (pinned below).
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_absolute_path_is_a_directory() {
+        let s = names(&["github"]);
+        for d in [r"C:\x", "C:/x", r"\\server\share\x"] {
+            assert_eq!(parse(d, &s), Ok(Entry::Dir(d.to_owned())), "{d}");
+        }
+        // Relative to the drive's current directory: not absolute, so still `<server>:<tool>`.
+        assert_eq!(parse("C:x", &s), Ok(mcp("C", "x")));
+    }
+
+    /// Off Windows a drive spelling is not absolute: it is `<server>:<tool>`, which the load refuses when no
+    /// `mcp_servers:` entry has that name.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_drive_spelling_is_no_directory_off_windows() {
+        assert_eq!(parse(r"C:\x", &[]), Ok(mcp("C", r"\x")));
     }
 }
