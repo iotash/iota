@@ -33,6 +33,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 - **Grants load silently.** A chat that starts or resumes with grants, a
   `/session` switch and an `iota -m` run no longer print a `grants: …` line;
   `/status`'s `Grants` row and the bare `/allow` panel still list them.
+- **A bare `/allow` no longer browses for a directory.** Type the path instead:
+  `/allow <dir>`. The panel keeps `Grants` (check and press Enter to take back)
+  and, when there are any, `Static`; with nothing to list it opens no panel and
+  prints a one-line hint: `No grants. /allow <dir> makes a directory writable …`.
 
 ### Fixed
 

@@ -758,8 +758,8 @@ fn tmux_mcp_grant() {
     run_scenario("53-mcp-grant.sh");
 }
 
-/// allow-panel (X-111): the bare `/allow`'s tabs — a directory granted from `Add` by Space after Enter
-/// descended, then revoked from `Grants`, `/status` following both; the read-only `Static` tab listing the
+/// allow-panel (X-111): a directory granted by the typed `/allow <dir>`, then revoked from the bare `/allow`'s
+/// `Grants` tab, `/status` following both; no directory browser; the read-only `Static` tab listing the
 /// config's `write_roots:` entry.
 #[test]
 fn tmux_allow_panel() {

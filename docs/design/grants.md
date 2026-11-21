@@ -254,13 +254,15 @@ open `~/.ssh` and every shell rc file; `/allow ~`, typed out, still works.
 > had a second command, `/revoke`, and a bare `/allow` that printed a text listing; the
 > allow-panel task folded both into the bare `/allow`'s surface, and grants-builtin-project
 > added the bare-word form for a built-in tool. There is no `/revoke`: typed, it is an
-> unregistered `/xyz`.
+> unregistered `/xyz`. **Amended 2026-11-21 (allow-no-browser):** the surface's `Add` tab, a
+> directory browser, is gone — granting is the typed forms only; the bare `/allow` lists and
+> takes back.
 
 The only door for the shell, since a sandboxed command cannot be prompted mid-run, and the
 only one for `server:*`.
 
 ```
-/allow                              open the surface: Add · Grants (· Static)
+/allow                              list and take back: Grants (· Static)
 /allow <dir>                        make <dir> writable for this session
 /allow <server>:<tool>              stop asking for one MCP tool (session)
 /allow <server>:*                   …for every tool of the server, those it exposes later included
@@ -287,25 +289,22 @@ is /, the home directory or an ancestor of it, which is never a project`; withou
   a call bound to a location (§3.4). `<tool>` of a server is resolved against its current
   tool list (`*` excepted), so a typo is refused instead of stored. `project` is a
   keyword, not a path.
-- **The bare `/allow`** opens a tabbed surface, the `/file` way — the focused tab is the
-  verb, Enter commits it:
-  - `Add` — a directory browser on the project root: `./` (the directory shown), then
-    `../` and the directories, no file; Enter descends, Space chooses (hint `↑↓ move ·
-    Enter open · Space choose · q/Esc cancel`). The choice is granted for this session
-    exactly as `/allow <dir>` grants it, notice and refusals alike.
+- **The bare `/allow`** grants nothing. With no grant and no static root it opens no
+  surface and prints one line: `No grants. /allow <dir> makes a directory writable for this
+  session; /allow project <dir> for this project.` (in a run with no project: `No grants.
+  /allow <dir> makes a directory writable for this session.`). Otherwise it opens a tabbed
+  surface, Enter committing the focused tab:
   - `Grants` — a multi-select of every grant in effect, one row each, the level then the
     key: `this session  /path`, `this project  /path (stale)`, `this session  srv:tool`,
     `this project  shell`, a `--mcp` grant followed by `(--mcp <spec>)`. With nothing
-    granted its prompt is `No grants. Add makes a directory writable for this session;
-    /allow project <dir> for this project.` (in a run with no project: `No grants. Add
-    makes a directory writable for this session.`) Committing takes each checked grant back from
-    every level that holds it (the project's file first).
+    granted (a `Static` tab beside it) its prompt is the line above. Committing takes each
+    checked grant back from every level that holds it (the project's file first).
   - `Static` — only when there is a static root: a read-only view, prompt `Writable from
     the config and the command line: not grants, so none can be revoked here.`, one row
     each, `write_roots:` first — `write_roots:  /path`, `--add-dir     /path`. Enter there
     closes the surface and does nothing.
 
-  A cancel, or a commit with nothing chosen or checked, changes nothing.
+  A cancel, or a commit with nothing checked, changes nothing.
 - **Who may type it.** The user, at the prompt. A message from the socket never runs a
   slash command (`src/repl/inbound.rs`), and the model has no way to type one.
 - **Table.** One row after `/tools`: `/allow` — `Make a directory writable or stop asking
