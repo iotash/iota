@@ -5,6 +5,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ## Unreleased
 
+### Added
+
+- **iota knows it runs in rex.** Inside a rex block the model is told `host: rex`,
+  the block and the session, so it can drive rex beside itself (`rex split`,
+  `rex capture`); the banner says `in rex`.
+
 ### Changed
 
 - **Any terminal that reads OSC 7501 now shows iota's state, not only herdr-core.**

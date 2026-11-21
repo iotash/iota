@@ -133,7 +133,9 @@ surface inherits `HERDR_*` / `CMUX_SURFACE_ID`; the environment detector matches
 terminal is not asked, and the state goes to the stale pane. hc solved this for itself by
 being asked first (`DETECTORS`); an anonymous terminal has no name to be asked under, and
 asking inside every herdr pane and cmux surface is the change this design declines. For
-rex the later `RexHost` (identity, §7) takes hc's place in front of herdr.
+rex the later `RexHost` (identity, §7) takes hc's place in front of herdr. *Applied 2026-11-21
+(X-115):* `RexHost` is first, ahead of hc — a rex block that inherited `HC_TERMINAL_ID` says
+`TERM_PROGRAM=rex` and is rex.
 
 ## 3. The state machine
 
@@ -289,7 +291,9 @@ A **rex pane** needs, beyond the state, what a herdr pane has: `host: rex`,
 `rex capture` beside itself. That is a separate, later task (`rex-host`, §9): an identity
 host like the new `HcHost`, detected by `REX_BLOCK` and the terminal's answer, placed in
 front of herdr. Under this design it contains no state code, and the research's risk 2
-(withhold `REX_BLOCK` or not) is gone: nothing needs withholding.
+(withhold `REX_BLOCK` or not) is gone: nothing needs withholding. *Applied 2026-11-21 (X-115),
+detected by `TERM_PROGRAM=rex` and `REX_BLOCK` alone, not the terminal's answer — that is
+`for_terminal`'s question, and rex was measured to answer it.*
 
 ## 8. Tests and the pin
 

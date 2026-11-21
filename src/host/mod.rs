@@ -12,20 +12,21 @@
 //! multiplexer's pane id reaches the model through the host layer and never as a special case in
 //! `agents::harness` (brain page `host-integration`, 2026-09-21).
 //!
-//! Hosts: herdr-core (`hc::HcHost`, the terminal core behind herdr's desktop app — its identity, and the
+//! Hosts: rex (`rex::RexHost`, identity only: the block and the session for `<environment>`), herdr-core (`hc::HcHost`, the terminal core behind herdr's desktop app — its identity, and the
 //! one [`MessageEnvelope`]: it claims `hc`), the herdr multiplexer (`herdr::HerdrHost`, told the
 //! pane's lifecycle over its socket), the cmux multiplexer (`cmux::CmuxHost`, driven through its CLI) —
-//! all three detected from the environment — and the terminal's own hosts, which the command puts after
+//! all four detected from the environment — and the terminal's own hosts, which the command puts after
 //! the detected one: the Program Status Protocol writer (`program_status::ProgramStatus`, OSC 7501 in
-//! band — the one [`InBand`] host, built only where the terminal accepted the query and, for now, hc was
-//! detected; docs/design/program-status.md) in front of the plain ANSI terminal ([`ansi::AnsiHost`],
+//! band — the one [`InBand`] host, built where the terminal accepted the query and the detected host, if
+//! any, reports no state itself; docs/design/program-status.md) in front of the plain ANSI terminal ([`ansi::AnsiHost`],
 //! the fallback an interactive chat always appends).
 //!
 //! **The innermost host is exclusive** (decided 2026-09-21). Hosts nest — herdr runs inside a cmux
 //! window — and a pane inherits its environment from the process that spawned it: a herdr pane
 //! carries the `CMUX_SURFACE_ID` the herdr SERVER was born with, which may be stale or another
 //! window's, and a status row set through it would land on the wrong surface. So iota talks to the
-//! innermost host only: `DETECTORS` is ordered inner to outer (hc, herdr, cmux — hc first because an
+//! innermost host only: `DETECTORS` is ordered inner to outer (rex, hc, herdr, cmux — rex first because a
+//! rex block started under hc inherits `HC_TERMINAL_ID` but says `TERM_PROGRAM=rex`; hc next because an
 //! hc terminal inherits the `HERDR_*` of a herdr pane it was started from, while a herdr pane or a tmux
 //! inside an hc terminal does not answer the OSC 7501 query the hc detector asks the terminal), and
 //! [`Presenter::new`] keeps the FIRST detector that matches, then the terminal's hosts — never two
@@ -73,6 +74,7 @@ pub(crate) mod cmux;
 pub(crate) mod hc;
 pub(crate) mod herdr;
 pub(crate) mod program_status;
+pub(crate) mod rex;
 
 pub use ansi::AnsiHost;
 
@@ -272,12 +274,19 @@ pub struct Probe {
 /// A host detector: `Some(host)` when the environment says the chat runs inside it.
 pub type Detector = fn(&Probe) -> Option<Box<dyn Host>>;
 
-/// The detectors, innermost host first (host.go:84 had one). Only the first match is kept: herdr-core
-/// before herdr, because an hc terminal started from a herdr pane inherits the pane's `HERDR_*` (and a
+/// The detectors, innermost host first (host.go:84 had one). Only the first match is kept: rex before
+/// herdr-core, because a rex server started from an hc terminal hands its blocks `HC_TERMINAL_ID` and
+/// answers hc's probe as hc does, while `TERM_PROGRAM=rex` is the innermost terminal's own word
+/// (`rex::detect_rex`); herdr-core before herdr, because an hc terminal started from a herdr pane inherits the pane's `HERDR_*` (and a
 /// herdr pane or a tmux inside an hc terminal does not answer hc's probe, `hc::detect_hc`); herdr
 /// before cmux, because a herdr pane inside a cmux window inherits a `CMUX_SURFACE_ID` that is the
 /// server's, not the pane's (the module doc).
-pub(crate) const DETECTORS: &[Detector] = &[hc::detect_hc, herdr::detect_herdr, cmux::detect_cmux];
+pub(crate) const DETECTORS: &[Detector] = &[
+    rex::detect_rex,
+    hc::detect_hc,
+    herdr::detect_herdr,
+    cmux::detect_cmux,
+];
 
 /// The innermost host the environment names, or `None` (the module doc): the first detector that matches.
 /// Run it once per process — a detected host spawns its worker task, so it MUST be called inside the
