@@ -268,28 +268,37 @@ mod tests {
         assert_eq!(table(Path::new("/r"), &[], None).len(), 6);
     }
 
-    /// The fold is unconditional: on a case-sensitive volume (Linux's, here `/r` that does not exist at all)
-    /// `.IOTA.YAML` and `.GIT` are legal files of their own and are refused all the same — deliberately, the
-    /// false positive the rule accepts so a case-insensitive volume never reads one as the protected name. A
-    /// name that only resembles a protected one is not folded into it.
+    /// The fold is unconditional: on a case-sensitive volume (Linux's tmpfs or ext4 here) `.IOTA.YAML` and
+    /// `.GIT` are legal files of their own and are refused all the same — deliberately, the false positive the
+    /// rule accepts so a case-insensitive volume never reads one as the protected name. A name that only
+    /// resembles a protected one is not folded into it. `why_protected` is asked about real locations, as the
+    /// product asks it: the root and home exist, and each query is the `physical` spelling of a path under them,
+    /// so the table entries and the query carry the same prefix (a drive on Windows, `/private` on macOS).
     #[test]
     fn a_protected_name_matches_in_any_case_on_every_volume() {
-        let t = table(Path::new("/r"), &[], Some(Path::new("/h")));
-        let why = |p: &str| super::why_protected(&t, Path::new(p));
-        assert_eq!(why("/r/.IOTA.YAML"), Some(Why::ProjectConfig));
-        assert_eq!(why("/r/.GIT"), Some(Why::GitDir));
-        assert_eq!(why("/r/.Git/Hooks/pre-commit"), Some(Why::GitHooks));
-        assert_eq!(why("/r/.git/CONFIG.WORKTREE"), Some(Why::GitConfig));
-        assert_eq!(why("/h/.IOTA/SESSIONS/x"), Some(Why::Grants));
-        assert_eq!(why("/h/.iota/truſted.json"), Some(Why::Trust));
-        assert_eq!(why("/r/.git/hoo\u{212a}s/x"), Some(Why::GitHooks));
-        for p in [
-            "/r/.iota.yaml.bak",
-            "/r/.GITIGNORE",
-            "/r/.GIT/objects/x",
-            "/h/.IOTA/other",
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (root, home) = (tmp.path().join("r"), tmp.path().join("h"));
+        std::fs::create_dir(&root).expect("root");
+        std::fs::create_dir(&home).expect("home");
+        let t = table(&root, &[], Some(&home));
+        let why = |under: &Path, rel: &str| {
+            let real = crate::app::fs::physical(&under.join(rel)).expect("physical");
+            super::why_protected(&t, &real)
+        };
+        assert_eq!(why(&root, ".IOTA.YAML"), Some(Why::ProjectConfig));
+        assert_eq!(why(&root, ".GIT"), Some(Why::GitDir));
+        assert_eq!(why(&root, ".Git/Hooks/pre-commit"), Some(Why::GitHooks));
+        assert_eq!(why(&root, ".git/CONFIG.WORKTREE"), Some(Why::GitConfig));
+        assert_eq!(why(&home, ".IOTA/SESSIONS/x"), Some(Why::Grants));
+        assert_eq!(why(&home, ".iota/truſted.json"), Some(Why::Trust));
+        assert_eq!(why(&root, ".git/hoo\u{212a}s/x"), Some(Why::GitHooks));
+        for (under, rel) in [
+            (&root, ".iota.yaml.bak"),
+            (&root, ".GITIGNORE"),
+            (&root, ".GIT/objects/x"),
+            (&home, ".IOTA/other"),
         ] {
-            assert_eq!(why(p), None, "{p}");
+            assert_eq!(why(under, rel), None, "{rel}");
         }
     }
 

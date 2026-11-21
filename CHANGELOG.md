@@ -69,6 +69,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   resolves (a grant, the `grants.json` key, a root's real location) now has one
   spelling, the one the executable's already had; the three path tests that
   failed there compare against it, and read a request body as the JSON it is.
+- **The any-case protected-name test passes on Windows.** It asked about
+  `/r/.IOTA.YAML`, a made-up path that is drive-relative on Windows, while the
+  table entry it should match resolved with the drive; it now asks about real
+  locations under a temp root and home, with the same case variants and answers.
 - **The `/allow` `Static`-tab test passes on Windows.** It granted `../link`, a
   link the fixture makes on unix only, so on Windows the grant was refused; it
   now grants `../out`, the directory itself, and checks the same tabs.
