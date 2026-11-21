@@ -14,11 +14,10 @@
 //! stops the question for a built-in tool, named by its wire name: one the run has and that asks about a call
 //! bound to no location ([`asking`]), so a typo, or a tool that never asks, is refused naming those that do.
 //!
-//! The BARE `/allow` opens a tabbed surface, the `/file` way — the focused tab IS the verb. `Add` is a
-//! directory browser ([`crate::ui::facade::Pick::Dir`]: Enter descends, Space chooses, `./` is the directory shown) whose choice
-//! is granted for this session exactly as `/allow <dir>` grants it; `Grants` is a multi-select of every grant
-//! in effect, by level, and committing it takes each checked grant back from every level that holds it; `Static`,
-//! shown only when there is one, is a read-only view of the roots that are not grants (`write_roots:`, `--add-dir`). This
+//! The BARE `/allow` grants nothing: it opens a tabbed surface that lists and takes back. `Grants` is a
+//! multi-select of every grant in effect, by level, and committing it takes each checked grant back from every
+//! level that holds it; `Static`, shown only when there is one, is a read-only view of the roots that are not
+//! grants (`write_roots:`, `--add-dir`). With neither, no surface opens: one line says how to grant. This
 //! file parses and words; every change is kept by the grants service, [`Door::apply`] (`repl::grants`), as the
 //! dialog's and `/save`'s are.
 //!
@@ -42,11 +41,13 @@ use crate::ui::render::label::sgr_if;
 /// What the user is told when the argument is not something `/allow` takes.
 const EXPECTED: &str = "expected a directory (starting with /, ~ or .) or <server>:<tool>";
 
-/// The `Grants` tab's prompt when nothing is granted, in a run with a project.
-const NONE: &str = "No grants. Add makes a directory writable for this session; /allow project <dir> for this project.";
+/// What the bare `/allow` says when nothing is granted — the hint printed in place of the surface, or the
+/// `Grants` tab's prompt beside a `Static` tab — in a run with a project.
+const NONE: &str = "No grants. /allow <dir> makes a directory writable for this session; /allow project <dir> for this project.";
 
 /// [`NONE`] in a run with no project: there is no project level to point at.
-const NONE_NO_PROJECT: &str = "No grants. Add makes a directory writable for this session.";
+const NONE_NO_PROJECT: &str =
+    "No grants. /allow <dir> makes a directory writable for this session.";
 
 /// The `Grants` tab's level column: `this session` and `this project` are both this wide, so every key starts at
 /// the same column.
@@ -96,71 +97,57 @@ pub(crate) async fn cmd_allow(repl: &Repl, arg: &str) {
     }
 }
 
-/// The bare `/allow`: `Add` (a directory browser opened on the project root) and `Grants` (every grant in
-/// effect, checked rows meaning "take back"), then `Static` when there is a static root ([`static_tab`]). A cancel, or a commit with nothing chosen or checked, changes
-/// nothing.
+/// The bare `/allow`: `Grants` (every grant in effect, checked rows meaning "take back"), then `Static` when
+/// there is a static root ([`static_tab`]). With no grant and no static root it prints [`NONE`] and opens
+/// nothing. A cancel, or a commit with nothing checked, changes nothing.
 async fn panel(repl: &Repl) {
     let door = repl.door();
     let footing = &repl.handles.footing;
     let held = granted(&door.grants);
+    let none = if footing.project.is_some() {
+        NONE
+    } else {
+        NONE_NO_PROJECT
+    };
+    let fixed = static_tab(footing);
+    if held.is_empty() && fixed.is_none() {
+        repl.handles.tr.notice(none);
+        return;
+    }
     let color = crate::app::color::enabled();
     let rows = held.iter().map(|g| g.row(color)).collect();
     let mut grants_tab = Panel::multi("Grants", rows).with_search(true);
     if held.is_empty() {
-        grants_tab = grants_tab.with_prompt(if footing.project.is_some() {
-            NONE
-        } else {
-            NONE_NO_PROJECT
-        });
+        grants_tab = grants_tab.with_prompt(none);
     }
-    let mut panels = vec![
-        Panel::dir_browser("Add", footing.root.clone()).with_search(true),
-        grants_tab,
-    ];
-    panels.extend(static_tab(footing));
     let spec = TabbedSpec {
-        panels,
+        panels: std::iter::once(grants_tab).chain(fixed).collect(),
         ..TabbedSpec::default()
     };
     // A facade failure is a cancel, as everywhere: a closed facade ends the loop at the next read.
     let Ok(r) = repl.handles.ui.tabbed(&repl.handles.cancel, spec).await else {
         return;
     };
-    if r.cancelled {
+    // `Static` is read-only: Enter there commits the surface, and nothing is done.
+    if r.cancelled || r.focused != 0 {
         return;
     }
-    match r.focused {
-        0 => {
-            let path = r.panels.first().map(|p| p.path.clone()).unwrap_or_default();
-            if path.is_empty() {
-                return;
-            }
-            match allow_dir(&door, footing, home(repl), Level::Session, &path) {
-                Ok(done) => say(repl, done),
-                Err(why) => repl.handles.tr.error(&format!("/allow: {why}")),
-            }
+    let checked = r
+        .panels
+        .first()
+        .map(|p| p.checked.clone())
+        .unwrap_or_default();
+    for done in revoke_checked(&door, &held, &checked) {
+        match done {
+            Ok(done) => say(repl, done),
+            Err(why) => repl.handles.tr.error(&format!("/allow: {why}")),
         }
-        1 => {
-            let checked = r
-                .panels
-                .get(1)
-                .map(|p| p.checked.clone())
-                .unwrap_or_default();
-            for done in revoke_checked(&door, &held, &checked) {
-                match done {
-                    Ok(done) => say(repl, done),
-                    Err(why) => repl.handles.tr.error(&format!("/allow: {why}")),
-                }
-            }
-        }
-        // `Static` is read-only: Enter there commits the surface, and nothing is done.
-        _ => {}
     }
 }
 
 /// The `Static` tab: a read-only view, one row per writable root that is not a grant, `write_roots:` first,
 /// each labelled with its source (the labels padded to one width). `None` when there is no such root: the
-/// surface then keeps its two tabs.
+/// surface then has `Grants` alone.
 fn static_tab(footing: &Footing) -> Option<Panel> {
     let w = footing.write_roots.iter().map(|r| ("write_roots:", r));
     let a = footing.added_dirs.iter().map(|r| ("--add-dir", r));

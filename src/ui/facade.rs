@@ -239,25 +239,11 @@ pub enum PanelBody {
     Browser {
         /// Start directory (empty = the current directory).
         dir: std::path::PathBuf,
-        /// What it chooses: a file, or a directory.
-        pick: Pick,
     },
     /// Row list with a per-row preview pane (the `/edit` image picker).
     Picker(PickerBody),
     /// Read-only line viewer.
     View(ViewBody),
-}
-
-/// What a `Browser` panel chooses.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Pick {
-    /// A file: the listing holds directories and files, Enter descends into a directory and chooses a file
-    /// (`/file`).
-    #[default]
-    File,
-    /// A directory: the listing holds `./` (the directory shown), `../` and the directories, no file; Enter
-    /// descends, Space chooses the highlighted one (`/allow`).
-    Dir,
 }
 
 impl Default for PanelBody {
@@ -277,7 +263,6 @@ impl PanelBody {
             PanelKind::Input => Self::Input(InputBody::default()),
             PanelKind::Browser => Self::Browser {
                 dir: std::path::PathBuf::new(),
-                pick: Pick::File,
             },
             PanelKind::Picker => Self::Picker(PickerBody::default()),
             PanelKind::View => Self::View(ViewBody::default()),
@@ -436,26 +421,9 @@ impl Panel {
         Self::of(title, PanelBody::View(ViewBody { lines, wrap: false }))
     }
 
-    /// A directory browser that chooses a file.
+    /// A directory browser.
     pub fn browser(title: impl Into<String>, dir: impl Into<std::path::PathBuf>) -> Self {
-        Self::of(
-            title,
-            PanelBody::Browser {
-                dir: dir.into(),
-                pick: Pick::File,
-            },
-        )
-    }
-
-    /// A directory browser that chooses a directory ([`Pick::Dir`]).
-    pub fn dir_browser(title: impl Into<String>, dir: impl Into<std::path::PathBuf>) -> Self {
-        Self::of(
-            title,
-            PanelBody::Browser {
-                dir: dir.into(),
-                pick: Pick::Dir,
-            },
-        )
+        Self::of(title, PanelBody::Browser { dir: dir.into() })
     }
 
     /// A panel of `body` titled `title`.
@@ -699,16 +667,8 @@ impl Panel {
     /// A `Browser` panel's start directory; empty elsewhere.
     pub fn dir(&self) -> &std::path::Path {
         match &self.body {
-            PanelBody::Browser { dir, .. } => dir,
+            PanelBody::Browser { dir } => dir,
             _ => std::path::Path::new(""),
-        }
-    }
-
-    /// What a `Browser` panel chooses; [`Pick::File`] elsewhere.
-    pub fn pick(&self) -> Pick {
-        match &self.body {
-            PanelBody::Browser { pick, .. } => *pick,
-            _ => Pick::File,
         }
     }
 

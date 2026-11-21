@@ -3388,33 +3388,15 @@ fn allow_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     (t, root, out)
 }
 
-/// A commit of the bare `/allow`'s `Add` tab, `dir` chosen.
-fn allow_add(dir: &Path) -> Reply {
-    Reply::Tabbed(TabbedResult {
-        cancelled: false,
-        focused: 0,
-        panels: vec![
-            PanelResult {
-                path: dir.display().to_string(),
-                ..PanelResult::default()
-            },
-            PanelResult::default(),
-        ],
-    })
-}
-
 /// A commit of the bare `/allow`'s `Grants` tab with the rows `checked` checked.
 fn allow_revoke(checked: &[usize]) -> Reply {
     Reply::Tabbed(TabbedResult {
         cancelled: false,
-        focused: 1,
-        panels: vec![
-            PanelResult::default(),
-            PanelResult {
-                checked: checked.to_vec(),
-                ..PanelResult::default()
-            },
-        ],
+        focused: 0,
+        panels: vec![PanelResult {
+            checked: checked.to_vec(),
+            ..PanelResult::default()
+        }],
     })
 }
 
@@ -3431,8 +3413,8 @@ fn allow_cancel() -> Reply {
 fn grants_tabs(ui: &ScriptedUi) -> Vec<Vec<String>> {
     surfaces(ui)
         .into_iter()
-        .filter(|s| s.panels.first().is_some_and(|p| p.title == "Add"))
-        .map(|s| s.panels[1].items.iter().map(|i| strip_sgr(i)).collect())
+        .filter(|s| s.panels.first().is_some_and(|p| p.title == "Grants"))
+        .map(|s| s.panels[0].items.iter().map(|i| strip_sgr(i)).collect())
         .collect()
 }
 
@@ -3446,8 +3428,8 @@ fn allow_params(f: &Fixture, root: &Path, grants: &Arc<iota::tool::grants::Grant
 
 /// `/allow <dir>` puts the directory's REAL location into the store the code jail and the shell sandbox read
 /// at their next call, and the notice says where that is when the typed path leads elsewhere. The bare
-/// `/allow` opens two tabs — `Add`, a directory browser on the project root, and `Grants`, a multi-select
-/// whose rows name their level — and lists it there.
+/// `/allow` opens `Grants` alone — a multi-select whose rows name their level; no static root, no `Static`
+/// tab — and lists it there.
 #[cfg(unix)]
 #[tokio::test]
 async fn allow_makes_a_directory_writable_and_says_where_it_really_is() {
@@ -3476,10 +3458,7 @@ async fn allow_makes_a_directory_writable_and_says_where_it_really_is() {
         .iter()
         .map(|p| (p.title.as_str(), p.kind))
         .collect();
-    assert_eq!(
-        tabs,
-        [("Add", PanelKind::Browser), ("Grants", PanelKind::Multi)]
-    );
+    assert_eq!(tabs, [("Grants", PanelKind::Multi)]);
     assert_eq!(
         grants_tabs(&f.ui),
         [vec![format!("this session  {}", out.display())]]
@@ -3599,21 +3578,18 @@ async fn allow_addresses_a_flag_server_by_its_url() {
     manager.close().await;
 }
 
-/// The `Add` tab grants the chosen directory for this session, as `/allow <dir>` does, refusals and all; the
-/// `Grants` tab takes a checked grant back from the store — the next call of either writer or the sandbox no
-/// longer has the root — and the next `/allow` lists nothing, saying so.
+/// With no grant and no static root the bare `/allow` opens no surface: it prints the one-line hint, the
+/// typed form grants, the `Grants` tab takes the grant back from the store — the next call of either writer
+/// or the sandbox no longer has the root — and the next bare `/allow` is the hint again.
 #[tokio::test]
-async fn the_panel_grants_from_add_and_revokes_from_grants() {
+async fn the_bare_allow_with_nothing_to_list_prints_the_hint_and_opens_no_panel() {
     let (_t, root, out) = allow_fixture();
     let f = Fixture::new(vec![
         input("/allow"),
-        allow_add(&root),
-        input("/allow"),
-        allow_add(&out),
+        input("/allow ../out"),
         input("/allow"),
         allow_revoke(&[0]),
         input("/allow"),
-        allow_cancel(),
         Reply::Interrupted,
     ]);
     let grants = Arc::new(iota::tool::grants::Grants::default());
@@ -3622,25 +3598,73 @@ async fn the_panel_grants_from_add_and_revokes_from_grants() {
         .expect("clean exit");
 
     assert!(grants.live_dirs().is_empty());
+    let hint = "No grants. /allow <dir> makes a directory writable for this session; /allow project <dir> for this project.";
     let printed = printed(&f.ui);
-    for want in [
-        format!(
-            "/allow: {} is already writable (the project root)",
-            root.display()
-        ),
-        format!("✓ {} is writable for this session", out.display()),
-        format!("✓ revoked {} (this session)", out.display()),
-    ] {
-        assert!(printed.contains(&want), "{want:?} missing:\n{printed:#?}");
-    }
-    let row = format!("this session  {}", out.display());
+    let grant = format!("✓ {} is writable for this session", out.display());
+    let revoked = format!("✓ revoked {} (this session)", out.display());
+    let said: Vec<&str> = printed
+        .iter()
+        .map(String::as_str)
+        .filter(|l| [hint, grant.as_str(), revoked.as_str()].contains(l))
+        .collect();
+    assert_eq!(said, [hint, &grant, &revoked, hint], "{printed:#?}");
     assert_eq!(
         grants_tabs(&f.ui),
-        [vec![], vec![], vec![row], vec![]],
-        "the rows each /allow opened on"
+        [vec![format!("this session  {}", out.display())]],
+        "one surface: the /allow that had a grant to list"
     );
-    let empty = &surfaces(&f.ui)[3].panels[1];
-    assert!(empty.prompt.starts_with("No grants."), "{:?}", empty.prompt);
+    assert_eq!(surfaces(&f.ui).len(), 1);
+}
+
+/// With static roots the bare `/allow` opens `Grants` + `Static` even with no grant — the `Grants` tab then
+/// says so — and keeps both once there is one. A commit focused on `Static` does nothing.
+#[tokio::test]
+async fn the_bare_allow_adds_the_static_tab_when_there_are_static_roots() {
+    let (t, root, out) = allow_fixture();
+    let fixed = t.path().join("static");
+    std::fs::create_dir(&fixed).expect("static");
+    let f = Fixture::new(vec![
+        input("/allow"),
+        Reply::Tabbed(TabbedResult {
+            cancelled: false,
+            focused: 1,
+            panels: vec![PanelResult::default(), PanelResult::default()],
+        }),
+        input("/allow ../link"),
+        input("/allow"),
+        allow_cancel(),
+        Reply::Interrupted,
+    ]);
+    let grants = Arc::new(iota::tool::grants::Grants::default());
+    let mut params = allow_params(&f, &root, &grants);
+    params.footing.write_roots = vec![fixed];
+    iota::repl::run(params).await.expect("clean exit");
+
+    assert_eq!(grants.live_dirs(), std::slice::from_ref(&out));
+    let shapes = surfaces(&f.ui);
+    let tabs: Vec<Vec<(&str, PanelKind)>> = shapes
+        .iter()
+        .map(|s| {
+            s.panels
+                .iter()
+                .map(|p| (p.title.as_str(), p.kind))
+                .collect()
+        })
+        .collect();
+    let both = vec![("Grants", PanelKind::Multi), ("Static", PanelKind::View)];
+    assert_eq!(tabs, [both.clone(), both]);
+    assert!(
+        shapes[0].panels[0]
+            .prompt
+            .starts_with("No grants. /allow <dir>"),
+        "{:?}",
+        shapes[0].panels[0].prompt
+    );
+    assert!(shapes[1].panels[0].prompt.is_empty());
+    assert!(
+        !printed(&f.ui).iter().any(|l| l.contains("revoked")),
+        "the Static commit took nothing back"
+    );
 }
 
 /// `/allow project <dir>` writes the directory's real location into `grants.json` in the project's bucket,

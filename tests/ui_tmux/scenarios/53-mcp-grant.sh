@@ -63,9 +63,7 @@ key Enter
 wait_all '✓ srv:echo runs without asking in this session' || miss "/allow never said the grant"
 type_ '/allow'
 key Enter
-wait_vis 'Space choose' || miss "the bare /allow never opened its surface"
-key Tab
-wait_vis 'this session  srv:echo' || miss "the Grants tab never listed the grant"
+wait_vis 'this session  srv:echo' || miss "the bare /allow's Grants tab never listed the grant"
 key Escape
 wait_gone 'this session  srv:echo' || miss "the surface never closed on Esc"
 settle || miss "frame never settled after /allow"
