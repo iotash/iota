@@ -7,6 +7,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Added
 
+- **An agent's `allow:` says what it may do without asking.** `agents.<name>.allow:
+  [~/scratch, shell, edit_file, "github:*"]` takes `/allow`'s targets — a
+  directory, a built-in tool that asks, `<server>:<tool>` or `<server>:*` — and
+  holds for every run of that agent, `-m` included. A mistake fails the load
+  naming the entry; a bare `/allow` lists them read-only, `/status` counts them,
+  and the trust prompt shows each one of a repository's file.
 - **iota knows it runs in rex.** Inside a rex block the model is told `host: rex`,
   the block and the session, so it can drive rex beside itself (`rex split`,
   `rex capture`); the banner says `in rex`.

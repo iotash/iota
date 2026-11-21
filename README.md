@@ -33,9 +33,12 @@ a model, a prompt, a set of tools — in one YAML file, and run them:
   answer can be kept for this session or — for an agent with `mode: agent` —
   for this project: allow a built-in tool or an MCP tool, or make the
   directory of a write outside them writable. `/allow` grants the same by hand, and a bare `/allow` shows what
-  is in force and takes it back. The config is the permanent form
-  (`write_roots:`, `tools.code.auto_write`, `tools.shell.auto_run`, an MCP
-  server's `auto_run`), `--add-dir` the one-run form. A write to git's hooks
+  is in force and takes it back. The config is the permanent form: an agent's
+  `allow:` lists `/allow`'s targets — `allow: [~/scratch, shell, edit_file,
+  "github:*"]` — and a bare `/allow` shows them, read-only, beside the grants
+  (`write_roots:`, `tools.code.auto_write`, `tools.shell.auto_run` and an MCP
+  server's `auto_run` still work for now); `--add-dir` is the one-run form. A
+  project's `agents.<name>` replaces the home's whole, `allow:` included. A write to git's hooks
   and config or iota's own config asks every time; the sandbox never makes
   one.
 - **Sessions are plain files.** Resume them, grep them, export them to HTML or
@@ -92,8 +95,9 @@ you trust it:
   before anything of it runs: for each MCP server, the command it runs (or
   the url it connects to), its `env`, any `headers` or `client_secret` value
   holding a `${…}`, and its `auto_run`; a provider's `url` and a `${…}` key;
-  an agent's `system_file` and its tools' `sandbox` (other than `auto`),
-  `auto_run`, `network` and `auto_write`; `write_roots`. Trust it, or skip it
+  an agent's `system_file`, its tools' `sandbox` (other than `auto`),
+  `auto_run`, `network` and `auto_write`, and each entry of its `allow:`, with
+  what it does; `write_roots`. Trust it, or skip it
   for this run.
 - Without a terminal (`-m`, a script, a bot), iota never asks: it skips the
   file with one warning and runs on `~/.iota.yaml`. `iota mcp list --probe`

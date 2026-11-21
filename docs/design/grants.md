@@ -313,10 +313,13 @@ is /, the home directory or an ancestor of it, which is never a project`; withou
     `this project  shell`, a `--mcp` grant followed by `(--mcp <spec>)`. With nothing
     granted (a `Static` tab beside it) its prompt is the line above. Committing takes each
     checked grant back from every level that holds it (the project's file first).
-  - `Static` — only when there is a static root: a read-only view, prompt `Writable from
-    the config and the command line: not grants, so none can be revoked here.`, one row
-    each, `write_roots:` first — `write_roots:  /path`, `--add-dir     /path`. Enter there
-    closes the surface and does nothing.
+  - `Static` — only when the config or the command line allows something: a read-only
+    view, prompt `From the config and the command line: not grants made here, so none can
+    be revoked here — edit agents.<name>.allow, or drop the flag.`, one row each,
+    `write_roots:` first, then the agent's `allow:` (directories, then tools), then
+    `--add-dir` — `write_roots:  /path`, `allow:        /path`, `allow:        shell`,
+    `--add-dir     /path` (docs/design/config-allow.md). Enter there closes the surface
+    and does nothing.
 
   A cancel, or a commit with nothing checked, changes nothing.
 - **Who may type it.** The user, at the prompt. A message from the socket never runs a

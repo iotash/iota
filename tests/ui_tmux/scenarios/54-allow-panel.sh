@@ -70,11 +70,11 @@ type_ '/allow'
 key Enter
 wait_vis 'No grants. /allow <dir>' || miss "the second /allow never opened on its empty Grants tab"
 key Tab
-wait_vis 'not grants, so none can be revoked here' || miss "the Static tab never said what it is"
+wait_vis 'not grants made here' || miss "the Static tab never said what it is"
 check "the row names its source and the root" "$(cap | grep -F 'write_roots:  ' | grep -cF 'rooted' | tr -d ' ')" 1
 check "the tab is a viewer" "$(count_vis 'q/Esc close')" 1
 key Enter
-wait_gone 'not grants, so none can be revoked here' || miss "Enter on the Static tab never closed the surface"
+wait_gone 'not grants made here' || miss "Enter on the Static tab never closed the surface"
 settle || miss "frame never settled after the Static tab"
 check "Enter there granted nothing" "$(count_all 'is writable for this session')" 1
 check "Enter there revoked nothing" "$(count_all '✓ revoked ')" 1
