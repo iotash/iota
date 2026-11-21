@@ -330,11 +330,19 @@ is /, the home directory or an ancestor of it, which is never a project`; withou
   tool that asks and is not granted at either level (`shell` — `stop asking before it
   runs`, a session grant), and after `/allow <tool> ` one `project` row (`for this project
   (<real root>), in every session`) in a run with a project, unless the project level holds
-  the tool. A tool granted for this session keeps its `project` row. Directories are never
-  rows. The rows are recomputed before every read of the prompt (the first is the chat's
-  start) and the table re-issued when they changed; they decide nothing — a submitted row is
-  parsed like a typed line, and one that outlived its truth is refused by the command's own
-  check.
+  the tool. A tool granted for this session keeps its `project` row. Then, in config order,
+  one row per connected server that is one server under its name and not `auto_run`
+  (`github:` — `MCP server · 12 tools`, its value the prefix `/allow github:`), and behind
+  that prefix `*` (`every tool of github, those it exposes later included`) and the server's
+  tools in its order, each with its own description, each followed by its `project` row; the
+  server's row is there only while one of those below it is. A description is cleaned
+  (ANSI stripped, other control characters dropped); a server or tool whose name holds
+  whitespace or a control character has no row. Directories are never rows. The rows are
+  recomputed before every read of the prompt (the first is the chat's start) and when a
+  server's status resolves (a background connect finishing, a server going down, a `/tools`
+  reconnect ending), and the table re-issued when they changed; they decide nothing — a
+  submitted row is parsed like a typed line, and one that outlived its truth is refused by
+  the command's own check.
 - **`/status`** gains one row, present only when something is granted:
   `Grants   2 for this session, 3 for this project (/allow lists them)`.
 - **The model is told through `<environment>`**: its `write roots:` line lists the

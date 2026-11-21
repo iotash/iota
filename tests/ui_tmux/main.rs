@@ -84,6 +84,7 @@
 //! | `51-xml-tab.sh` | xml-tab | — (a pasted `<hc>` snippet on a plain terminal — no host claims an element — is the user block byte for byte, with no tab, on screen and in the exit's write-out) |
 //! | `53-mcp-grant.sh` | grants-refactor, X-112 | — (a stdio MCP server's tool called by the model: the dialog's four items, Esc denying it, `/allow srv:echo` saying the grant and the bare `/allow`'s Grants tab listing it, the same call then running without a dialog) |
 //! | `54-allow-panel.sh` | allow-panel, X-111 | — (`/allow ../zz-out` grants a sibling directory and the transcript says it is writable, `/status` counting it; the bare `/allow` opens `Grants` and `Static` and no directory browser; the `Grants` tab lists the grant, Space and Enter revoke it, `/status`'s Grants row gone; the next bare `/allow`'s Grants tab says `No grants.`, and the `Static` tab says what it is, lists the root as `write_roots:  <path>`, and Enter there closes it changing nothing) |
+//! | `55-allow-completion.sh` | allow-rows-mcp, X-111 | — (the `/allow ` completion list walked key by key against a stdio MCP server `github`: level 1 lists the built-ins that ask and `github:` with its count once it connects, `g` leaves the server alone, Tab writes `/allow github:`, Enter on it submits nothing and shows `*` and the tool with its description, `e` Tab Space Tab Enter grants `github:echo` for the project, and the model's next call of it runs without a dialog) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -764,6 +765,13 @@ fn tmux_mcp_grant() {
 #[test]
 fn tmux_allow_panel() {
     run_scenario("54-allow-panel.sh");
+}
+
+/// allow-rows-mcp (X-111, docs/design/allow-completion.md §4.3): the `/allow ` completion list's two levels
+/// walked through the real composer against a real stdio server, ending in a project grant the next call obeys.
+#[test]
+fn tmux_allow_completion() {
+    run_scenario("55-allow-completion.sh");
 }
 
 /// M2 (tui-plan §7) — a measurement, not a check: the bytes the tmux iota runs in sends to its own

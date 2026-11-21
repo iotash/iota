@@ -11,9 +11,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   the block and the session, so it can drive rex beside itself (`rex split`,
   `rex capture`); the banner says `in rex`.
 - **`/allow ` lists what you can grant.** A space after `/allow` opens a list of
-  the built-in tools that would still ask (`shell`, `write_file`, …), and after
-  `/allow shell ` a `project` row grants it for the project; the list follows
-  every grant and revoke.
+  the built-in tools that would still ask (`shell`, `write_file`, …) and the
+  connected MCP servers (`github:`); Enter on a server shows `*` and its tools.
+  After `/allow shell ` a `project` row grants it for the project. The list follows
+  every grant and revoke, and a server's rows appear when it connects.
 
 ### Changed
 
