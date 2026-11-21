@@ -47,7 +47,7 @@ impl QuietHost {
     }
 
     /// approve None → `Approval::Deny(refused)`, `refused` being the dispatcher's own text for the call
-    /// (`Dispatcher::unattended_refusal`: an MCP server's tool names the server and its `auto_run` key) or
+    /// (`Dispatcher::unattended_refusal`: an MCP server's tool names the server and the `--allow` that would run it) or
     /// else `refusal_text(&tc.name)`; else the approver's answer verbatim.
     /// `detail` = `dispatch.header_summary(&tc.name, &tc.arguments).unwrap_or_default()` — Go's fallback
     /// sorted-key argument digest (chat.go:461-480, `toolHeaderMaxArgs`/`truncateRunes`) is NOT ported

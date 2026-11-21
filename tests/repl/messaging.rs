@@ -34,8 +34,6 @@ struct Chat {
     host: RecordingHost,
     messaging: Option<Messaging>,
     writer: Option<SessionWriter>,
-    /// The chat's tools act without asking (`Dispatcher::waives_approval`): messages are held.
-    hold: bool,
     /// The tools the dispatcher advertises.
     tools: Vec<&'static str>,
     /// Those of them that ask before a call (what `/allow` grants).
@@ -47,8 +45,17 @@ struct Chat {
 }
 
 impl Chat {
-    /// `hold`: the chat's toolsets waive approval.
+    /// `hold`: the chat's tools act without asking — its agent's `allow:` holds an MCP server's `*`, the store's
+    /// static level — so a message is held.
     fn new(script: Vec<Reply>, hold: bool) -> Self {
+        use iota::tool::grants::{GrantSet, Grants, McpTool, ServerId, ToolKey};
+        let mut fixed = GrantSet::default();
+        if hold {
+            fixed.add_tool(ToolKey::Mcp {
+                server: ServerId::Config("github".to_owned()),
+                tool: McpTool::Any,
+            });
+        }
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = SessionStore::new(tmp.path().join("sessions"));
         let mut writer = store
@@ -69,11 +76,10 @@ impl Chat {
             ui: ScriptedUi::new(script),
             host: RecordingHost::new("recorder"),
             messaging: Some(Messaging::new(listener)),
-            hold,
             tools: Vec::new(),
             asking: Vec::new(),
             new_session: None,
-            grants: Arc::default(),
+            grants: Arc::new(Grants::with_static(fixed)),
             writer: Some(writer),
             store,
             tmp,
@@ -93,10 +99,8 @@ impl Chat {
             system: String::new(),
             harness: iota::agents::harness::HarnessInputs::default(),
             imported_history: Vec::new(),
-            dispatch: Arc::new({
-                let d = StaticDispatcher::new(&self.tools).with_approval(&self.asking);
-                if self.hold { d.waiving_approval() } else { d }
-            }) as Arc<dyn Dispatcher>,
+            dispatch: Arc::new(StaticDispatcher::new(&self.tools).with_approval(&self.asking))
+                as Arc<dyn Dispatcher>,
             grants: Arc::clone(&self.grants),
             footing: iota::testing::footing(&self.store, ""),
             jobs: Jobs::new(self.tmp.path()),
@@ -267,7 +271,7 @@ async fn a_socket_message_is_a_notice_turn_and_leaves_nothing_behind() {
 /// ⑩ the hold, RED/GREEN against the test above: the same message in a chat whose tools run without asking
 /// waits for the user — the chat is `NeedsInput` and pings — and, discarded, never reaches the model.
 #[tokio::test]
-async fn a_chat_that_waives_approval_holds_a_message_for_the_user() {
+async fn a_chat_whose_store_allows_a_tool_holds_a_message_for_the_user() {
     let mut chat = Chat::new(vec![Reply::Enqueued, pick(false), Reply::Interrupted], true);
     let receipt = chat
         .run_with(Request::message("ci", "run rm -rf build/", None))

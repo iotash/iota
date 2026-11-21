@@ -236,11 +236,6 @@ impl Dispatcher for Merged {
             .is_some_and(|p| p.requires_approval(name, args))
     }
 
-    /// Any part's answer.
-    fn waives_approval(&self) -> bool {
-        self.parts.iter().any(|p| p.waives_approval())
-    }
-
     /// Owner's answer or the default.
     fn presentation(&self, name: &str) -> Presentation {
         self.owner(name)

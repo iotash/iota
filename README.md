@@ -35,9 +35,8 @@ a model, a prompt, a set of tools — in one YAML file, and run them:
   directory of a write outside them writable. `/allow` grants the same by hand, and a bare `/allow` shows what
   is in force and takes it back. The config is the permanent form: an agent's
   `allow:` lists `/allow`'s targets — `allow: [~/scratch, shell, edit_file,
-  "github:*"]` — and a bare `/allow` shows them, read-only, beside the grants
-  (an MCP server's `auto_run` still works for now); `--allow <target>` is the one-run
-  form, a `--mcp` server named by its whole value. A
+  "github:*"]` — and a bare `/allow` shows them, read-only, beside the grants;
+  `--allow <target>` is the one-run form, a `--mcp` server named by its whole value. A
   project's `agents.<name>` replaces the home's whole, `allow:` included. A write to git's hooks
   and config or iota's own config asks every time; the sandbox never makes
   one.
@@ -94,7 +93,7 @@ you trust it:
 - Started on a terminal, iota shows what the file would do and asks once,
   before anything of it runs: for each MCP server, the command it runs (or
   the url it connects to), its `env`, any `headers` or `client_secret` value
-  holding a `${…}`, and its `auto_run`; a provider's `url` and a `${…}` key;
+  holding a `${…}`; a provider's `url` and a `${…}` key;
   an agent's `system_file`, its shell's `sandbox` (other than `auto`) and
   `network`, and each entry of its `allow:`, with what it does. Trust it, or skip it
   for this run.

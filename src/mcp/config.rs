@@ -64,13 +64,9 @@ pub struct ServerConfig {
     /// `tool_timeout_sec:` — how long one `tools/call` may go unanswered before it is given up (`None` = the
     /// manager's default, [`crate::mcp::DEFAULT_CALL_TIMEOUT`]).
     pub tool_timeout_sec: Option<u64>,
-    /// `auto_run:` — the server's tools run without asking. Off (the default), every call is put to the
-    /// user at the approval gate unless a grant covers it, and a non-interactive run refuses it. A `--mcp` flag
-    /// server is always off.
-    pub auto_run: bool,
     /// The server came from a `--mcp` flag ([`parse_mcp_flag`]), not an `mcp_servers` entry: the flag's value,
     /// trimmed. It is the server's identity in a grant (its `name` is only `argv[0]` or the URL), and it has no
-    /// entry to write `auto_run` in, so what a non-interactive run says about refusing its calls differs.
+    /// entry and so no `allow:` clause, so what a non-interactive run says about refusing its calls differs.
     pub flag: Option<String>,
 }
 
@@ -174,7 +170,6 @@ pub(crate) fn expand_server_config(server_cfg: &ServerConfig, env: &Env) -> Serv
         client_secret: x(&server_cfg.client_secret),
         redirect_port: server_cfg.redirect_port,
         tool_timeout_sec: server_cfg.tool_timeout_sec,
-        auto_run: server_cfg.auto_run,
         flag: server_cfg.flag.clone(),
     }
 }
@@ -293,7 +288,6 @@ mod tests {
             client_secret: "${env:TOKEN}".to_owned(),
             redirect_port: Some(18000),
             tool_timeout_sec: Some(90),
-            auto_run: true,
             flag: Some("srv".to_owned()),
         };
         let got = expand_server_config(&server_cfg, &fixed());
@@ -310,7 +304,6 @@ mod tests {
             Some(90),
             "the call deadline rides along"
         );
-        assert!(got.auto_run, "auto_run rides along");
         assert_eq!(got.flag.as_deref(), Some("srv"), "the flag rides along");
         assert_eq!(super::redirect_uri(None), "http://127.0.0.1:17801/callback");
         assert_eq!(

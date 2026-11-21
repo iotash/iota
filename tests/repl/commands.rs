@@ -3913,12 +3913,11 @@ async fn connected_mcp(
 
 /// An `mcp_servers:` entry running `sh -c <script>`.
 #[cfg(unix)]
-fn sh_entry(name: &str, script: &str, auto_run: bool) -> iota::mcp::config::ServerConfig {
+fn sh_entry(name: &str, script: &str) -> iota::mcp::config::ServerConfig {
     iota::mcp::config::ServerConfig {
         name: name.to_owned(),
         command: "sh".to_owned(),
         args: vec!["-c".to_owned(), script.to_owned()],
-        auto_run,
         ..iota::mcp::config::ServerConfig::default()
     }
 }
@@ -3940,7 +3939,7 @@ async fn the_allow_rows_arrive_when_a_server_connects() {
         go.display()
     );
     let manager = iota::mcp::Manager::new(
-        vec![sh_entry("gh", &script, false)],
+        vec![sh_entry("gh", &script)],
         iota::mcp::ManagerOptions::new(reqwest::Client::new(), iota::app::env::Env::default()),
     );
     let mut statuses = manager.connect_background(&CancellationToken::new());
@@ -4012,7 +4011,7 @@ async fn allow_server_star_covers_every_tool() {
     use iota::tool::grants::{Level, McpTool, ServerId, ToolKey};
 
     let (_t, root, _out) = allow_fixture();
-    let (manager, hooks) = connected_mcp(vec![sh_entry("gh", &two_tool_server(), false)]).await;
+    let (manager, hooks) = connected_mcp(vec![sh_entry("gh", &two_tool_server())]).await;
     let f = Fixture::new(vec![
         input("/allow gh:*"),
         input("/allow gh:echo"),
@@ -4107,7 +4106,8 @@ async fn allow_server_star_covers_every_tool() {
 
 /// `/allow <server>:<tool>` resolves against what is CONNECTED now, so a typo is refused instead of stored:
 /// a server nobody configured, one that failed to start, a tool the server does not list, a server whose
-/// tools already run (`auto_run`), and a name two `--mcp` servers share — which identifies neither.
+/// tools already run (the agent's `allow: ["auto:*"]`), and a name two `--mcp` servers share — which identifies
+/// neither.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn allow_refuses_a_server_that_is_not_connected() {
@@ -4120,8 +4120,8 @@ async fn allow_refuses_a_server_that_is_not_connected() {
         iota::mcp::config::parse_mcp_flag(&format!("sh {}", path.display())).expect("flag")
     };
     let (manager, hooks) = connected_mcp(vec![
-        sh_entry("gh", SH_SERVER, false),
-        sh_entry("auto", SH_SERVER, true),
+        sh_entry("gh", SH_SERVER),
+        sh_entry("auto", SH_SERVER),
         iota::mcp::config::ServerConfig {
             name: "down".to_owned(),
             command: "false".to_owned(),
@@ -4139,8 +4139,14 @@ async fn allow_refuses_a_server_that_is_not_connected() {
         input("/allow sh:echo"),
         Reply::Interrupted,
     ]);
-    let grants = Arc::new(iota::tool::grants::Grants::default());
+    let mut allowed = iota::tool::grants::GrantSet::default();
+    allowed.add_tool(iota::tool::grants::ToolKey::Mcp {
+        server: iota::tool::grants::ServerId::Config("auto".to_owned()),
+        tool: iota::tool::grants::McpTool::Any,
+    });
+    let grants = Arc::new(iota::tool::grants::Grants::with_static(allowed.clone()));
     let mut params = allow_params(&f, &root, &grants);
+    params.footing.config = allowed;
     params.mcp = hooks;
     iota::repl::run(params).await.expect("clean exit");
 
@@ -4155,7 +4161,7 @@ async fn allow_refuses_a_server_that_is_not_connected() {
             format!("/allow: no MCP server named \"nope\" is connected {connected}"),
             format!("/allow: no MCP server named \"down\" is connected {connected}"),
             "/allow: server \"gh\" has no tool \"nope\"".to_owned(),
-            "/allow: auto's tools already run without asking (auto_run)".to_owned(),
+            "/allow: auto:* already runs without asking (allow:)".to_owned(),
             "/allow: \"sh\" names 2 connected servers; add one to mcp_servers: under its own name to grant it"
                 .to_owned(),
         ]

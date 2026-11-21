@@ -59,7 +59,7 @@ const AGENT_KEYS: [&str; 16] = [
     "allow",
 ];
 /// Every key an `mcp_servers.<name>` entry accepts.
-const MCP_KEYS: [&str; 12] = [
+const MCP_KEYS: [&str; 11] = [
     "command",
     "args",
     "url",
@@ -71,7 +71,6 @@ const MCP_KEYS: [&str; 12] = [
     "client_secret",
     "redirect_port",
     "tool_timeout_sec",
-    "auto_run",
 ];
 
 /// Every key a `tools.shell` set accepts.
@@ -91,7 +90,7 @@ const OUTSIDE_WRITES_GONE: &str = "`outside_writes` was removed — a write outs
 /// are checked whatever the key's value, before the "belongs under" table (and, at the top level, before
 /// `unknown top-level key`), so the message names the replacement rather than a layer; a key the section
 /// still owns never gets here.
-const RETIRED_KEYS: [(&str, &str, &str); 9] = [
+const RETIRED_KEYS: [(&str, &str, &str); 10] = [
     (
         "",
         "model",
@@ -132,6 +131,12 @@ const RETIRED_KEYS: [(&str, &str, &str); 9] = [
         "tools.shell",
         "auto_run",
         "`auto_run` is now `allow:` — write `allow: [shell]` in `agents.{entry}`",
+    ),
+    // 2026-11-22: a server's tools run unasked when an agent's `allow:` holds `<server>:*` (X-112, X-117).
+    (
+        "mcp_servers",
+        "auto_run",
+        "`auto_run` is now `allow:` — write `\"{entry}:*\"` in the `allow:` of each agent that may run its tools without asking",
     ),
 ];
 
@@ -488,17 +493,24 @@ mod tests {
         );
         assert_eq!(
             check("mcp_servers:\n  fs: {commadn: npx}\n"),
-            "mcp_servers.fs.commadn: unknown key (want command, args, url, env, headers, defer, auth, client_id, client_secret, redirect_port, tool_timeout_sec, auto_run)"
+            "mcp_servers.fs.commadn: unknown key (want command, args, url, env, headers, defer, auth, client_id, client_secret, redirect_port, tool_timeout_sec)"
         );
     }
 
-    /// `auto_run:` is an `mcp_servers` entry's key; an agent or a model refuses it.
+    /// `mcp_servers.<n>.auto_run` is retired whatever its value, naming the entry each agent's `allow:` takes —
+    /// §7's text (docs/design/config-allow.md) with the server's own name; an agent or a model never had the key,
+    /// and there it is simply unknown.
     #[test]
-    fn auto_run_is_an_mcp_server_key_only() {
-        assert_eq!(
-            check("mcp_servers:\n  fs: {command: npx, auto_run: true}\n"),
-            ""
-        );
+    fn a_servers_auto_run_names_each_agents_allow() {
+        for value in ["true", "false", "no", "null", "[]"] {
+            assert_eq!(
+                check(&format!(
+                    "mcp_servers:\n  github: {{command: gh-mcp, auto_run: {value}}}\n"
+                )),
+                "mcp_servers.github.auto_run: `auto_run` is now `allow:` — write `\"github:*\"` in the `allow:` of each agent that may run its tools without asking",
+                "{value}"
+            );
+        }
         assert!(
             check("agents:\n  a: {model: m, auto_run: true}\n")
                 .starts_with("agents.a.auto_run: unknown key (want model, ")
@@ -557,8 +569,7 @@ mod tests {
         );
     }
 
-    /// Every text of docs/design/config-allow.md §7 this tree produces, byte for byte (`mcp_servers.<n>.auto_run`
-    /// is still a server's key: its row comes with its removal).
+    /// Every text of docs/design/config-allow.md §7, byte for byte.
     #[test]
     fn the_retired_grant_keys_name_allow() {
         for (yaml, text) in [
@@ -585,6 +596,10 @@ mod tests {
             (
                 "agents:\n  coder: {model: m, tools: {shell: {auto_run: true}}}\n",
                 "agents.coder.tools.shell.auto_run: `auto_run` is now `allow:` — write `allow: [shell]` in `agents.coder`",
+            ),
+            (
+                "mcp_servers:\n  github: {command: gh-mcp, auto_run: true}\n",
+                "mcp_servers.github.auto_run: `auto_run` is now `allow:` — write `\"github:*\"` in the `allow:` of each agent that may run its tools without asking",
             ),
             (
                 "agents:\n  coder: {model: m, tools: {code: {auto_wrtie: true}}}\n",

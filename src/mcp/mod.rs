@@ -135,16 +135,13 @@ pub(crate) mod testutil {
         }
     }
 
-    /// A manager over one stdio server `srv` (with `auto_run` as given), in a run with a project, already connected to a
+    /// A manager over one stdio server `srv`, in a run with a project, already connected to a
     /// [`CountingSession`] that serves two tools, `push` and `pull` — wire names `mcp__srv__push`/`…pull`.
-    pub(crate) fn approval_manager(
-        auto_run: bool,
-    ) -> (Arc<crate::mcp::Manager>, Arc<CountingSession>) {
+    pub(crate) fn approval_manager() -> (Arc<crate::mcp::Manager>, Arc<CountingSession>) {
         approval_manager_for(
             crate::mcp::config::ServerConfig {
                 name: "srv".to_owned(),
                 command: "srv-bin".to_owned(),
-                auto_run,
                 ..crate::mcp::config::ServerConfig::default()
             },
             true,

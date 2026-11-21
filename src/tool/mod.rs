@@ -198,12 +198,6 @@ pub trait Dispatcher: Send + Sync {
     fn requires_approval(&self, _name: &str, _args: Option<&JsonObject>) -> bool {
         false
     }
-    /// Whether a tool here acts without asking by the dispatcher's own setting — an MCP server's `auto_run`, the
-    /// one switch left (a built-in is allowed by a tool grant, which [`crate::tool::grants::Grants::waives`]
-    /// answers).
-    fn waives_approval(&self) -> bool {
-        false
-    }
     /// Presentation class of the named tool.
     fn presentation(&self, _name: &str) -> Presentation {
         Presentation::Group
@@ -232,7 +226,7 @@ pub trait Dispatcher: Send + Sync {
     }
     /// What a run with nobody to ask tells the model instead of running the named tool's gated call, when
     /// this dispatcher knows better than the generic `crate::headless::run::refusal_text` — an MCP server's
-    /// tool names its server and the `auto_run` key that would allow it. `None` = the generic text.
+    /// tool names its server and the `--allow` and `allow:` entries that would allow it. `None` = the generic text.
     fn unattended_refusal(&self, _name: &str) -> Option<String> {
         None
     }

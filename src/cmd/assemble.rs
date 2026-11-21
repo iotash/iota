@@ -441,45 +441,35 @@ mod tests {
         );
     }
 
-    /// `auto_run:` defaults to false — a written entry asks unless it opts out — and an opt-out reaches the
-    /// manager's config; a `--mcp` flag server cannot opt out at all.
+    /// A server's tools run unasked only by an agent's `allow:` — `"trusted:*"` puts that server's `*` in the
+    /// store's static level, and a server the list does not name (an entry beside it) is not there: every call of
+    /// its tools asks. The manager's configs carry no switch of their own.
     #[test]
-    fn auto_run_defaults_to_false_and_reaches_the_manager() {
+    fn a_servers_star_in_allow_reaches_the_static_level() {
+        use crate::tool::grants::{McpTool, ServerId, ToolKey};
         let entry: McpServerConfig = serde_norway::from_str("command: srv").expect("decode");
-        assert!(!entry.auto_run, "absent = every call asks");
-        let written = serde_norway::to_string(&entry).expect("encode");
-        assert!(
-            !written.contains("auto_run"),
-            "the default is left out: {written}"
-        );
-        let opted: McpServerConfig =
-            serde_norway::from_str("command: srv\nauto_run: true").expect("decode");
-        assert!(opted.auto_run);
-        assert!(
-            serde_norway::to_string(&opted)
-                .expect("encode")
-                .contains("auto_run: true")
-        );
-
         let cfg = Config {
-            mcp_servers: BTreeMap::from([("ask".to_owned(), entry), ("trusted".to_owned(), opted)]),
+            mcp_servers: BTreeMap::from([
+                ("ask".to_owned(), entry.clone()),
+                ("trusted".to_owned(), entry),
+            ]),
             ..Config::default()
         };
-        let (r, _) = collect(&cfg, &AgentConfig::default(), &["flag-bin".to_owned()]);
-        let got: Vec<(String, bool)> = r
-            .expect("configs")
-            .0
-            .into_iter()
-            .map(|c| (c.name, c.auto_run))
-            .collect();
+        let agent = AgentConfig {
+            allow: vec!["trusted:*".to_owned()],
+            ..AgentConfig::default()
+        };
+        let fixed = super::static_grants(&cfg, "a", &agent, &ToolEnv::default()).expect("resolved");
         assert_eq!(
-            got,
-            [
-                ("ask".to_owned(), false),
-                ("trusted".to_owned(), true),
-                ("flag-bin".to_owned(), false)
-            ]
+            fixed.tools,
+            [ToolKey::Mcp {
+                server: ServerId::Config("trusted".to_owned()),
+                tool: McpTool::Any,
+            }]
         );
+        let (r, _) = collect(&cfg, &agent, &["flag-bin".to_owned()]);
+        let names: Vec<String> = r.expect("configs").0.into_iter().map(|c| c.name).collect();
+        assert_eq!(names, ["ask", "trusted", "flag-bin"]);
     }
 
     /// X-78: `tool_timeout_sec: 0` is rejected naming the server (the `max_tokens: 0` shape, never "no deadline");

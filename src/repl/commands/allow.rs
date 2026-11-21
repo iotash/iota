@@ -386,8 +386,7 @@ impl Rows<'_> {
     }
 
     /// The rows of the connected server `name` — one server under that name, as `/allow` requires: none when
-    /// it is `auto_run` (its tools never ask), when the config's `allow:` holds its `*` (they run unasked
-    /// already), or when its name cannot be typed back ([`typable`]). Its `*` row and
+    /// the static level (an agent's `allow:`, `--allow`) holds its `*` (its tools run unasked already), or when its name cannot be typed back ([`typable`]). Its `*` row and
     /// then a row per tool that can be ([`typable`]), in the server's order, each followed by its scope row,
     /// all waiting behind `/allow <name>:`; and first the server's own row, the prefix, when any `*` or tool
     /// row is there to reach.
@@ -396,10 +395,7 @@ impl Rows<'_> {
             server: server.id.clone(),
             tool,
         };
-        if server.auto_run
-            || self.door.grants.statics().allows(&key(McpTool::Any))
-            || !typable(name)
-        {
+        if self.door.grants.statics().allows(&key(McpTool::Any)) || !typable(name) {
             return Vec::new();
         }
         let prefix = format!("/allow {name}:");
@@ -591,8 +587,8 @@ fn server_tool(arg: &str) -> Option<(&str, &str)> {
 }
 
 /// Grants `server`'s `tool` (or, as `*`, every tool of it) at `level`: the notice line, or why not. The server
-/// must be connected, under that name, exactly once — a name two `--mcp` servers share identifies neither —
-/// and must not be `auto_run`; a named tool must be one it lists now.
+/// must be connected, under that name, exactly once — a name two `--mcp` servers share identifies neither; a
+/// named tool must be one it lists now, and the store must not hold the grant already ([`grant_tool`]).
 fn allow_tool(
     door: &Door,
     footing: &Footing,
@@ -624,11 +620,6 @@ fn allow_tool(
             ));
         }
     };
-    if target.auto_run {
-        return Err(format!(
-            "{server}'s tools already run without asking (auto_run)"
-        ));
-    }
     let tool = McpTool::parse(tool);
     if let McpTool::Named(t) = &tool
         && !target.tools.iter().any(|known| known.name == *t)
@@ -1588,8 +1579,8 @@ mod tests {
     fn allow_refuses_what_the_config_already_allows() {
         let (t, root, out) = fixture();
         let m = crate::mcp::testutil::serving(vec![
-            (entry("gh", false), &[("search", "")]),
-            (entry("lin", false), &[("list", "")]),
+            (entry("gh"), &[("search", "")]),
+            (entry("lin"), &[("list", "")]),
         ]);
         let c = Chat::new(&t, &root)
             .with_servers(m)
@@ -1843,12 +1834,11 @@ mod tests {
         assert_eq!(rows_of(&c), builtin_rows("write_file", &root, true));
     }
 
-    /// An `mcp_servers:` entry `name`, `auto_run` as given.
-    fn entry(name: &str, auto_run: bool) -> crate::mcp::config::ServerConfig {
+    /// An `mcp_servers:` entry `name`.
+    fn entry(name: &str) -> crate::mcp::config::ServerConfig {
         crate::mcp::config::ServerConfig {
             name: name.to_owned(),
             command: format!("{name}-bin"),
-            auto_run,
             ..crate::mcp::config::ServerConfig::default()
         }
     }
@@ -1873,10 +1863,10 @@ mod tests {
             let (t, root, _out) = fixture();
             let m = crate::mcp::testutil::serving(vec![
                 (
-                    entry("gh", false),
+                    entry("gh"),
                     &[("create_issue", "Opens an issue"), ("search", "Finds code")],
                 ),
-                (entry("lin", false), &[("list", "")]),
+                (entry("lin"), &[("list", "")]),
             ]);
             let c = Chat::new(&t, &root).with_servers(m);
             (t, root, c)
@@ -1955,7 +1945,7 @@ mod tests {
         assert!(c.allow("gh:").is_err(), "the prefix grants nothing");
 
         let (t, root, _out) = fixture();
-        let m = crate::mcp::testutil::serving(vec![(entry("gh", false), &[("search", "")])]);
+        let m = crate::mcp::testutil::serving(vec![(entry("gh"), &[("search", "")])]);
         let c = Chat::new(&t, &root).with_servers(m);
         c.allow("gh:*").unwrap();
         let values: Vec<String> = rows_of(&c).into_iter().map(|r| r.0).collect();
@@ -1972,22 +1962,29 @@ mod tests {
         );
     }
 
-    /// The command's own refusals are the rows' absences: an `auto_run` server's tools never ask, and a name two
-    /// connected servers share identifies neither — both have no row at all, while the server beside them keeps
-    /// its own.
+    /// The command's own refusals are the rows' absences: a server whose `*` the agent's `allow:` holds already
+    /// runs unasked, and a name two connected servers share identifies neither — both have no row at all, while
+    /// the server beside them keeps its own.
     #[test]
-    fn an_auto_run_or_ambiguous_server_has_no_rows() {
+    fn an_allowed_or_ambiguous_server_has_no_rows() {
         let (t, root, _out) = fixture();
         let flag = |spec: &str| crate::mcp::config::parse_mcp_flag(spec).expect("flag");
         let m = crate::mcp::testutil::serving(vec![
-            (entry("auto", true), &[("push", "")]),
+            (entry("auto"), &[("push", "")]),
             (flag("npx -y @acme/mcp"), &[("push", "")]),
             (flag("npx -y @other/mcp"), &[("pull", "")]),
-            (entry("gh", false), &[("search", "")]),
+            (entry("gh"), &[("search", "")]),
         ]);
         let c = Chat::new(&t, &root)
             .without_project(false, None)
-            .with_servers(m);
+            .with_servers(m)
+            .with_config(grants::GrantSet {
+                dirs: Vec::new(),
+                tools: vec![ToolKey::Mcp {
+                    server: ServerId::Config("auto".to_owned()),
+                    tool: McpTool::Any,
+                }],
+            });
         assert!(c.allow("auto:push").is_err());
         assert!(c.allow("npx:push").is_err());
         let values: Vec<String> = rows_of(&c).into_iter().map(|r| r.0).collect();
@@ -2008,7 +2005,7 @@ mod tests {
     #[test]
     fn an_allowed_tool_the_server_lacks_is_found_when_it_connects() {
         let (t, root, _out) = fixture();
-        let m = crate::mcp::testutil::serving(vec![(entry("gh", false), &[("search", "")])]);
+        let m = crate::mcp::testutil::serving(vec![(entry("gh"), &[("search", "")])]);
         let key = |server: &str, tool: &str| ToolKey::Mcp {
             server: ServerId::Config(server.to_owned()),
             tool: McpTool::parse(tool),
@@ -2038,14 +2035,14 @@ mod tests {
         let (t, root, _out) = fixture();
         let m = crate::mcp::testutil::serving(vec![
             (
-                entry("gh", false),
+                entry("gh"),
                 &[
                     ("search", "\x1b[31mFinds\x1b[0m code\x07\nfast"),
                     ("two words", "x"),
                     ("bell\x07", "x"),
                 ],
             ),
-            (entry("my server", false), &[("push", "")]),
+            (entry("my server"), &[("push", "")]),
         ]);
         let c = Chat::new(&t, &root)
             .without_project(false, None)

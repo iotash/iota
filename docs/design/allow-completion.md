@@ -77,7 +77,7 @@ into each of its tools.
   `shell`, `edit_file`, `write_file` (the probe asks whatever the config says; a row is absent
   when any level, the static one included, already holds it).
 - **MCP** — for each name of `Manager::connected_names()`, `connected_named(name)` must be
-  exactly ONE server and not `auto_run` (the command's two refusals); then every tool it
+  exactly ONE server whose `*` the static level does not hold (the command's two refusals); then every tool it
   lists, and `*`. A server that is connecting, failed, down or waiting for a login has no
   rows: `/allow` refuses it too.
 
@@ -264,8 +264,8 @@ command. Three push moments and a refusal that is already written cost less.
 - **The list** — pure, in `repl::commands::allow::tests` over the existing `Chat` fixture
   and a `Manager` with merged fake servers: which rows exist, their four fields, their
   order; a session grant removes the tool's row and keeps its scope row; a project grant
-  removes both; `srv:*` removes every session row of the server; an `auto_run` server, a
-  name two servers share and a run with no project (no scope rows) have none.
+  removes both; `srv:*` removes every session row of the server; a server whose `*` the
+  agent's `allow:` holds, a name two servers share and a run with no project (no scope rows) have none.
 - **The table** — `repl::commands::tests`: `active()` places the `/allow` rows after the
   command's row; `set_allow` reports a change only when there is one.
 - **The parse** — `repl::commands::allow::tests`: the four target forms at both levels with
@@ -282,8 +282,8 @@ command. Three push moments and a refusal that is already written cost less.
 
 **1. The list's content.** The lines that would grant if submitted now (§3.1): per tool key,
 `session(K)` for its row and `project(K)` for its scope row, computed with the command's own
-predicates over `asking(dispatch)` and the manager's connected, single, non-`auto_run`
-servers. A row is value / label / description / `after` (§3.2). It does not say the level:
+predicates over `asking(dispatch)` and the manager's connected, single servers whose `*` the
+static level does not hold. A row is value / label / description / `after` (§3.2). It does not say the level:
 a row with no trailing word is a session grant, and the `project` row is where the level is
 named, with the root. A tool granted for the session but not the project has NO row of its
 own and still gets its `project` row after `/allow <tool> ` — the scope is typed after the
@@ -345,8 +345,8 @@ re-issue, the MCP rows — each leaving the product working.
   could be read both ways is refused naming both (`"<arg>" is a directory too: …`); a
   directory whose name ends in ` project` is typed with a trailing `/`. The hint and the
   unattended MCP refusal name the new order. `/allow ` opens the completion list: one row
-  per line that would grant now — the built-ins that ask, one row per connected,
-  non-`auto_run` server (`github:`), and under it `*` and its tools; after `/allow <target>
+  per line that would grant now — the built-ins that ask, one row per connected
+  server the static level does not wholly allow (`github:`), and under it `*` and its tools; after `/allow <target>
   ` one `project` row when the project level can take the grant. Directories are never
   rows. The rows are issued with the command table and re-issued at the start, at every
   return to the prompt and when a server's status resolves; a stale row is refused by the
@@ -425,7 +425,7 @@ with descriptions, cleaned; the re-issue when a server's status resolves (the co
 reporter's drain, a `/tools` reconnect ending). The X-111 amendment's second half. Done
 when the gate passes and these exist:
 `repl::commands::allow::tests::{a_servers_rows_wait_behind_its_prefix,
-an_auto_run_or_ambiguous_server_has_no_rows, a_servers_text_is_cleaned_before_it_is_a_row}`,
+an_allowed_or_ambiguous_server_has_no_rows, a_servers_text_is_cleaned_before_it_is_a_row}`,
 `tests/repl/commands.rs::the_allow_rows_arrive_when_a_server_connects`, and L4 scenario
 `55-allow-completion.sh` (PASS, FAIL=0).
 

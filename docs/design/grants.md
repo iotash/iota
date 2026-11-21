@@ -20,9 +20,9 @@ Three things the user can allow today, three unrelated memories, none of them ke
 - **A tool.** `Allow for this session` for `edit_file` or an unsandboxed `shell` lives
   in the same `HashSet` and dies on `/new`, on a `/session` resume and with the process
   (X-92).
-- **An MCP tool.** `requires_approval` is `!server.auto_run`
-  (`src/mcp/manager.rs:985-987`): all of a server's tools or none, forever, in a config
-  file — and a `--mcp` server has no entry to write it in.
+- **An MCP tool.** `requires_approval` was `!server.auto_run`: all of a server's tools or
+  none, forever, in a config file — and a `--mcp` server had no entry to write it in. (Since
+  X-117 it is `true`, and the store decides: `allow: ["<server>:*"]`, `--allow`, a grant.)
 
 The user answers the same question again after every restart, and the one question that
 matters most for a build (may the shell write there) cannot be asked at all.
@@ -103,8 +103,8 @@ pub struct GrantSet { pub dirs: Vec<PathBuf>, pub tools: Vec<ToolKey> }
 
 Every kind of grant has a session and a project level, and each also has a permanent,
 global form that is not a grant: a directory's is `write_roots:` or `allow:` (or `--allow` for
-one run), an MCP tool's is `mcp_servers.<name>.auto_run`, a built-in's is the agent's
-`allow: [edit_file, write_file, shell]` (X-117). Those keys live in the home or agent
+one run), an MCP tool's is the agent's `allow: ["<server>:*"]` or `"<server>:<tool>"`, a built-in's
+is the agent's `allow: [edit_file, write_file, shell]` (X-117). Those keys live in the home or agent
 config and apply to EVERY project, and the repository's own `.iota.yaml` is shared and
 trust-gated, so none of them can say "in this repository, stop asking". In every case
 the project level is that per-repository answer. A built-in grant is still keyed by its
@@ -333,7 +333,7 @@ is /, the home directory or an ancestor of it, which is never a project`; withou
   runs`, a session grant), and after `/allow <tool> ` one `project` row (`for this project
   (<real root>), in every session`) in a run with a project, unless the project level holds
   the tool. A tool granted for this session keeps its `project` row. Then, in config order,
-  one row per connected server that is one server under its name and not `auto_run`
+  one row per connected server that is one server under its name and whose `*` the static level does not hold
   (`github:` — `MCP server · 12 tools`, its value the prefix `/allow github:`), and behind
   that prefix `*` (`every tool of github, those it exposes later included`) and the server's
   tools in its order, each with its own description, each followed by its `project` row; the
@@ -379,8 +379,7 @@ expected a directory (starting with /, ~ or .) or <server>:<tool>
 no MCP server named "<s>" is connected (connected: a, b)
 server "<s>" has no tool "<t>"
 "<s>" names <n> connected servers; add one to mcp_servers: under its own name to grant it
-<s>'s tools already run without asking (auto_run)
-<what> already runs without asking (this session | this project)
+<what> already runs without asking (allow: | --allow | this session | this project)
 no built-in tool named "<t>" (tools that ask: shell, write_file)
 <t> never asks (tools that ask: …)          — or (no built-in tool of this run asks)
 could not save the grant (<error>)
@@ -484,11 +483,11 @@ print nothing about the grants they loaded. `/status`'s `Grants` row and the bar
   lists the static roots and the live grants, read at the call.
 - **An MCP tool, nobody to ask** — `<name> was not executed: the tools of MCP server
   "<server>" need the user's approval, which this non-interactive run cannot ask for;
-  set `mcp_servers.<server>.auto_run: true`, or allow it for the project from a chat
-  (/allow <server>:<tool> project).` For a `--mcp` server the first clause stays
-  `write it as an `mcp_servers` entry with `auto_run: true``. In a run without a project
-  (§4.2) — where `/allow … project` is refused — the sentence ends after that first
-  clause: `…; set `mcp_servers.<server>.auto_run: true`.`
+  pass --allow <server>:<tool>, list it in the agent's `allow:`, or allow it for the project
+  from a chat (/allow <server>:<tool> project).` A `--mcp` server is in no config: it is told
+  `pass --allow '<spec>:<tool>'` (its whole spec, one shell word) without the `allow:` clause
+  (X-117). In a run without a project (§4.2) — where `/allow … project` is refused — the
+  project clause is left out: `…; pass --allow <server>:<tool>, or list it in the agent's `allow:`.`
 - **The grants themselves** — `Why::Grants`: `<path> is protected: it holds the
   permissions the user granted — no tool may write it; the user grants with /allow`.
 

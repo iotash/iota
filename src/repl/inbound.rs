@@ -20,10 +20,9 @@
 //! connection closes without a receipt.
 //!
 //! **The hold** (docs/design/agent-messaging.md §4): a chat whose tools act without asking would let whoever
-//! can write the socket make the model act. `Hold` says whether it does — the dispatcher's one remaining switch
-//! (`Dispatcher::waives_approval`: an MCP server's `mcp_servers.<name>.auto_run`) or any tool grant in force
-//! ([`Grants::waives`]: an agent's `allow: [shell]` or `--allow shell`, a bot's usual setup; a `/allow shell`,
-//! a project's `github:*`; a directory grant alone is not a waiver) — asked afresh for EVERY
+//! can write the socket make the model act. `Hold` says whether it does — any tool grant in force
+//! ([`Grants::waives`]: an agent's `allow: [shell]`, `"github:*"` or `--allow shell`, a bot's usual setup; a
+//! `/allow shell`, a project's `github:*`; a directory grant alone is not a waiver) — asked afresh for EVERY
 //! message, since a grant can be made mid-session. There, a message is delivered as usual but HELD, and the
 //! receipt says `held`: a round boundary leaves it out of the turn (`Steerer`), and the idle loop asks the user
 //! before the model reads it, with the chat at `NeedsInput` meanwhile.
@@ -75,25 +74,21 @@ impl Messaging {
     }
 }
 
-/// Whether a message from another process is held for the user (the module doc), asked when one arrives.
+/// Whether a message from another process is held for the user (the module doc), asked when one arrives: the
+/// run's grant store, where a tool grant at any level — an agent's `allow:`, `--allow`, the session, the project,
+/// made at any point — holds the next message, and a directory grant does not.
 #[derive(Clone)]
-pub(crate) struct Hold {
-    /// The dispatcher's switch (`Dispatcher::waives_approval`: an MCP server's `auto_run` — no built-in set
-    /// answers it), fixed when the run was assembled.
-    waived: bool,
-    /// The run's grant store: a tool grant made at any point holds the next message.
-    grants: Arc<Grants>,
-}
+pub(crate) struct Hold(Arc<Grants>);
 
 impl Hold {
-    /// The hold of a run whose dispatcher answers `waived` and whose grants are `grants`.
-    pub(crate) fn new(waived: bool, grants: Arc<Grants>) -> Self {
-        Self { waived, grants }
+    /// The hold of a run whose grants are `grants`.
+    pub(crate) fn new(grants: Arc<Grants>) -> Self {
+        Self(grants)
     }
 
     /// Whether a message arriving now is held.
     pub(crate) fn now(&self) -> bool {
-        self.waived || self.grants.waives()
+        self.0.waives()
     }
 }
 
@@ -306,17 +301,20 @@ mod tests {
 
     const PEER: Peer = Peer { pid: Some(4321) };
 
-    /// A gate over a busy chat; `hold` as a chat whose tools act without asking.
+    /// A gate over a busy chat; `hold` as a chat whose tools act without asking (a session grant of `shell`).
     fn gate_holding(hold: bool) -> (Gate, Arc<ScriptedUi>, Arc<Presenter>) {
+        use crate::tool::grants::{Grants, Level, ToolKey};
+        let grants = Arc::new(Grants::default());
+        if hold {
+            grants.update(Level::Session, |set| {
+                set.add_tool(ToolKey::Builtin("shell".to_owned()))
+            });
+        }
         let ui = ScriptedUi::new(vec![]);
         let pres = Arc::new(Presenter::with_hosts(Vec::new(), false));
         pres.set_state(State::Busy);
         (
-            Gate::new(
-                Arc::clone(&ui) as _,
-                Arc::clone(&pres),
-                Hold::new(hold, Arc::default()),
-            ),
+            Gate::new(Arc::clone(&ui) as _, Arc::clone(&pres), Hold::new(grants)),
             ui,
             pres,
         )

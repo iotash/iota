@@ -970,8 +970,7 @@ impl Manager {
         Some((self.configs.get(config)?, raw))
     }
 
-    /// The servers called `name` that are connected now: each one's identity in a grant, whether it is
-    /// `auto_run`, and its tools — raw name and description, in the server's order — what `/allow
+    /// The servers called `name` that are connected now: each one's identity in a grant and its tools — raw name and description, in the server's order — what `/allow
     /// <server>:<tool>` resolves against and its completion rows show. More than one only for `--mcp` servers
     /// sharing an `argv[0]` (or one beside an entry of that name).
     pub fn connected_named(&self, name: &str) -> Vec<ConnectedServer> {
@@ -993,7 +992,6 @@ impl Manager {
                     .collect();
                 ConnectedServer {
                     id: server_id(cfg),
-                    auto_run: cfg.auto_run,
                     tools: status
                         .tools
                         .iter()
@@ -1027,8 +1025,6 @@ impl Manager {
 pub struct ConnectedServer {
     /// Its identity in a grant.
     pub id: ServerId,
-    /// Whether its tools already run without asking.
-    pub auto_run: bool,
     /// Its tools, in the server's order.
     pub tools: Vec<ConnectedTool>,
 }
@@ -1050,6 +1046,11 @@ pub fn server_id(cfg: &ServerConfig) -> ServerId {
         .map_or_else(|| ServerId::Config(cfg.name.clone()), ServerId::Flag)
 }
 
+/// `word` as one POSIX shell word: in single quotes, a `'` inside written `'\''`.
+fn single_quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', r"'\''"))
+}
+
 impl Owner for Manager {
     /// One `tool_index` lookup under the read lock — never a `tools()` clone. Empty after `close`, like
     /// the index.
@@ -1068,13 +1069,13 @@ impl Dispatcher for Manager {
         Some(self)
     }
 
-    /// Every call of a server's tool is put to the user unless the server is `auto_run` — whatever the
-    /// tool's name, description or annotations claim (nothing about it is read as proof that it is safe).
-    /// Per tool, not per call: a grant ([`grant_key`](Dispatcher::grant_key)) covers the tool or its server.
-    /// A name this manager does not route (the deferring wrapper's `search_tools`, a closed manager) asks
-    /// nothing.
+    /// Every call of a server's tool is of a kind that asks — whatever the tool's name, description or
+    /// annotations claim (nothing about it is read as proof that it is safe); whether it does is the grant
+    /// store's to say, at any level (an agent's `allow:`, `--allow`, the session, the project). Per tool, not
+    /// per call: a grant ([`grant_key`](Dispatcher::grant_key)) covers the tool or its server. A name this
+    /// manager does not route (the deferring wrapper's `search_tools`, a closed manager) asks nothing.
     fn requires_approval(&self, name: &str, _args: Option<&JsonObject>) -> bool {
-        self.server_of(name).is_some_and(|(cfg, _)| !cfg.auto_run)
+        self.server_of(name).is_some()
     }
 
     /// The server's identity ([`server_id`]) and the tool's raw name; a name this manager does not route is
@@ -1089,31 +1090,34 @@ impl Dispatcher for Manager {
         )
     }
 
-    /// Whether any configured server is `auto_run` — known from the configs, before anything connects.
-    fn waives_approval(&self) -> bool {
-        self.configs.iter().any(|cfg| cfg.auto_run)
-    }
-
-    /// The tool's server and what would let its calls run here (the outside-write refusal's shape): the
-    /// entry's `auto_run` key — or, for a `--mcp` server, which has no entry, writing it as one — and, in a run
-    /// with a project ([`ManagerOptions::project`]), a project grant made from a chat, which a later unattended
-    /// run inherits. A run without one is never told to relay `/allow … project`: it is refused there.
+    /// The tool's server and what would let its calls run here (the outside-write refusal's shape): `--allow
+    /// <server>:<tool>` — a `--mcp` server's whole spec, quoted — and, for an entry, the agent's `allow:`; in a
+    /// run with a project ([`ManagerOptions::project`]), also a project grant made from a chat, which a later
+    /// unattended run inherits. A run without one is never told to relay `/allow … project`: it is refused there.
     fn unattended_refusal(&self, name: &str) -> Option<String> {
         let (cfg, raw) = self.server_of(name)?;
         let server = &cfg.name;
-        let config = if cfg.flag.is_some() {
-            "write it as an `mcp_servers` entry with `auto_run: true`".to_owned()
+        let mut ways = vec![match &cfg.flag {
+            Some(spec) => format!("pass --allow {}", single_quoted(&format!("{spec}:{raw}"))),
+            None => format!("pass --allow {server}:{raw}"),
+        }];
+        if cfg.flag.is_none() {
+            ways.push("list it in the agent's `allow:`".to_owned());
+        }
+        if self.opts.project {
+            ways.push(format!(
+                "allow it for the project from a chat (/allow {server}:{raw} project)"
+            ));
+        }
+        let last = ways.pop().unwrap_or_default();
+        let ways = if ways.is_empty() {
+            last
         } else {
-            format!("set `mcp_servers.{server}.auto_run: true`")
-        };
-        let grant = if self.opts.project {
-            format!(", or allow it for the project from a chat (/allow {server}:{raw} project)")
-        } else {
-            String::new()
+            format!("{}, or {last}", ways.join(", "))
         };
         Some(format!(
             "{name} was not executed: the tools of MCP server \"{server}\" need the user's approval, which \
-             this non-interactive run cannot ask for; {config}{grant}."
+             this non-interactive run cannot ask for; {ways}."
         ))
     }
 
@@ -1245,55 +1249,71 @@ mod tests {
             .map(|o| (o.text, o.is_error))
     }
 
-    /// Every tool of a server asks unless the server is `auto_run`, whatever the call's arguments; a name the
-    /// manager does not route asks nothing (the deferring wrapper's `search_tools` reaches it). The refusal a
-    /// non-interactive run gives names the server and the key.
+    /// Every tool of a server is of a kind that asks, whatever the call's arguments, and the store alone decides
+    /// whether it does: nothing held asks; a `<server>:<tool>` at any level runs that tool and no other; a
+    /// `<server>:*` runs every one. A name the manager does not route asks nothing (the deferring wrapper's
+    /// `search_tools` reaches it). A `--mcp` server asks the same way.
     #[test]
-    fn a_servers_tools_ask_unless_it_is_auto_run() {
+    fn every_tool_of_a_server_asks_until_the_store_holds_it() {
         use crate::mcp::testutil::approval_manager;
+        use crate::tool::approval::{Gate, gate};
+        use crate::tool::grants::{GrantSet, Grants, Level, McpTool, ServerId, ToolKey};
         let args = JsonObject::new();
+        let (m, _) = approval_manager();
+        let key = |tool: McpTool| ToolKey::Mcp {
+            server: ServerId::Config("srv".to_owned()),
+            tool,
+        };
+        let runs =
+            |grants: &Grants, wire: &str| matches!(gate(&*m, grants, wire, &args), Gate::Run);
 
-        let (asks, _) = approval_manager(false);
         for wire in ["mcp__srv__push", "mcp__srv__pull"] {
-            assert!(asks.requires_approval(wire, None), "{wire}");
-            assert!(asks.requires_approval(wire, Some(&args)), "{wire}");
-            assert_eq!(
-                asks.approval_subject(wire, &args),
-                None,
-                "a tool-wide grant"
-            );
+            assert!(m.requires_approval(wire, None), "{wire}");
+            assert!(m.requires_approval(wire, Some(&args)), "{wire}");
+            assert_eq!(m.approval_subject(wire, &args), None, "a tool-wide grant");
+            assert!(!runs(&Grants::default(), wire), "nothing held: {wire}");
         }
-        assert!(!asks.requires_approval("search_tools", Some(&args)));
-        assert!(!asks.requires_approval("mcp__other__push", None));
+        assert!(!m.requires_approval("search_tools", Some(&args)));
+        assert!(!m.requires_approval("mcp__other__push", None));
         assert!(
-            !asks.supports_parallel("mcp__srv__push", Some(&args)),
+            !m.supports_parallel("mcp__srv__push", Some(&args)),
             "never batched past the gate"
         );
-        assert!(!asks.waives_approval());
-        assert_eq!(
-            asks.unattended_refusal("mcp__srv__push").as_deref(),
-            Some(
-                "mcp__srv__push was not executed: the tools of MCP server \"srv\" need the user's approval, \
-                 which this non-interactive run cannot ask for; set `mcp_servers.srv.auto_run: true`, or allow it \
-                 for the project from a chat (/allow srv:push project)."
-            )
-        );
-        assert_eq!(asks.unattended_refusal("search_tools"), None);
+        assert_eq!(m.unattended_refusal("search_tools"), None);
+
+        // One tool, from the config (the static level): that tool runs, its sibling still asks.
+        let mut one = GrantSet::default();
+        one.add_tool(key(McpTool::Named("push".to_owned())));
+        let statics = Grants::with_static(one);
+        assert!(runs(&statics, "mcp__srv__push"));
+        assert!(!runs(&statics, "mcp__srv__pull"));
+
+        // The server's `*`, from the config: every tool runs.
+        let mut every = GrantSet::default();
+        every.add_tool(key(McpTool::Any));
+        let statics = Grants::with_static(every);
+        assert!(runs(&statics, "mcp__srv__push"));
+        assert!(runs(&statics, "mcp__srv__pull"));
+
+        // The live levels answer the same way.
+        for level in [Level::Session, Level::Project] {
+            let live = Grants::default();
+            live.update(level, |set| set.add_tool(key(McpTool::Any)));
+            assert!(runs(&live, "mcp__srv__pull"), "{level:?}");
+        }
 
         // A `--mcp` server asks too (its refusal: `the_unattended_refusal_names_a_project_grant_only_with_a_project`).
         let flag = crate::mcp::config::parse_mcp_flag("https://mcp.example.com/mcp").expect("flag");
         let (flagged, _) = crate::mcp::testutil::approval_manager_for(flag, true);
         let wire = super::wire_tool_name("https://mcp.example.com/mcp", "push");
         assert!(flagged.requires_approval(&wire, None));
-
-        let (trusted, _) = approval_manager(true);
-        assert!(!trusted.requires_approval("mcp__srv__push", Some(&args)));
-        assert!(trusted.waives_approval());
     }
 
-    /// The unattended refusal names what would let the call run HERE: the `auto_run` key (for a `--mcp` server,
-    /// writing it as an entry) and, only in a run with a project, the project grant a chat can make — a run
-    /// without one (`mode: chat`, a root at or above the home directory) refuses `/allow … project`.
+    /// The unattended refusal names what would let the call run HERE (§8 of docs/design/config-allow.md):
+    /// `--allow <server>:<tool>` (a `--mcp` server's whole spec, quoted as one shell word), the agent's `allow:`
+    /// (an entry only — a `--mcp` server is in no config) and, only in a run with a project, the project grant a
+    /// chat can make — a run without one (`mode: chat`, a root at or above the home directory) refuses
+    /// `/allow … project`.
     #[test]
     fn the_unattended_refusal_names_a_project_grant_only_with_a_project() {
         use crate::mcp::testutil::approval_manager_for;
@@ -1304,6 +1324,8 @@ mod tests {
         };
         let flag = crate::mcp::config::parse_mcp_flag("https://mcp.example.com/mcp").expect("flag");
         let flag_wire = super::wire_tool_name("https://mcp.example.com/mcp", "push");
+        let spaced = crate::mcp::config::parse_mcp_flag("npx -y it's-srv").expect("flag");
+        let spaced_wire = super::wire_tool_name("npx", "push");
 
         let refusal = |cfg: &crate::mcp::config::ServerConfig, project: bool, wire: &str| {
             let (m, _) = approval_manager_for(cfg.clone(), project);
@@ -1312,20 +1334,20 @@ mod tests {
         assert_eq!(
             refusal(&entry, true, "mcp__srv__push"),
             "mcp__srv__push was not executed: the tools of MCP server \"srv\" need the user's approval, which \
-             this non-interactive run cannot ask for; set `mcp_servers.srv.auto_run: true`, or allow it for the \
-             project from a chat (/allow srv:push project)."
+             this non-interactive run cannot ask for; pass --allow srv:push, list it in the agent's `allow:`, \
+             or allow it for the project from a chat (/allow srv:push project)."
         );
         assert_eq!(
             refusal(&entry, false, "mcp__srv__push"),
             "mcp__srv__push was not executed: the tools of MCP server \"srv\" need the user's approval, which \
-             this non-interactive run cannot ask for; set `mcp_servers.srv.auto_run: true`."
+             this non-interactive run cannot ask for; pass --allow srv:push, or list it in the agent's `allow:`."
         );
         assert_eq!(
             refusal(&flag, true, &flag_wire),
             format!(
                 "{flag_wire} was not executed: the tools of MCP server \"https://mcp.example.com/mcp\" need the \
-                 user's approval, which this non-interactive run cannot ask for; write it as an `mcp_servers` \
-                 entry with `auto_run: true`, or allow it for the project from a chat \
+                 user's approval, which this non-interactive run cannot ask for; pass --allow \
+                 'https://mcp.example.com/mcp:push', or allow it for the project from a chat \
                  (/allow https://mcp.example.com/mcp:push project)."
             )
         );
@@ -1333,8 +1355,15 @@ mod tests {
             refusal(&flag, false, &flag_wire),
             format!(
                 "{flag_wire} was not executed: the tools of MCP server \"https://mcp.example.com/mcp\" need the \
-                 user's approval, which this non-interactive run cannot ask for; write it as an `mcp_servers` \
-                 entry with `auto_run: true`."
+                 user's approval, which this non-interactive run cannot ask for; pass --allow \
+                 'https://mcp.example.com/mcp:push'."
+            )
+        );
+        assert_eq!(
+            refusal(&spaced, false, &spaced_wire),
+            format!(
+                "{spaced_wire} was not executed: the tools of MCP server \"npx\" need the user's approval, which \
+                 this non-interactive run cannot ask for; pass --allow 'npx -y it'\\''s-srv:push'."
             )
         );
     }

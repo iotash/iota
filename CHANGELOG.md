@@ -138,6 +138,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   `--allow shell` for one run) lets them run without asking; a config that still
   sets either key, even to `false`, fails to load and says what to write, and a
   mistyped key under `tools.shell` or `tools.code` now fails the load too.
+- **`mcp_servers.<name>.auto_run` is gone: write `"<name>:*"` in the `allow:` of
+  each agent that may run the server's tools without asking** (or
+  `"<name>:<tool>"` for one tool, or `--allow` for one run); a config that still
+  sets the key, even to `false`, fails to load and says what to write. A `-m`
+  run refused a `--mcp` server's tool now says the `--allow` that runs it.
 
 ## 0.12.0 - 2026-11-20
 

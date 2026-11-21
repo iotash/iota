@@ -88,11 +88,11 @@ herdr 0.9.5 的 `pane.report_agent_session` 只有 `agent_session_id` / `agent_s
 2. **hold 把人放回被免审拿掉的那个位置。** 风险恰恰是「模型不经人就动手」，hold 让「外部来的话」在到达模型前经过人——与 Claude Code「接收方免审时默认 hold 等人批」一致。
 3. **复用现成的东西**：`NeedsInput` 状态、宿主 ping、`ui.confirm`；hold 期间 socket 对新消息回 `blocked`，不会在人背后堆积。
 
-**触发器：已建好的 dispatcher 说了算（一处真相）。** `Dispatcher::waives_approval`（`src/tool/mod.rs`，Merged 汇总各部分的回答）；内置工具集不再有开关（`tools.code.auto_write` / `tools.shell.auto_run` 已由 `allow:` 取代，X-117），所以今天只剩 MCP server 的 `mcp_servers.<name>.auto_run` 会回答 true（task 8 移除）。循环启动时问一次（`src/repl/run.rs`）。评审前它是 `tool::sets` 里对 YAML 的第二次解码，已删除。**范围：所有这样配置的会话，不只 bot**——普通 chat 允许了 `shell` 风险完全一样；bot 是最常见的这种配置。
+**触发器：授权库说了算（一处真相，`docs/design/config-allow.md` §4.4）。** 配置里已经没有「免审」开关（`tools.code.auto_write`、`tools.shell.auto_run`、`mcp_servers.<name>.auto_run` 都已由 `allow:` 取代，X-117），`Dispatcher::waives_approval` 随之删除。让工具不经询问就动手的只有工具授权：agent 的 `allow: [shell]` / `allow: ["github:*"]` 或 `--allow shell`（static 级）、`/allow shell`、项目级的 `github:*`，且可以在会话中途给出。**范围：所有这样配置的会话，不只 bot**——普通 chat 允许了 `shell` 风险完全一样；bot 是最常见的这种配置。
 
-**第二个触发器：授权库里的工具授权（`docs/design/config-allow.md` §4.4）。** 上面那个开关是循环启动时问一次的，而工具授权（agent 的 `allow: [shell]` 或 `--allow shell`、`/allow shell`、项目级的 `github:*`）同样让工具不经询问就动手，且可以在会话中途给出。所以 hold 是 `repl::inbound::Hold`：`waives_approval() || Grants::waives()`，**每条消息到达时重新问**——socket 的 `Gate` 决定回执是否 `held`、空闲循环决定是否先问人、`Steerer` 在每个 round 边界决定是否扣下，三处问的是同一个 `Hold`。`Grants::waives` 是「任一级（static、session、project）有任一工具授权」；**只有目录授权不算**——沙箱多写一个目录不是免审，与下一段的政策一致。测试：`grants::tests::any_tool_grant_waives_and_a_directory_does_not`、`tests/repl/messaging.rs::a_message_is_held_after_a_tool_grant`（会话中途打 `/allow shell` 后的消息被 hold）、`a_directory_grant_does_not_hold`。
+所以 hold 是 `repl::inbound::Hold`，它就是运行的授权库本身：`Grants::waives()`，**每条消息到达时重新问**——socket 的 `Gate` 决定回执是否 `held`、空闲循环决定是否先问人、`Steerer` 在每个 round 边界决定是否扣下，三处问的是同一个 `Hold`。`Grants::waives` 是「任一级（static、session、project）有任一工具授权」；**只有目录授权不算**——沙箱多写一个目录不是免审，与下一段的政策一致。测试：`grants::tests::any_tool_grant_waives_and_a_directory_does_not`、`tests/repl/messaging.rs::a_message_is_held_after_a_tool_grant`（会话中途打 `/allow shell` 后的消息被 hold）、`a_directory_grant_does_not_hold`。
 
-**政策维持现状（未决，见 §7 第 1 条）：沙箱不算免审。** `shell: {sandbox: auto}` 而 `allow:` 不含 `shell` 时，沙箱内的命令不问就跑，但授权库里没有工具授权，所以这样的会话**不 hold**。`sets::tests::a_built_in_set_never_waives` 把这一点钉成了今天的预期。
+**政策维持现状（未决，见 §7 第 1 条）：沙箱不算免审。** `shell: {sandbox: auto}` 而 `allow:` 不含 `shell` 时，沙箱内的命令不问就跑，但授权库里没有工具授权，所以这样的会话**不 hold**。`grants::tests::any_tool_grant_waives_and_a_directory_does_not` 与 `a_directory_grant_does_not_hold` 把这一点钉成了今天的预期。
 
 **行为**：回执是 `held`（不是 `woken` / `queued`：那两个承诺模型会读）。空闲时外部消息醒来 → 先打一行标题 → 状态 `NeedsInput`、宿主收到 `NeedsInput` ping → 一个两项的 select：「Let the model read it」/「Discard it」（`src/repl/run.rs:1117`）。放行就是普通的 notice 轮（标题不重复打）；丢弃打一行 `Message discarded: the model never saw it.`，模型从未见过它。忙时 `Steerer` 把它**扣下**、不注入——和 bot 的 flush notice 进同一个 `held` 列表（`src/repl/turn/steer.rs:63`）；这一轮结束后循环把其中的外部消息放回队列（`src/repl/run.rs:981`），到空闲时再问。
 
@@ -111,9 +111,9 @@ herdr 0.9.5 的 `pane.report_agent_session` 只有 `agent_session_id` / `agent_s
 
 ## 7. 拿不准 / 留给所有者
 
-1. **沙箱算不算免审（未决）。** `shell: {sandbox: auto}` 不开 `auto_run` 时，沙箱内命令不问就跑，而沙箱允许写项目根；今天的政策是**不 hold**。两种选项：(a) 维持——hold 只对用户明确放弃审批（`allow:` 里的工具授权）的会话，沙箱被视为替代审批的边界；(b) 改成 hold——「不问就能写项目根」就算免审，`Hold` 再加上「`shell` 已沙箱化」，代价是默认配置（`sandbox: auto`）的会话都会 hold。
+1. **沙箱算不算免审（未决）。** `shell: {sandbox: auto}` 而 `allow:` 不含 `shell` 时，沙箱内命令不问就跑，而沙箱允许写项目根；今天的政策是**不 hold**。两种选项：(a) 维持——hold 只对用户明确放弃审批（`allow:` 里的工具授权）的会话，沙箱被视为替代审批的边界；(b) 改成 hold——「不问就能写项目根」就算免审，`Hold` 再加上「`shell` 已沙箱化」，代价是默认配置（`sandbox: auto`）的会话都会 hold。
 2. **路径偏离研究稿。** `<bundle>/sock` 是链接，不是 socket 本体（§2.1）。外部工具照研究稿去连 `<bundle>/sock` 仍然能用（connect 跟随链接）——除非链接路径本身超过 104 字节，那时要 `realpath` 一下再连。
-3. **MCP 工具不需要审批**（`Dispatcher::requires_approval` 默认 false，MCP manager 不覆盖它），也不 `waives_approval`，所以接了能写东西的 MCP server 的会话不 hold。
+3. **MCP 工具每次都问**（X-93：manager 的 `requires_approval` 对它路由的每个工具都是 true），除非授权库持有 `<server>:<tool>` 或 `<server>:*`——那时会话 hold，和内置工具一样。
 4. **重复归 `flooded`。** 也可以说重复是 `refused`。
 5. **`~/.iota/run/` 里崩溃进程的 socket 不会被主动清扫**（判断 pid 是否存活需要 `kill(0)`，本 crate 禁 `unsafe`）；只在同 pid 再次 bind 时清掉。文件是 0 字节的 socket 节点。
 
@@ -132,7 +132,7 @@ herdr 0.9.5 的 `pane.report_agent_session` 只有 `agent_session_id` / `agent_s
 | ⑦ | 退出后 socket 与链接都被删 | 同 ④ 的 loop 测试 | `close` 不删链接 |
 | ⑧ | `-m` 撞锁 → 投递 + 原样回执；被拒 → 回执 + 退出 1；无 socket → 说明 | `tests/cmd/session.rs::a_message_to_a_held_session_goes_to_its_socket`、`a_message_to_a_running_bot_goes_to_its_socket`；只读 `ok`：`sock::tests::an_unknown_receipt_passes_through` | 去掉 `holder` 检查 |
 | ⑨ | `too-large` / `refused` / `flooded` | `sock::tests::the_line_is_bounded_and_checked`、`inbound::tests::floods_are_refused`、`queue_tests::deliver_refuses_past_the_cap_of_messages` | 去掉长度检查 / 去重 |
-| ⑩ | 免审会话 hold：回执 `held`、`NeedsInput` + ping，丢弃的永不到模型；放行后正常应答；轮中扣下 | `tests/repl/messaging.rs::a_chat_that_waives_approval_holds_a_message_for_the_user`、`a_held_message_the_user_lets_through_is_answered`、`inbound::tests::a_holding_chat_answers_held`、`tools::tests::a_held_socket_message_never_reaches_the_turn` | 去掉 `held` 分支 / steer 不扣 |
+| ⑩ | 免审会话 hold：回执 `held`、`NeedsInput` + ping，丢弃的永不到模型；放行后正常应答；轮中扣下 | `tests/repl/messaging.rs::a_chat_whose_store_allows_a_tool_holds_a_message_for_the_user`、`a_held_message_the_user_lets_through_is_answered`、`inbound::tests::a_holding_chat_answers_held`、`tools::tests::a_held_socket_message_never_reaches_the_turn` | 去掉 `held` 分支 / steer 不扣 |
 | B8 | 旧链接不会把 `-m` 投进无关会话 | `tests/cmd/session.rs::a_stale_link_never_reaches_another_chat` | 取锁时不清链接 |
 | B9 | 会话已关闭：不回执、断开 | `inbound::tests::a_closed_chat_answers_nothing`、`sock::tests::a_chat_that_cannot_take_closes_without_a_receipt` | 映射回 `refused` |
 | B10 | 链接建不起来：聊天里说一次 | `tests/repl/messaging.rs::a_link_that_cannot_be_made_is_said_once` | 吞掉 `follow` 的错误 |

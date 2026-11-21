@@ -155,7 +155,7 @@ fn the_quiet_host_answers_approval_from_its_approver_or_refuses() {
         why,
         "edit_file was not executed: it needs the user's approval, which this non-interactive run cannot ask for; pass --allow edit_file, or list it in the agent's `allow:`, to permit it here."
     );
-    // The dispatcher's own refusal (an MCP server's, naming its `auto_run`) replaces the generic text.
+    // The dispatcher's own refusal (an MCP server's, naming `--allow <server>:<tool>`) replaces the generic text.
     assert_eq!(
         h.ask_approval(&tc, "path:x", Some("own words".to_owned())),
         Approval::Deny("own words".to_owned())
@@ -869,8 +869,8 @@ async fn a_project_mcp_grant_runs_unattended() {
         result.content,
         format!(
             "{wire} was not executed: the tools of MCP server \"gh\" need the user's approval, which this \
-             non-interactive run cannot ask for; set `mcp_servers.gh.auto_run: true`, or allow it for the \
-             project from a chat (/allow gh:echo project)."
+             non-interactive run cannot ask for; pass --allow gh:echo, list it in the agent's `allow:`, or \
+             allow it for the project from a chat (/allow gh:echo project)."
         )
     );
     manager.close().await;
@@ -911,7 +911,7 @@ impl wiremock::Respond for EchoTheToolResult {
 }
 
 /// The refusal of a real `-m` run names `/allow … project` only where that command can work: a `mode: chat`
-/// agent has no project level, so it is told the `auto_run` key alone; a `mode: agent` one in a project of
+/// agent has no project level, so it is told `--allow` and `allow:` alone; a `mode: agent` one in a project of
 /// its own is told the grant too (docs/design/grants.md §4.2, §8).
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -931,12 +931,13 @@ async fn the_unattended_mcp_refusal_follows_the_mode() {
     std::fs::write(&script, SH_SERVER).expect("the server script");
 
     let head = "mcp__gh__echo was not executed: the tools of MCP server \"gh\" need the user's approval, which \
-                this non-interactive run cannot ask for; set `mcp_servers.gh.auto_run: true`";
+                this non-interactive run cannot ask for; pass --allow gh:echo";
     for (mode, tail) in [
-        ("chat", ".".to_owned()),
+        ("chat", ", or list it in the agent's `allow:`.".to_owned()),
         (
             "agent",
-            ", or allow it for the project from a chat (/allow gh:echo project).".to_owned(),
+            ", list it in the agent's `allow:`, or allow it for the project from a chat (/allow gh:echo project)."
+                .to_owned(),
         ),
     ] {
         std::fs::write(
@@ -1019,4 +1020,66 @@ async fn the_allow_flag_runs_a_flag_server_unattended() {
             assert!(out.starts_with("mcp__sh__echo was not executed: "), "{out}");
         }
     }
+}
+
+/// A `--mcp` server's refusal names the one way it has to run unattended — `--allow` with the flag's whole value,
+/// quoted as one shell word (docs/design/config-allow.md §8) — and no `allow:`, since no config names it; the
+/// value it quotes, passed back, runs the tool.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_flag_servers_refusal_names_the_allow_flag() {
+    use std::process::{Command, Stdio};
+
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(EchoTheToolResult("mcp__sh__echo"))
+        .mount(&server)
+        .await;
+    let home = tempfile::tempdir().expect("home");
+    let project = tempfile::tempdir().expect("project");
+    let script = home.path().join("server.sh");
+    std::fs::write(&script, SH_SERVER).expect("the server script");
+    std::fs::write(
+        home.path().join(".iota.yaml"),
+        format!(
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\n\
+             agents:\n  default: {{model: m, mode: chat}}\n",
+            server.uri()
+        ),
+    )
+    .expect("config");
+    let spec = format!("sh {}", script.display());
+    let run = |allow: Option<String>| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
+        crate::common_child::cleared_env(&mut cmd, home.path())
+            .current_dir(project.path())
+            .stdin(Stdio::null())
+            .args(["--mcp", &spec]);
+        if let Some(allow) = &allow {
+            cmd.args(["--allow", allow]);
+        }
+        cmd.args(["-m", "go"]);
+        async move {
+            let o = tokio::task::spawn_blocking(move || cmd.output().expect("run iota"))
+                .await
+                .expect("child join");
+            assert_eq!(
+                o.status.code(),
+                Some(0),
+                "stderr: {}",
+                String::from_utf8_lossy(&o.stderr)
+            );
+            String::from_utf8_lossy(&o.stdout).into_owned()
+        }
+    };
+    let out = run(None).await;
+    assert_eq!(
+        out,
+        format!(
+            "mcp__sh__echo was not executed: the tools of MCP server \"sh\" need the user's approval, which this \
+             non-interactive run cannot ask for; pass --allow '{spec}:echo'.\n"
+        )
+    );
+    assert_eq!(run(Some(format!("{spec}:echo"))).await, "pong\n");
 }

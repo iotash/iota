@@ -1443,11 +1443,16 @@ async fn a_held_socket_message_never_reaches_the_turn() {
         Round::text("done"),
     ]);
     let mut history = vec![Message::user("go")];
+    // A store holding a tool grant: the chat acts without asking, so a socket message is held.
+    let grants = Arc::new(crate::tool::grants::Grants::default());
+    grants.update(crate::tool::grants::Level::Session, |set| {
+        set.add_tool(crate::tool::grants::ToolKey::Builtin("shell".to_owned()))
+    });
     let mut steer = Steerer::new(
         Arc::clone(&fx.cx.ui),
         Arc::clone(&fx.cx.tr),
         true,
-        Some(crate::repl::inbound::Hold::new(true, Arc::default())),
+        Some(crate::repl::inbound::Hold::new(grants)),
     );
     run_turn(
         &fx.cx,
@@ -2981,7 +2986,7 @@ async fn the_dialog_offers_the_project_level_only_with_a_project() {
         assert_eq!(t.path().join("sessions").exists(), project);
 
         // An MCP tool.
-        let (m, _server) = crate::mcp::testutil::approval_manager(false);
+        let (m, _server) = crate::mcp::testutil::approval_manager();
         let grants = Arc::new(crate::tool::grants::Grants::default());
         let fx = with(
             Fx::new(mcp_dispatch(&m, false), script())
@@ -3184,7 +3189,7 @@ async fn an_inside_grant_does_not_cover_a_parentless_target() {
 }
 
 // ---------------------------------------------------------------------------
-// MCP tools ask (mcp_servers.<name>.auto_run)
+// MCP tools ask until the store holds them (an agent's `allow: ["<server>:*"]`, `--allow`, a grant)
 // ---------------------------------------------------------------------------
 
 /// The dispatcher a run assembles over an MCP manager (`assemble::build_dispatcher`): the manager as a
@@ -3226,18 +3231,32 @@ fn results(history: &[Message]) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// One interactive turn over the real dispatcher: the model calls `calls`, the user answers `answers`.
-/// Returns the prompts, the tool results, and what the server was actually sent.
+/// A store whose static level holds `srv:*` when `allowed` (an agent's `allow: ["srv:*"]`), else empty.
+fn srv_allowed(allowed: bool) -> Arc<crate::tool::grants::Grants> {
+    use crate::tool::grants::{GrantSet, Grants, McpTool, ServerId, ToolKey};
+    let mut fixed = GrantSet::default();
+    if allowed {
+        fixed.add_tool(ToolKey::Mcp {
+            server: ServerId::Config("srv".to_owned()),
+            tool: McpTool::Any,
+        });
+    }
+    Arc::new(Grants::with_static(fixed))
+}
+
+/// One interactive turn over the real dispatcher: the model calls `calls`, the user answers `answers`; the
+/// agent's `allow:` holds `srv:*` when `allowed`. Returns the prompts, the tool results, and what the server
+/// was actually sent.
 async fn mcp_turn(
-    auto_run: bool,
+    allowed: bool,
     deferred: bool,
     calls: &[&str],
     answers: Vec<Reply>,
 ) -> (Vec<String>, Vec<(String, bool)>, Vec<String>) {
-    let (m, server) = crate::mcp::testutil::approval_manager(auto_run);
+    let (m, server) = crate::mcp::testutil::approval_manager();
     let mut script = answers;
     script.extend(quiet(1));
-    let fx = Fx::new(mcp_dispatch(&m, deferred), script);
+    let fx = Fx::new(mcp_dispatch(&m, deferred), script).granting(&srv_allowed(allowed));
     let tcs = calls
         .iter()
         .enumerate()
@@ -3252,16 +3271,18 @@ async fn mcp_turn(
 }
 
 /// One headless run over the real dispatcher: the model calls `mcp__srv__push` once; `approve` is the
-/// injected approver (`None` = a real `-m` run, nobody to ask). Returns the result and what the server got.
+/// injected approver (`None` = a real `-m` run, nobody to ask); the agent's `allow:` holds `srv:*` when
+/// `allowed`. Returns the result and what the server got.
 async fn mcp_headless(
-    auto_run: bool,
+    allowed: bool,
     deferred: bool,
     approve: Option<crate::headless::run::Approver>,
 ) -> ((String, bool), Vec<String>, Arc<crate::mcp::Manager>) {
-    let (m, server) = crate::mcp::testutil::approval_manager(auto_run);
+    let (m, server) = crate::mcp::testutil::approval_manager();
     let dispatch = mcp_dispatch(&m, deferred);
     let mut host = crate::headless::QuietHost {
         approve,
+        grants: srv_allowed(allowed),
         ..crate::headless::QuietHost::new()
     };
     let p = stream(vec![
@@ -3292,23 +3313,23 @@ async fn mcp_headless(
 const PUSH: &str = "mcp__srv__push";
 const PULL: &str = "mcp__srv__pull";
 
-// The matrix: `auto_run` off/on × interactive/headless × a call that runs / one that is denied — through the
+// The matrix: the agent's `allow:` without/with `srv:*` × interactive/headless × a call that runs / one that is denied — through the
 // dispatcher a run really assembles (and again behind the deferring wrapper), so a change that lets an MCP
 // call past the gate fails here. A denied or refused call never reaches the server, and the model reads an
 // error result.
 #[tokio::test]
-async fn an_mcp_tool_asks_unless_its_server_is_auto_run() {
+async fn an_mcp_tool_asks_unless_the_store_holds_its_server() {
     use crate::tool::Approval;
     for deferred in [false, true] {
         let at = format!("deferred={deferred}");
 
-        // Interactive, off: asked; "Allow once" runs it.
+        // Interactive, not allowed: asked; "Allow once" runs it.
         let (asks, res, called) = mcp_turn(false, deferred, &[PUSH], vec![choose(0)]).await;
         assert_eq!(asks, ["srv:push — allow?"], "{at}");
         assert_eq!(res, [("push ran".to_owned(), false)], "{at}");
         assert_eq!(called, ["push"], "{at}");
 
-        // Interactive, off: "Deny" — nothing reaches the server, the model gets an error result.
+        // Interactive, not allowed: "Deny" — nothing reaches the server, the model gets an error result.
         let (asks, res, called) = mcp_turn(false, deferred, &[PUSH], vec![choose(3)]).await;
         assert_eq!(asks.len(), 1, "{at}");
         assert_eq!(
@@ -3318,23 +3339,23 @@ async fn an_mcp_tool_asks_unless_its_server_is_auto_run() {
         );
         assert!(called.is_empty(), "{at}: a declined call ran: {called:?}");
 
-        // Interactive, on: nobody is asked.
+        // Interactive, `allow: ["srv:*"]`: nobody is asked.
         let (asks, res, called) = mcp_turn(true, deferred, &[PUSH], Vec::new()).await;
         assert!(asks.is_empty(), "{at}: {asks:?}");
         assert_eq!(res, [("push ran".to_owned(), false)], "{at}");
         assert_eq!(called, ["push"], "{at}");
 
-        // Headless, off, nobody to ask: refused, naming the server and the key that would allow it.
+        // Headless, not allowed, nobody to ask: refused, naming the server and the entries that would allow it.
         let (res, called, m) = mcp_headless(false, deferred, None).await;
         let refusal = m.unattended_refusal(PUSH).expect("the manager's refusal");
         assert!(
-            refusal.contains("`mcp_servers.srv.auto_run: true`"),
+            refusal.contains("pass --allow srv:push, list it in the agent's `allow:`"),
             "{refusal}"
         );
         assert_eq!(res, (refusal, true), "{at}");
         assert!(called.is_empty(), "{at}: a refused call ran");
 
-        // Headless, off, an approver that denies: nothing runs, an error result.
+        // Headless, not allowed, an approver that denies: nothing runs, an error result.
         let deny: crate::headless::run::Approver =
             Box::new(|_, _| Approval::Deny("The user declined this call.".to_owned()));
         let (res, called, _) = mcp_headless(false, deferred, Some(deny)).await;
@@ -3345,27 +3366,25 @@ async fn an_mcp_tool_asks_unless_its_server_is_auto_run() {
         );
         assert!(called.is_empty(), "{at}");
 
-        // Headless, off, an approver that allows: it runs.
+        // Headless, not allowed, an approver that allows: it runs.
         let (res, called, _) =
             mcp_headless(false, deferred, Some(Box::new(|_, _| Approval::Allow))).await;
         assert_eq!(res, ("push ran".to_owned(), false), "{at}");
         assert_eq!(called, ["push"], "{at}");
 
-        // Headless, on: runs without asking anyone.
+        // Headless, `allow: ["srv:*"]`: runs without asking anyone.
         let (res, called, _) = mcp_headless(true, deferred, None).await;
         assert_eq!(res, ("push ran".to_owned(), false), "{at}");
         assert_eq!(called, ["push"], "{at}");
 
-        // The hold reads the same setting: an `auto_run` server waives, through every wrapper.
-        let (m, _) = crate::mcp::testutil::approval_manager(true);
-        assert!(mcp_dispatch(&m, deferred).waives_approval(), "{at}");
-        let (m, _) = crate::mcp::testutil::approval_manager(false);
-        assert!(!mcp_dispatch(&m, deferred).waives_approval(), "{at}");
+        // The hold reads the same store: a server's `*` in it holds a socket message, whatever wraps the
+        // dispatcher.
+        assert!(srv_allowed(true).waives(), "{at}");
+        assert!(!srv_allowed(false).waives(), "{at}");
     }
 }
 
-// Every defer mode's wrapper passes the manager's answers through: whether a server waives (the hold), whether
-// a call asks, the key a grant of it is stored under, and the refusal a non-interactive run gives — `reference` (`MarkedDispatcher`) and `tool-search`
+// Every defer mode's wrapper passes the manager's answers through: whether a call asks, the key a grant of it is stored under, and the refusal a non-interactive run gives — `reference` (`MarkedDispatcher`) and `tool-search`
 // (`SearchingDispatcher`) included, which no run in the matrix above goes through.
 #[test]
 fn every_defer_mode_forwards_the_mcp_approval_answers() {
@@ -3376,27 +3395,24 @@ fn every_defer_mode_forwards_the_mcp_approval_answers() {
         DeferMode::ToolSearch,
         DeferMode::SystemTools,
     ] {
-        for auto_run in [false, true] {
-            let at = format!("{} auto_run={auto_run}", mode.name());
-            let (m, _) = crate::mcp::testutil::approval_manager(auto_run);
-            let wrapped = mode.wrap(
-                Arc::clone(&m) as Arc<dyn Dispatcher>,
-                vec![crate::tool::DeferredGroup {
-                    name: "srv".to_owned(),
-                    summary: "source control".to_owned(),
-                }],
-                m.prefix_of(),
-            );
-            assert_eq!(wrapped.waives_approval(), auto_run, "{at}");
-            assert_eq!(wrapped.requires_approval(PUSH, None), !auto_run, "{at}");
-            assert_eq!(
-                wrapped.unattended_refusal(PUSH),
-                m.unattended_refusal(PUSH),
-                "{at}"
-            );
-            assert!(wrapped.unattended_refusal(PUSH).is_some(), "{at}");
-            assert_eq!(wrapped.grant_key(PUSH), m.grant_key(PUSH), "{at}");
-        }
+        let at = mode.name();
+        let (m, _) = crate::mcp::testutil::approval_manager();
+        let wrapped = mode.wrap(
+            Arc::clone(&m) as Arc<dyn Dispatcher>,
+            vec![crate::tool::DeferredGroup {
+                name: "srv".to_owned(),
+                summary: "source control".to_owned(),
+            }],
+            m.prefix_of(),
+        );
+        assert!(wrapped.requires_approval(PUSH, None), "{at}");
+        assert_eq!(
+            wrapped.unattended_refusal(PUSH),
+            m.unattended_refusal(PUSH),
+            "{at}"
+        );
+        assert!(wrapped.unattended_refusal(PUSH).is_some(), "{at}");
+        assert_eq!(wrapped.grant_key(PUSH), m.grant_key(PUSH), "{at}");
     }
 }
 
@@ -3408,7 +3424,7 @@ fn every_defer_mode_forwards_the_mcp_approval_answers() {
 async fn an_mcp_tool_granted_for_the_session_is_not_asked_again() {
     use crate::tool::grants::{Level, McpTool, ServerId, ToolKey};
     for deferred in [false, true] {
-        let (m, server) = crate::mcp::testutil::approval_manager(false);
+        let (m, server) = crate::mcp::testutil::approval_manager();
         let grants = Arc::new(crate::tool::grants::Grants::default());
         let mut script = vec![choose(1), choose(0)];
         script.extend(quiet(1));

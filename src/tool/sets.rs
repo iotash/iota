@@ -81,34 +81,4 @@ mod tests {
         }
         assert!(set_factory("nope").is_none());
     }
-
-    /// C13: whether a chat holds a message from another process is the store's answer for a built-in
-    /// ([`crate::tool::grants::Grants::waives`]: a tool grant at any level, `allow: [shell]` included) — never a
-    /// built set's: no built-in set has a switch to waive with, whatever its config, and the sandbox is not a
-    /// waiver (docs/design/agent-messaging.md §7: open, for the owner).
-    #[test]
-    fn a_built_in_set_never_waives() {
-        use crate::tool::{Dispatcher, ToolEnv};
-        for interactive in [false, true] {
-            let tmp = std::env::temp_dir();
-            let env = ToolEnv {
-                jobs: Some(crate::shell::jobs::Jobs::new(&tmp)),
-                interactor: interactive.then(|| {
-                    crate::repl::Interactor::new() as std::sync::Arc<dyn crate::tool::Interactor>
-                }),
-                ..ToolEnv::default()
-            };
-            for yaml in [
-                "code:\nask:",
-                "shell: {sandbox: auto}",
-                "shell: {sandbox: \"off\"}",
-                "code: {read_only: true}\nshell: {network: true}",
-                "shell: false\ncode: false",
-            ] {
-                let tools: super::ToolsConfig = serde_norway::from_str(yaml).expect("yaml");
-                let built = crate::tool::Registry::build(&env, &tools, &mut |w| panic!("{w}"));
-                assert!(!built.waives_approval(), "{yaml} interactive={interactive}");
-            }
-        }
-    }
 }
