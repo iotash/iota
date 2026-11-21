@@ -642,6 +642,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         })
     };
     let title_provider = title_provider.map(|p| Arc::new(tokio::sync::Mutex::new(p)));
+    // The hold's trigger is the dispatcher's own answer — one truth with the approvals it waives — or a tool
+    // grant in the store, asked per message.
+    let hold = crate::repl::inbound::Hold::new(dispatch.waives_approval(), Arc::clone(&grants));
     let mut repl = Repl {
         conv: Conversation {
             provider,
@@ -690,14 +693,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             dark,
             cancel: root_cancel.clone(),
             jobs: Arc::clone(&jobs),
-            // The hold's trigger is the dispatcher's own answer: one truth with the approvals it waives.
             inbound: messaging.map(|m| {
-                crate::repl::inbound::Served::start(
-                    m,
-                    Arc::clone(&ui),
-                    Arc::clone(&pres),
-                    dispatch.waives_approval(),
-                )
+                crate::repl::inbound::Served::start(m, Arc::clone(&ui), Arc::clone(&pres), hold)
             }),
         },
         notices: NoticeGate::default(),
@@ -1395,7 +1392,7 @@ impl Repl {
             code_theme: code_theme_of(self.handles.dark),
             pres: Arc::clone(&self.handles.pres),
             steering: !flush,
-            hold_messages: self.handles.inbound.as_ref().is_some_and(|s| s.holds()),
+            hold_messages: self.handles.inbound.as_ref().map(|s| s.hold().clone()),
             mounts_only: flush.then_some(MEMORY_ONLY),
         }
     }

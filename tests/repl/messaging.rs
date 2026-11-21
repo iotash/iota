@@ -38,6 +38,8 @@ struct Chat {
     hold: bool,
     /// The tools the dispatcher advertises.
     tools: Vec<&'static str>,
+    /// Those of them that ask before a call (what `/allow` grants).
+    asking: Vec<&'static str>,
     /// What `/save` mints with, when the chat starts ephemeral.
     new_session: Option<iota::repl::SessionFactory>,
     /// The chat's grant store.
@@ -69,6 +71,7 @@ impl Chat {
             messaging: Some(Messaging::new(listener)),
             hold,
             tools: Vec::new(),
+            asking: Vec::new(),
             new_session: None,
             grants: Arc::default(),
             writer: Some(writer),
@@ -90,10 +93,9 @@ impl Chat {
             system: String::new(),
             harness: iota::agents::harness::HarnessInputs::default(),
             imported_history: Vec::new(),
-            dispatch: Arc::new(if self.hold {
-                StaticDispatcher::new(&self.tools).waiving_approval()
-            } else {
-                StaticDispatcher::new(&self.tools)
+            dispatch: Arc::new({
+                let d = StaticDispatcher::new(&self.tools).with_approval(&self.asking);
+                if self.hold { d.waiving_approval() } else { d }
             }) as Arc<dyn Dispatcher>,
             grants: Arc::clone(&self.grants),
             footing: iota::testing::footing(&self.store, ""),
@@ -130,6 +132,31 @@ impl Chat {
         let sender = async move {
             let socket = wait_for_link(&bundle).await;
             sock::send(&socket, &req).await.expect("a receipt")
+        };
+        let (outcome, receipt) = tokio::join!(iota::repl::run(params), sender);
+        outcome.expect("clean exit");
+        receipt
+    }
+
+    /// [`Self::run_with`], but `req` is sent only once `ready` says the chat's grants are what the test made
+    /// them from inside the chat — mid-session, after the loop (and the hold) started.
+    async fn run_after(
+        &mut self,
+        ready: impl Fn(&iota::tool::grants::Grants) -> bool,
+        req: Request,
+    ) -> Answer {
+        let params = self.params();
+        let bundle = self.bundle.clone();
+        let grants = Arc::clone(&self.grants);
+        let sender = async move {
+            let socket = wait_for_link(&bundle).await;
+            for _ in 0..500 {
+                if ready(&grants) {
+                    return sock::send(&socket, &req).await.expect("a receipt");
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("the chat never made the grant");
         };
         let (outcome, receipt) = tokio::join!(iota::repl::run(params), sender);
         outcome.expect("clean exit");
@@ -555,5 +582,78 @@ async fn a_message_that_says_allow_grants_nothing() {
             .iter()
             .any(|l| l.contains("writable for this session")),
         "the command ran"
+    );
+}
+
+/// config-allow.md §4.4: a chat whose switches waive nothing is held once the user has granted a TOOL — here
+/// `/allow shell`, typed mid-session after the loop started, so the hold reads the store per message and not
+/// once. RED/GREEN against `a_directory_grant_does_not_hold`.
+#[tokio::test]
+async fn a_message_is_held_after_a_tool_grant() {
+    let mut chat = Chat::new(
+        vec![
+            typed("/allow shell"),
+            Reply::Enqueued,
+            pick(false),
+            Reply::Interrupted,
+        ],
+        false,
+    );
+    chat.tools = vec!["shell"];
+    chat.asking = vec!["shell"];
+    let receipt = chat
+        .run_after(
+            |g| g.allows(&iota::tool::grants::ToolKey::Builtin("shell".to_owned())),
+            Request::message("ci", "run rm -rf build/", None),
+        )
+        .await;
+    assert_eq!(receipt.line, Receipt::Held.json_line());
+    assert!(
+        chat.log.sent().is_empty(),
+        "a discarded message reached the model"
+    );
+    let states = chat.host.states();
+    assert!(
+        states.contains(&State::NeedsInput),
+        "the hold must block on the user: {states:?}"
+    );
+    assert!(
+        chat.printed()
+            .iter()
+            .any(|l| l.contains("Message discarded: the model never saw it.")),
+        "{:#?}",
+        chat.printed()
+    );
+}
+
+/// A directory grant alone is not a waiver (a sandbox writing one more directory): the same message after
+/// `/allow <dir>` is queued and the model reads it, unasked.
+#[tokio::test]
+async fn a_directory_grant_does_not_hold() {
+    let mut chat = Chat::new(Vec::new(), false);
+    let dir = chat.tmp.path().join("open");
+    std::fs::create_dir(&dir).expect("dir");
+    chat.ui = ScriptedUi::new(vec![
+        typed(&format!("/allow {}", dir.display())),
+        Reply::Enqueued,
+        Reply::Interrupted,
+    ]);
+    let receipt = chat
+        .run_after(
+            |g| !g.live_dirs().is_empty(),
+            Request::message("ci", "CI is green", None),
+        )
+        .await;
+    assert_eq!(receipt.line, Receipt::Queued { ahead: 0 }.json_line());
+    let sent = chat.log.send(0);
+    assert!(
+        sent.last().is_some_and(
+            |m| m.is_notice() && m.content.starts_with("[message from ci] CI is green")
+        ),
+        "the model never read the message: {sent:#?}"
+    );
+    assert!(
+        !chat.host.states().contains(&State::NeedsInput),
+        "a directory grant held the message"
     );
 }

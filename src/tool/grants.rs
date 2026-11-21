@@ -226,6 +226,16 @@ impl Grants {
             .any(|s| s.allows(key))
     }
 
+    /// Whether any level grants a TOOL — some call runs without the question (docs/design/config-allow.md §4.4):
+    /// what holds a message from another process (`repl::inbound`, the hold). A directory grant alone does not:
+    /// a sandbox writing one more directory is not a waiver.
+    pub fn waives(&self) -> bool {
+        lock(&self.inner)
+            .levels()
+            .into_iter()
+            .any(|s| !s.tools.is_empty())
+    }
+
     /// The write roots in force now: the static `statics` (the top-level `write_roots:`, then `--add-dir`), then
     /// the live directory grants ([`Self::live_dirs`]) not already among them — what the code jail, the shell
     /// sandbox and the harness's `write roots:` line read, each root once.
@@ -298,6 +308,33 @@ mod tests {
             Arc::clone(grants),
         )
         .expect("set")
+    }
+
+    /// The hold's trigger: a tool grant at either level waives, a directory grant does not, and a revoke takes
+    /// the waiver back.
+    #[test]
+    fn any_tool_grant_waives_and_a_directory_does_not() {
+        let (_t, _root, out) = fixture();
+        let g = Grants::default();
+        assert!(!g.waives(), "an empty store");
+        g.update(Level::Session, |s| s.add_dir(out.clone()));
+        g.update(Level::Project, |s| s.add_dir(out.clone()));
+        assert!(!g.waives(), "a directory is WHERE, not WHETHER");
+
+        let shell = ToolKey::Builtin("shell".to_owned());
+        g.update(Level::Session, |s| s.add_tool(shell.clone()));
+        assert!(g.waives(), "a session tool grant");
+        g.update(Level::Session, |s| s.tools.clear());
+        assert!(!g.waives(), "revoked");
+
+        g.replace_project(GrantSet {
+            dirs: Vec::new(),
+            tools: vec![ToolKey::Mcp {
+                server: ServerId::Config("github".to_owned()),
+                tool: McpTool::Any,
+            }],
+        });
+        assert!(g.waives(), "a project grant of a whole server");
     }
 
     fn inside(cs: &CodeSet, p: &Path) -> bool {

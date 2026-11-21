@@ -19,12 +19,14 @@
 //! [`QUEUE_CAP`] messages. A chat that can take nothing any more (the facade is closed) answers nothing: the
 //! connection closes without a receipt.
 //!
-//! **The hold** (docs/design/agent-messaging.md §4): a chat whose tools act without asking — the dispatcher
-//! says so (`Dispatcher::waives_approval`: `tools.shell.auto_run`, `tools.code.auto_write`,
-//! `mcp_servers.<name>.auto_run`, a bot's usual setup)
-//! — would let whoever can write the socket make the model act. There, a message is delivered as usual but
-//! HELD, and the receipt says `held`: a round boundary leaves it out of the turn (`Steerer`), and the idle loop
-//! asks the user before the model reads it, with the chat at `NeedsInput` meanwhile.
+//! **The hold** (docs/design/agent-messaging.md §4): a chat whose tools act without asking would let whoever
+//! can write the socket make the model act. [`Hold`] says whether it does — the dispatcher's switches
+//! (`Dispatcher::waives_approval`: `tools.shell.auto_run`, `tools.code.auto_write`,
+//! `mcp_servers.<name>.auto_run`, a bot's usual setup) or any tool grant in force ([`Grants::waives`]: a
+//! `/allow shell`, a project's `github:*`; a directory grant alone is not a waiver) — asked afresh for EVERY
+//! message, since a grant can be made mid-session. There, a message is delivered as usual but HELD, and the
+//! receipt says `held`: a round boundary leaves it out of the turn (`Steerer`), and the idle loop asks the user
+//! before the model reads it, with the chat at `NeedsInput` meanwhile.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -35,6 +37,7 @@ use crate::BoxFuture;
 use crate::host::{Presenter, State};
 use crate::session::sock::{Inbox, Listener, Peer, Reason, Receipt, Request};
 use crate::sync::lock;
+use crate::tool::grants::Grants;
 use crate::ui::facade::{Delivered, Input, InputKind, Ui};
 use tokio_util::sync::CancellationToken;
 
@@ -72,10 +75,31 @@ impl Messaging {
     }
 }
 
+/// Whether a message from another process is held for the user (the module doc), asked when one arrives.
+#[derive(Clone)]
+pub(crate) struct Hold {
+    /// The dispatcher's switches (`Dispatcher::waives_approval`), fixed when the run was assembled.
+    waived: bool,
+    /// The run's grant store: a tool grant made at any point holds the next message.
+    grants: Arc<Grants>,
+}
+
+impl Hold {
+    /// The hold of a run whose dispatcher answers `waived` and whose grants are `grants`.
+    pub(crate) fn new(waived: bool, grants: Arc<Grants>) -> Self {
+        Self { waived, grants }
+    }
+
+    /// Whether a message arriving now is held.
+    pub(crate) fn now(&self) -> bool {
+        self.waived || self.grants.waives()
+    }
+}
+
 /// The running side of [`Messaging`] the loop keeps: the bundle link, and the serving task to stop.
 pub(crate) struct Served {
     socket: PathBuf,
-    hold: bool,
+    hold: Hold,
     /// The bundle whose `sock` link names this socket now.
     linked: Mutex<Option<PathBuf>>,
     stop: CancellationToken,
@@ -83,19 +107,20 @@ pub(crate) struct Served {
 }
 
 impl Served {
-    /// Starts serving `m` into `ui`, refusing while `pres` says the chat waits on the user; `hold` when the
-    /// chat's tools act without asking (the module doc).
+    /// Starts serving `m` into `ui`, refusing while `pres` says the chat waits on the user, holding what `hold`
+    /// says to (the module doc).
     pub(crate) fn start(
         m: Messaging,
         ui: Arc<dyn Ui>,
         pres: Arc<Presenter>,
-        hold: bool,
+        hold: Hold,
     ) -> Arc<Self> {
         let Messaging { listener } = m;
         let stop = CancellationToken::new();
         let socket = listener.path().to_owned();
         let task = {
             let stop = stop.clone();
+            let hold = hold.clone();
             tokio::spawn(async move {
                 let mut gate = Gate::new(ui, pres, hold);
                 listener.serve(&mut gate, &stop).await;
@@ -111,9 +136,14 @@ impl Served {
         })
     }
 
-    /// Whether messages are held for the user first.
+    /// Whether a message taken now is held for the user first.
     pub(crate) fn holds(&self) -> bool {
-        self.hold
+        self.hold.now()
+    }
+
+    /// The hold, for a turn's round boundaries to ask per message.
+    pub(crate) fn hold(&self) -> &Hold {
+        &self.hold
     }
 
     /// The bundle the chat writes into is `bundle` now (`None`: none, or not on disk yet): the link moves
@@ -147,14 +177,14 @@ impl Served {
 pub(crate) struct Gate {
     ui: Arc<dyn Ui>,
     pres: Arc<Presenter>,
-    /// Every message is held for the user (the module doc): what is taken is answered `held`.
-    hold: bool,
+    /// Whether a message is held for the user (the module doc): one taken while it says so is answered `held`.
+    hold: Hold,
     /// When each message taken in the last [`DEDUPE_WINDOW`] was, and its sender and text.
     taken: VecDeque<(Instant, String, String)>,
 }
 
 impl Gate {
-    pub(crate) fn new(ui: Arc<dyn Ui>, pres: Arc<Presenter>, hold: bool) -> Self {
+    pub(crate) fn new(ui: Arc<dyn Ui>, pres: Arc<Presenter>, hold: Hold) -> Self {
         Self {
             ui,
             pres,
@@ -191,7 +221,7 @@ impl Gate {
         // A closed facade takes nothing, ever again: `None`, and the sender gets no receipt (the module doc).
         let receipt = match self.ui.deliver(input, QUEUE_CAP).await.ok()? {
             Delivered::Full => return Some(Receipt::Refused(Reason::Flooded)),
-            _ if self.hold => Receipt::Held,
+            _ if self.hold.now() => Receipt::Held,
             Delivered::Woken => Receipt::Woken,
             Delivered::Queued { ahead } => Receipt::Queued { ahead },
         };
@@ -266,7 +296,7 @@ pub fn message_input(peer: Peer, req: &Request) -> Input {
 
 #[cfg(test)]
 mod tests {
-    use super::{BURST, Gate, HEADLINE_PREFIX, QUEUE_CAP, message_input};
+    use super::{BURST, Gate, HEADLINE_PREFIX, Hold, QUEUE_CAP, message_input};
     use crate::host::{Presenter, State};
     use crate::session::sock::{Inbox, Peer, Reason, Receipt, Request};
     use crate::testing::{ScriptedUi, UiEvent};
@@ -281,7 +311,11 @@ mod tests {
         let pres = Arc::new(Presenter::with_hosts(Vec::new(), false));
         pres.set_state(State::Busy);
         (
-            Gate::new(Arc::clone(&ui) as _, Arc::clone(&pres), hold),
+            Gate::new(
+                Arc::clone(&ui) as _,
+                Arc::clone(&pres),
+                Hold::new(hold, Arc::default()),
+            ),
             ui,
             pres,
         )

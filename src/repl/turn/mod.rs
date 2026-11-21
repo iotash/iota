@@ -109,9 +109,9 @@ pub(crate) struct TurnCtx {
     /// Whether round boundaries take typed-ahead messages into the turn — `false` only for a bot's memory
     /// flush turn (docs/design/bot-mode.md §3.6.1).
     pub(crate) steering: bool,
-    /// Whether a message from another process is held out of the turn rather than injected: the chat's tools
-    /// act without asking (`repl::inbound`, the hold).
-    pub(crate) hold_messages: bool,
+    /// Whether a message from another process is held out of the turn rather than injected, asked at each
+    /// round boundary (`repl::inbound`, the hold); `None` in a chat no other process can message.
+    pub(crate) hold_messages: Option<crate::repl::inbound::Hold>,
     /// A bot's flush turn: the only tools a frozen mount in the history may still advertise in the send
     /// (codex R8). The dispatcher is narrowed the same way; this keeps the request from offering what the
     /// dispatcher would refuse. `None` everywhere else.
@@ -352,7 +352,7 @@ impl TurnEngine {
             Arc::clone(&cx.ui),
             Arc::clone(&cx.tr),
             cx.steering,
-            cx.hold_messages,
+            cx.hold_messages.clone(),
         );
         Self {
             cx,

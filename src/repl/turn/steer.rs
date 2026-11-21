@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use crate::provider::model::Message;
+use crate::repl::inbound::Hold;
 use crate::ui::facade::{Input, InputKind, Ui};
 
 use crate::repl::context::meter::CtxMeter;
@@ -32,19 +33,19 @@ pub(crate) struct Steerer {
     ui: Arc<dyn Ui>,
     tr: Arc<Transcript>,
     open: bool,
-    hold_messages: bool,
+    hold_messages: Option<Hold>,
     held: Vec<Input>,
     injected: Vec<Input>,
 }
 
 impl Steerer {
     /// A steerer for one turn over the facade and the transcript; `open: false` never drains;
-    /// `hold_messages`: messages from other processes are held, not injected.
+    /// `hold_messages`: whether a message from another process is held, not injected — asked per message.
     pub(crate) fn new(
         ui: Arc<dyn Ui>,
         tr: Arc<Transcript>,
         open: bool,
-        hold_messages: bool,
+        hold_messages: Option<Hold>,
     ) -> Self {
         Self {
             ui,
@@ -68,7 +69,10 @@ impl Steerer {
         for input in self.ui.take_queued_messages().await {
             let flush =
                 input.kind == InputKind::Notice && crate::repl::bot::is_flush_notice(&input.text);
-            if flush || (input.kind == InputKind::Message && self.hold_messages) {
+            if flush
+                || (input.kind == InputKind::Message
+                    && self.hold_messages.as_ref().is_some_and(Hold::now))
+            {
                 self.held.push(input);
                 continue;
             }

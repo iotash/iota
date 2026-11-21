@@ -61,6 +61,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   (Windows, `sandbox: off`) and without `auto_run`, consecutive `shell` calls went
   out together as a parallel batch and ran unasked; a call that would be asked now
   never joins a batch, in the chat and in `iota run` alike.
+- **A message from another process is held after a tool grant.** A chat that
+  granted a tool — `/allow shell`, or a project's `github:*` — runs it unasked, but
+  a socket message was held only when a config switch (`auto_run`, `auto_write`)
+  said so. Any tool grant now holds the next message, even one made mid-session; a
+  directory grant alone still does not.
 - **A protected file written in another case is still protected.** In a project
   with no `.iota.yaml`, `write_file` could create `.IOTA.YAML` (or `.GIT`,
   `.git/HOOKS/…`), which macOS and Windows then read as the protected file; the

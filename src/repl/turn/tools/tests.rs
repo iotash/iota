@@ -208,7 +208,7 @@ impl Fx {
                 code_theme: CodeTheme::Monokai,
                 pres,
                 steering: true,
-                hold_messages: false,
+                hold_messages: None,
                 mounts_only: None,
             },
             root: CancellationToken::new(),
@@ -227,12 +227,7 @@ impl Fx {
         history: &mut Vec<Message>,
         ctxm: &mut CtxMeter,
     ) -> TurnReport {
-        let mut steer = Steerer::new(
-            Arc::clone(&self.cx.ui),
-            Arc::clone(&self.cx.tr),
-            true,
-            false,
-        );
+        let mut steer = Steerer::new(Arc::clone(&self.cx.ui), Arc::clone(&self.cx.tr), true, None);
         run_turn(&self.cx, &self.root, p, history, ctxm, &mut steer).await
     }
 
@@ -1446,7 +1441,12 @@ async fn a_held_socket_message_never_reaches_the_turn() {
         Round::text("done"),
     ]);
     let mut history = vec![Message::user("go")];
-    let mut steer = Steerer::new(Arc::clone(&fx.cx.ui), Arc::clone(&fx.cx.tr), true, true);
+    let mut steer = Steerer::new(
+        Arc::clone(&fx.cx.ui),
+        Arc::clone(&fx.cx.tr),
+        true,
+        Some(crate::repl::inbound::Hold::new(true, Arc::default())),
+    );
     run_turn(
         &fx.cx,
         &fx.root,
@@ -1888,12 +1888,7 @@ struct OrderFx {
 impl OrderFx {
     async fn turn(&self, p: &dyn Provider, history: &mut Vec<Message>) -> TurnReport {
         let mut ctxm = CtxMeter::disabled();
-        let mut steer = Steerer::new(
-            Arc::clone(&self.cx.ui),
-            Arc::clone(&self.cx.tr),
-            true,
-            false,
-        );
+        let mut steer = Steerer::new(Arc::clone(&self.cx.ui), Arc::clone(&self.cx.tr), true, None);
         run_turn(&self.cx, &self.root, p, history, &mut ctxm, &mut steer).await
     }
 }
@@ -1924,7 +1919,7 @@ fn order_fixture(script: Vec<Reply>) -> OrderFx {
         code_theme: CodeTheme::Monokai,
         pres,
         steering: true,
-        hold_messages: false,
+        hold_messages: None,
         mounts_only: None,
     };
     OrderFx {
