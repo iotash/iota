@@ -27,7 +27,6 @@ use iota::shell::exec::{
 use iota::shell::interp::{Family, Interpreter};
 use iota::shell::jobs::{CallEnd, Jobs};
 use iota::tool::Registry;
-#[cfg(unix)]
 use iota::tool::approval::{Gate, gate};
 use iota::tool::builtins::shell::{
     BASH_DESC_PREFIX, CMD_DESC_PREFIX, PWSH_DESC_PREFIX, SHELL_DESC_SANDBOXED,
@@ -35,7 +34,9 @@ use iota::tool::builtins::shell::{
     sandbox_desc,
 };
 use iota::tool::context::RunCtx;
-use iota::tool::grants::{GrantSet, Grants, Level, ToolKey};
+#[cfg(unix)]
+use iota::tool::grants::Level;
+use iota::tool::grants::{GrantSet, Grants, ToolKey};
 use iota::tool::sets::{RawNode, SetError, ToolsConfig};
 use iota::tool::{Dispatcher, Tool, ToolEnv};
 use pretty_assertions::assert_eq;
