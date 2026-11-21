@@ -54,6 +54,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **The approval-walk tests pass on Windows.** Their "unwritable" project
+  file lived under `/dev/null/sessions`, which on Windows is a directory a run
+  can create, so a grant meant to be refused was saved; it now lives under the
+  crate's `Cargo.toml`, a file on every platform.
 - **The `Grants`-tab tests pass on Linux.** Their stale directory is now made
   stale for real (granted, then replaced by a link) instead of being a path
   never created, which read as stale only under macOS's `/var` link.
