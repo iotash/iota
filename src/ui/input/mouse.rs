@@ -9,7 +9,7 @@
 //! | the viewport's last row while scrolled back (`↓ … Ctrl+End`) | — | back to the tail |
 //! | the search line | — | the field takes the keys again |
 //! | a surface | its list (a View: three lines) | a row gets the cursor; the row it is on is chosen; a tab chip focuses it; the hint row focuses the search field |
-//! | the composer | the conversation | the cursor goes under the pointer; a drag selects the draft, release copies |
+//! | the composer | the conversation | the cursor goes under the pointer; a drag selects the draft, double-click all of it, triple-click the logical line; release copies |
 //! | the completion list | the conversation | the item under the pointer (its label or description rows) is highlighted |
 //!
 //! A drag held at the viewport's top row or below its last one scrolls every [`EDGE_STEP`] (one
@@ -166,7 +166,7 @@ pub(crate) fn update_mouse(m: &mut Model, ev: MouseEvent) {
         }
         MouseEventKind::Down(MouseButton::Left) => {
             let clicks = m.mouse.press(col, row, Instant::now());
-            press(m, at, col, row);
+            press(m, at, col, row, clicks);
             if at == Target::View {
                 m.composer.clear_selection();
                 m.mouse.held = Some((col, row));
@@ -198,7 +198,7 @@ pub(crate) fn update_mouse(m: &mut Model, ev: MouseEvent) {
 }
 
 /// A left press anywhere but the conversation.
-fn press(m: &mut Model, at: Target, col: u16, y: u16) {
+fn press(m: &mut Model, at: Target, col: u16, y: u16, clicks: u8) {
     match at {
         Target::View | Target::Frame => {}
         Target::SearchLine => {
@@ -229,8 +229,13 @@ fn press(m: &mut Model, at: Target, col: u16, y: u16) {
                 m.view_ops.push(ViewOp::Search(SearchOp::Accept));
             }
             m.composer.click(col, row, m.width.max(1));
-            // The press starts the composer's selection, and the conversation's goes.
-            m.composer.select_at_cursor();
+            // The press starts the composer's selection — a double-click the whole draft, a
+            // triple-click the logical line under the pointer — and the conversation's goes.
+            match clicks {
+                2 => m.composer.select_all(),
+                3 => m.composer.select_line(),
+                _ => m.composer.select_at_cursor(),
+            }
             m.mouse.held = Some((col, y));
             m.mouse.in_composer = true;
             m.mouse.moved = false;

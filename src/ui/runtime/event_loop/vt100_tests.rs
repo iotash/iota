@@ -1435,6 +1435,66 @@ fn a_composer_selection_spans_the_wrap_and_the_write_out_stays_plain() {
     );
 }
 
+/// A double-click on a WRAPPED draft at 80 columns, through the real loop: the whole draft is
+/// reversed — all of its first row and the second up to its end, nothing else — and the release
+/// copies all of it.
+#[test]
+fn a_composer_double_click_reverses_the_whole_wrapped_draft() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let h = start_loop_mouse(true);
+    let draft: String = (0..100)
+        .map(|i| char::from(b'a' + u8::try_from(i % 26).unwrap()))
+        .collect();
+    h.etx.send(Event::Paste(draft.clone())).unwrap();
+    let rows_of_draft = |h: &LoopHarness| {
+        let p = parse(&h.buf);
+        let rows: Vec<String> = p.screen().rows(0, 80).collect();
+        rows.iter().position(|r| *r == draft[..80])
+    };
+    assert!(
+        h.wait_until(Duration::from_secs(2), |h| rows_of_draft(h).is_some()),
+        "{}",
+        h.contents()
+    );
+    let top = u16::try_from(rows_of_draft(&h).unwrap()).unwrap();
+    for _ in 0..2 {
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            h.etx
+                .send(Event::Mouse(MouseEvent {
+                    kind,
+                    column: 5,
+                    row: top + 1,
+                    modifiers: KeyModifiers::NONE,
+                }))
+                .unwrap();
+        }
+    }
+    assert!(
+        h.wait_until(Duration::from_secs(2), |h| h.contents().contains("copied")),
+        "{}",
+        h.contents()
+    );
+    assert_eq!(*crate::sync::lock(&h.copied), [draft.clone()]);
+    let p = parse(&h.buf);
+    let lit: Vec<(u16, u16)> = (0..24)
+        .flat_map(|r| (0..80).map(move |c| (r, c)))
+        .filter(|&(r, c)| p.screen().cell(r, c).is_some_and(vt100::Cell::inverse))
+        .collect();
+    let want: Vec<(u16, u16)> = (0..80)
+        .map(|c| (top, c))
+        .chain((0..20).map(|c| (top + 1, c)))
+        .collect();
+    assert_eq!(
+        lit, want,
+        "the whole draft reversed across the wrap, nothing else"
+    );
+    assert_eq!(h.cursor(), (top + 1, 20), "the cursor at the draft's end");
+    h.quit_and_join(Duration::from_secs(5));
+}
+
 /// The copy status names what was copied, the ways it went — so a copy that reached only this
 /// machine's clipboard never reads like one that reached the terminal's — and the native-selection
 /// key; a text too long for OSC 52 that no tool took says so.

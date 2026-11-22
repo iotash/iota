@@ -10,7 +10,8 @@
 //! (model.go resizeComposer; a multi-line draft counts its wrapped rows, not its logical
 //! lines — `DIVERGENCES.md` X-65).
 //!
-//! The selection (`mouse.rs`: a press and a drag on the composer) is an anchor and a focus,
+//! The selection (`mouse.rs`: a press and a drag on the composer, a double-click for the whole
+//! draft, a triple-click for the logical line under the pointer) is an anchor and a focus,
 //! byte offsets on grapheme boundaries like the cursor, either first; the cursor is the focus. A
 //! typed character, a paste or a newline replaces it, Backspace and Delete remove it, any other
 //! edit-set key drops it before it acts; a new value (a submit, a recall, a completion) drops it
@@ -157,6 +158,24 @@ impl Composer {
         let at = self.offset_at(col, row, width);
         self.editor.set_cursor(at);
         self.sel = Some((anchor, at));
+    }
+
+    /// Selects the whole draft (a double-click), the cursor at its end.
+    pub(crate) fn select_all(&mut self) {
+        let end = self.editor.value().len();
+        self.editor.set_cursor(end);
+        self.sel = Some((0, end));
+    }
+
+    /// Selects the logical line the cursor is on (a triple-click) — between newlines, not the
+    /// wrapped row, its newline left out — the cursor at its end.
+    pub(crate) fn select_line(&mut self) {
+        let value = self.editor.value();
+        let at = self.editor.cursor();
+        let from = value[..at].rfind('\n').map_or(0, |i| i + 1);
+        let to = value[at..].find('\n').map_or(value.len(), |i| at + i);
+        self.editor.set_cursor(to);
+        self.sel = Some((from, to));
     }
 
     /// Drops the selection; the cursor stays.
