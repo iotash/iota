@@ -1477,7 +1477,7 @@ fn a_composer_double_click_reverses_the_whole_wrapped_draft() {
         "{}",
         h.contents()
     );
-    assert_eq!(*crate::sync::lock(&h.copied), [draft.clone()]);
+    assert_eq!(*crate::sync::lock(&h.copied), std::slice::from_ref(&draft));
     let p = parse(&h.buf);
     let lit: Vec<(u16, u16)> = (0..24)
         .flat_map(|r| (0..80).map(move |c| (r, c)))
