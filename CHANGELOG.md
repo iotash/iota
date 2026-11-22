@@ -7,6 +7,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Added
 
+- **Text in the composer can be selected.** Drag over what you typed: the
+  release copies it, the way a drag over the conversation does, and the status
+  row says so. Typing replaces the selection, Backspace and Delete remove it.
+  A drag stays where it started — the composer's never selects the
+  conversation, nor the other way round.
 - **An agent's `allow:` says what it may do without asking.** `agents.<name>.allow:
   [~/scratch, shell, edit_file, "github:*"]` takes `/allow`'s targets — a
   directory, a built-in tool that asks, `<server>:<tool>` or `<server>:*` — and

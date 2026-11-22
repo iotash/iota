@@ -408,3 +408,61 @@ fn a_click_on_a_completion_item_highlights_it() {
         "the composer, under the gap, is still the composer"
     );
 }
+
+/// A press on the composer with no drag (a click's one-cell jitter included) places the cursor and
+/// copies nothing; a drag selects — through a pointer that leaves the composer for the
+/// conversation, which it never selects — and the release copies exactly the selected text, drawn
+/// as reversed cells only (the rows carry no styling for it). A press on the conversation drops it.
+#[test]
+fn a_drag_on_the_composer_selects_and_its_release_copies() {
+    let mut m = test_model();
+    type_text(&mut m, "hello world");
+    laid_out(&mut m);
+    let row = m.vis_h + u16::try_from(m.frame_map.composer).unwrap();
+    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 3, row));
+    m.handle_event(ev(MouseEventKind::Drag(MouseButton::Left), 4, row));
+    m.handle_event(ev(MouseEventKind::Up(MouseButton::Left), 4, row));
+    assert_eq!(m.composer.cursor_pos(80), (3, 0), "the cursor is placed");
+    assert_eq!(m.composer.selected_text(), None);
+    assert!(m.view_ops.is_empty(), "a click copies nothing");
+    assert!(m.frame_view().lit.is_empty());
+
+    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 6, row));
+    m.handle_event(ev(MouseEventKind::Drag(MouseButton::Left), 2, 3));
+    m.handle_event(ev(MouseEventKind::Drag(MouseButton::Left), 70, row));
+    assert_eq!(
+        edge_due(&m, Instant::now()),
+        None,
+        "the composer never scrolls the view"
+    );
+    m.handle_event(ev(MouseEventKind::Up(MouseButton::Left), 70, row));
+    assert_eq!(m.view_ops, vec![ViewOp::Copy("world".to_owned())]);
+    assert_eq!(
+        m.composer.cursor_pos(80),
+        (11, 0),
+        "the cursor at the focus"
+    );
+    let v = m.frame_view();
+    assert_eq!(v.lit, vec![(m.frame_map.composer, 6, 11)]);
+    assert!(
+        !v.rows.iter().any(|r| r.contains("\u{1b}[7m")),
+        "the rows carry no selection: {:?}",
+        v.rows
+    );
+
+    m.view_ops.clear();
+    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 1, 5));
+    assert_eq!(
+        m.composer.selected_text(),
+        None,
+        "the conversation's press drops it"
+    );
+    assert_eq!(
+        m.view_ops,
+        vec![ViewOp::Select(SelectOp::Press {
+            col: 1,
+            row: 5,
+            clicks: 1
+        })]
+    );
+}

@@ -1363,6 +1363,78 @@ fn a_drag_through_the_loop_copies_and_the_status_row_says_so() {
     h.quit_and_join(Duration::from_secs(5));
 }
 
+/// The composer's selection on a WRAPPED draft at 80 columns, through the real loop: a drag from
+/// the first row to the second selects across the wrap — both rows' cells reversed, nothing else
+/// — the real cursor stays at the drag's end, the release copies exactly the selected text, and
+/// the exit's write-out carries no reverse video.
+#[test]
+fn a_composer_selection_spans_the_wrap_and_the_write_out_stays_plain() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let h = start_loop_mouse(true);
+    let draft: String = (0..100)
+        .map(|i| char::from(b'a' + u8::try_from(i % 26).unwrap()))
+        .collect();
+    h.etx.send(Event::Paste(draft.clone())).unwrap();
+    let rows_of_draft = |h: &LoopHarness| {
+        let p = parse(&h.buf);
+        let rows: Vec<String> = p.screen().rows(0, 80).collect();
+        rows.iter().position(|r| *r == draft[..80])
+    };
+    assert!(
+        h.wait_until(Duration::from_secs(2), |h| rows_of_draft(h).is_some()),
+        "{}",
+        h.contents()
+    );
+    let top = u16::try_from(rows_of_draft(&h).unwrap()).unwrap();
+    let at = |kind, column, row| {
+        Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    h.etx
+        .send(at(MouseEventKind::Down(MouseButton::Left), 70, top))
+        .unwrap();
+    h.etx
+        .send(at(MouseEventKind::Drag(MouseButton::Left), 10, top + 1))
+        .unwrap();
+    h.etx
+        .send(at(MouseEventKind::Up(MouseButton::Left), 10, top + 1))
+        .unwrap();
+    assert!(
+        h.wait_until(Duration::from_secs(2), |h| h.contents().contains("copied")),
+        "{}",
+        h.contents()
+    );
+    assert_eq!(*crate::sync::lock(&h.copied), [draft[70..90].to_owned()]);
+    let p = parse(&h.buf);
+    let lit: Vec<(u16, u16)> = (0..24)
+        .flat_map(|r| (0..80).map(move |c| (r, c)))
+        .filter(|&(r, c)| p.screen().cell(r, c).is_some_and(vt100::Cell::inverse))
+        .collect();
+    let want: Vec<(u16, u16)> = (70..80)
+        .map(|c| (top, c))
+        .chain((0..10).map(|c| (top + 1, c)))
+        .collect();
+    assert_eq!(lit, want, "both rows of the wrap reversed, nothing else");
+    assert_eq!(h.cursor(), (top + 1, 10), "the cursor at the drag's end");
+    let mark = h.buf.bytes().len();
+    let buf = h.buf.clone();
+    h.quit_and_join(Duration::from_secs(5));
+    let bytes = buf.bytes();
+    let out = String::from_utf8_lossy(&bytes[mark..]);
+    let left = out
+        .find("\u{1b}[?1049l")
+        .expect("the exit left the alternate screen");
+    assert!(
+        !out[left..].contains("\u{1b}[7m") && !out[left..].contains(";7m"),
+        "the write-out carries the selection: {:?}",
+        &out[left..]
+    );
+}
+
 /// The copy status names what was copied, the ways it went — so a copy that reached only this
 /// machine's clipboard never reads like one that reached the terminal's — and the native-selection
 /// key; a text too long for OSC 52 that no tool took says so.

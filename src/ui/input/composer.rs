@@ -138,7 +138,8 @@ impl Composer {
 
     /// The selected text, while the selection is not empty (what a release copies).
     pub(crate) fn selected_text(&self) -> Option<&str> {
-        self.selection().map(|(from, to)| &self.editor.value()[from..to])
+        self.selection()
+            .map(|(from, to)| &self.editor.value()[from..to])
     }
 
     /// Starts a selection at the cursor (a press): anchor and focus both there, nothing selected.
@@ -792,6 +793,64 @@ mod tests {
             r.text, "alpha\nbeta",
             "re-submitted Text must expand the paste again"
         );
+    }
+
+    /// Over a selection, a typed character replaces it and Backspace (Delete alike) removes it, the
+    /// selection gone after either; any other edit key drops it and acts as it would.
+    #[test]
+    fn typing_or_backspace_acts_on_the_selection() {
+        let select = |m: &mut crate::ui::runtime::event_loop::Model, from: u16, to: u16| {
+            m.composer.click(from, 0, 80);
+            m.composer.select_at_cursor();
+            m.composer.select_to(to, 0, 80);
+        };
+        let mut m = test_model();
+        type_text(&mut m, "hello world");
+        select(&mut m, 11, 6);
+        assert_eq!(m.composer.selected_text(), Some("world"));
+        type_text(&mut m, "X");
+        assert_eq!(m.composer.value(), "hello X");
+        assert_eq!(m.composer.selected_text(), None);
+        assert_eq!(m.composer.cursor_pos(80), (7, 0));
+
+        select(&mut m, 0, 6);
+        m.handle_key(key(KeyCode::Backspace));
+        assert_eq!(m.composer.value(), "X");
+        assert_eq!(m.composer.selected_text(), None);
+        assert_eq!(m.composer.cursor_pos(80), (0, 0));
+
+        type_text(&mut m, "ab");
+        select(&mut m, 0, 2);
+        m.handle_key(key(KeyCode::Delete));
+        assert_eq!(m.composer.value(), "X");
+
+        type_text(&mut m, "ab");
+        select(&mut m, 0, 2);
+        m.handle_key(key(KeyCode::Left));
+        assert_eq!(m.composer.value(), "abX", "an arrow deletes nothing");
+        assert_eq!(m.composer.selected_text(), None, "and drops the selection");
+        assert_eq!(m.composer.cursor_pos(80), (1, 0));
+
+        select(&mut m, 0, 3);
+        m.handle_key(key(KeyCode::Esc));
+        assert_eq!(
+            m.composer.selected_text(),
+            None,
+            "an Esc with no scope drops it"
+        );
+        m.apply(UiMsg::ScopePush(tokio_util::sync::CancellationToken::new()));
+        select(&mut m, 0, 3);
+        m.handle_key(key(KeyCode::Esc));
+        assert_eq!(
+            m.composer.selected_text(),
+            Some("abX"),
+            "an Esc that cancels the turn leaves it"
+        );
+        m.handle_key(key(KeyCode::Esc));
+        assert_eq!(m.composer.selected_text(), None, "the next one drops it");
+        select(&mut m, 0, 3);
+        crate::ui::input::paste::on_paste(&mut m, "p");
+        assert_eq!(m.composer.value(), "p", "a paste replaces it");
     }
 
     /// Spike G3 vectors: CJK cursor columns through the real frame — `"中文测试"` puts

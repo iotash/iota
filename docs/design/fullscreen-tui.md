@@ -151,7 +151,7 @@ crossterm 0.29 默认的 unix 事件源（mio、边沿触发）有两处会让�
 | 视口末行 `↓ … Ctrl+End`（已上滚时） | — | 回到尾部 |
 | 搜索行 | — | 已应用的查询重新可编辑（保留查询） |
 | surface | 移动列表（View：3 行） | 不在光标上的行：光标移过去；光标所在的行：**选中**（Enter 的路径；多选是 Space 的勾选）；tab 标签：切换；提示行：聚焦搜索框 |
-| composer | 滚对话 | 光标放到指针下（宽字形的第二列算这个字形） |
+| composer | 滚对话 | 光标放到指针下（宽字形的第二列算这个字形）；拖动选择草稿，松开复制（见下文"composer 的选择"） |
 
 **一次误点不会回答对话框**：surface 的一行要点两次（第一下移光标，第二下选中）——审批对话框里"Always allow"不该被一次手滑选中。
 
@@ -176,6 +176,14 @@ crossterm 0.29 默认的 unix 事件源（mio、边沿触发）有两处会让�
   - 每个外部程序是自己的子进程，stdin 由各自的线程写入，卡住的既不拖住循环也不拖住别的程序（`pbcopy` 卡住，`tmux load-buffer` 照跑）；循环轮询各自的退出。超过 `COPY_DEADLINE`（2 秒）还没退出的被 kill 并按失败结算（`Pending` 的 `Drop` 负责 kill 并回收：到期结算、2 秒内再复制一次替换掉它、退出时还挂着，都不留子进程），已成功的照算——`pbcopy` 卡住、tmux 成功得 `(tmux)`；一个都没成功时 tmux 外状态行写 `(OSC 52)`，tmux 里走 OSC 52 兜底；OSC 52 序列在复制开始时就和那一帧一起写出，不等工具。**至少一条路走通就算复制成功**：工具成功，或序列写出了（OSC 52 报不回结果）；工具失败不影响 OSC 52。
   - OSC 52 序列有上限 `OSC52_MAX`（100 000 字节，约 73 KB 文本；hterm、tmux 也在这个量级截断）：超过就不发，但本机工具照样能接——那时状态行明说终端没收到：`copied N characters (pbcopy; too large for OSC 52)`（只在 tmux 外，那里序列本该同发）；没有工具接住才是 `not copied: N characters is too large — use Ctrl+O`。
 - **提示**：复制后状态行 4 秒内显示 `copied N characters (pbcopy + OSC 52) · Shift+drag selects in the terminal`，括号里是**实际走通的路**：成功的程序按文件名（`pbcopy`、`xclip`、`tmux` …），再加写出了的 `OSC 52`——两条都走 `(pbcopy + OSC 52)`，只有一条 `(OSC 52)` 或 `(pbcopy)`，tmux 里 `(pbcopy + tmux)`。**为什么要说**：11-16 的决定认为"`OSC 52` 对用户没有意义"，但"进了另一台机器的剪贴板"和"真的复制了"说成同一句，用户和排查的人都分不出来——这次排查绕了两轮正因为此。iTerm2（`TERM_PROGRAM=iTerm.app` 或 `LC_TERMINAL=iTerm2`）显示 `Option`。一句话，不是段落（`vt100_tests::the_copy_status_names_the_ways`）。
+
+## composer 的选择（`input/composer.rs`，owner 2026-11-22）
+
+- **状态**在 `Composer`：锚点和焦点，都是字节偏移（落在字形边界上，和光标同一个单位），谁先谁后都行；光标就是焦点。
+- **鼠标**：在 composer 上按下＝放光标并开始选择（`held` 也为它设上）；拖动按 `Composer::click` 的规则把指针的（行，列）映射成焦点；指针离开 composer 时，上方算第一可见行的开头、下方算最后一可见行的末尾——**composer 的拖动从不选对话、从不滚对话**，在对话上开始的拖动也从不进 composer。抖动规则同对话（同一行跨 2 列或换行才算）；按下不拖＝单纯放光标，不复制。松开复制选中的原文（粘贴标签就是标签），走对话同一条路：`ViewOp::Copy` 放进 `Screen` 的复制槽，之后 `take_copied` → 剪贴板 → 状态行，完全相同。在一边按下会清掉另一边的选择，屏上同时只有一个选择。
+- **按键**：打字、粘贴、换行替换选择；Backspace、Ctrl+H、Delete 删除它；编辑集里其他键（方向键、Home、Ctrl+K …）先丢掉选择再照常执行。新值（提交——`/new` 也是一次提交——、历史召回、队列弹出、补全）丢掉它。**Esc**：落到编辑集的 Esc（没有补全循环、没有 scope）丢掉它；先被补全或 turn 的 scope 接走的 Esc 不碰它（取消正在跑的 turn 不该顺带改草稿的状态），下一个 Esc 才丢。
+- **全选不绑键**：`Ctrl+A` 已是编辑集的行首（emacs，TUI_CONTRACTS §6），不让出来。
+- **画**：`FrameView::lit` 列出选中的帧格子，`Screen::paint` 和对话的选择一起给它们加 `REVERSED`——行本身不动，写出不带它；光标照常显示。
 
 ## 关闭开关（`mouse: false`）
 
