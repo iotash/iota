@@ -467,55 +467,62 @@ fn a_drag_on_the_composer_selects_and_its_release_copies() {
     );
 }
 
-/// A double-click on the composer copies the whole draft; a triple-click the logical LINE under
-/// the pointer — on a line that wraps, pressed on its second row, the whole line, not the row,
-/// its newline left out — and the selection stays for a key to act on; a single click copies
-/// nothing. A fourth press is a single click again, as the conversation's count wraps.
+/// A double-click on the composer copies the WORD under the pointer by the conversation's rule —
+/// a path whole, its sentence's full stop left out; a word that wraps at 80 columns whole — and a
+/// triple-click the whole draft; the selection stays for a key to act on. A single click copies
+/// nothing, and a fourth press is a single click again, as the conversation's count wraps.
 #[test]
-fn a_multi_click_on_the_composer_selects_the_draft_or_its_line() {
+fn a_multi_click_on_the_composer_selects_a_word_or_the_draft() {
     let mut m = test_model();
-    let long = "x".repeat(100);
-    let draft = format!("one\n{long}\nthree");
+    let long = "w".repeat(100);
+    let draft = format!("see src/ui/render/selection.rs.\n{long} end");
     m.composer.set_value(&draft);
     laid_out(&mut m);
-    assert_eq!(m.frame_map.composer_rows, 4, "the long line wraps at 80");
+    assert_eq!(m.frame_map.composer_rows, 3, "the long word wraps at 80");
     let top = m.vis_h + u16::try_from(m.frame_map.composer).unwrap();
     let click = |m: &mut Model, col, row| {
         m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), col, row));
         m.handle_event(ev(MouseEventKind::Up(MouseButton::Left), col, row));
     };
 
-    click(&mut m, 2, top);
+    click(&mut m, 20, top);
     assert!(m.view_ops.is_empty(), "a single click copies nothing");
     assert_eq!(m.composer.selected_text(), None);
 
-    click(&mut m, 2, top);
+    click(&mut m, 20, top);
+    assert_eq!(
+        m.view_ops,
+        vec![ViewOp::Copy("src/ui/render/selection.rs".to_owned())],
+        "the path, its full stop dropped"
+    );
+    assert_eq!(
+        m.composer.selected_text(),
+        Some("src/ui/render/selection.rs"),
+        "it stays"
+    );
+
+    m.view_ops.clear();
+    click(&mut m, 20, top);
     assert_eq!(m.view_ops, vec![ViewOp::Copy(draft.clone())], "the draft");
-    assert_eq!(m.composer.selected_text(), Some(draft.as_str()), "it stays");
 
     m.view_ops.clear();
-    click(&mut m, 2, top);
-    assert_eq!(m.view_ops, vec![ViewOp::Copy("one".to_owned())], "line one");
-
-    m.view_ops.clear();
-    click(&mut m, 2, top);
+    click(&mut m, 20, top);
     assert!(m.view_ops.is_empty(), "a fourth press is a click: no copy");
     assert_eq!(m.composer.selected_text(), None);
 
-    // The wrapped line's second row (another cell: the count starts over): three presses there
-    // select all hundred `x`.
-    for _ in 0..3 {
+    // The long word's wrapped second row (another cell: the count starts over).
+    for _ in 0..2 {
         click(&mut m, 5, top + 2);
     }
     assert_eq!(
         m.view_ops.last(),
         Some(&ViewOp::Copy(long.clone())),
-        "the logical line, not the row"
+        "the word across the wrap"
     );
     m.handle_key(key(KeyCode::Backspace));
     assert_eq!(
         m.composer.value(),
-        "one\n\nthree",
+        "see src/ui/render/selection.rs.\n end",
         "a key acts on the selection"
     );
 }

@@ -11,7 +11,7 @@
 //! - **Copied** as plain text ([`text`]): SGR stripped, the segments the SCREEN wrapped a line into
 //!   joined back into that line, every other line — between blocks, and the lines a laid-out block
 //!   is made of (a table's, a code block's) — separated by `\n`, trailing blanks trimmed.
-//! - **A word** ([`word_at`]) is a run of letters, digits and the punctuation of paths, URLs and
+//! - **A word** ([`word_bytes`], [`word_at`] its columns) is a run of letters, digits and the punctuation of paths, URLs and
 //!   identifiers (`_-./~+:@\`), the way terminals double-click; a trailing `.`, `,` or `:` is a
 //!   sentence's, not the word's.
 
@@ -147,28 +147,28 @@ pub(crate) fn slice_cols(plain: &str, from: usize, to: usize) -> String {
 /// Punctuation a double-clicked word keeps: paths, URLs, identifiers.
 const WORD_PUNCT: &str = "_-./~+:@\\";
 
-/// The display columns `[from, to]` of the word under column `col` of `plain`, or `None` when
-/// `col` is on a blank, past the end, or on punctuation alone.
-pub(crate) fn word_at(plain: &str, col: usize) -> Option<(usize, usize)> {
+/// Whether grapheme `g` belongs to a word: a letter, a digit or [`WORD_PUNCT`].
+fn is_word(g: &str) -> bool {
+    g.chars()
+        .next()
+        .is_some_and(|c| c.is_alphanumeric() || WORD_PUNCT.contains(c))
+}
+
+/// The bytes `[from, to)` of the word holding the grapheme that starts at byte `at` of `text`, or
+/// `None` when that grapheme is a blank or punctuation alone, or `at` is the end: the ONE word rule,
+/// for the conversation's double-click ([`word_at`]) and the composer's.
+pub(crate) fn word_bytes(text: &str, at: usize) -> Option<(usize, usize)> {
     let cells: Vec<(usize, &str)> = {
-        let mut c = 0;
-        graphemes(plain)
+        let mut b = 0;
+        graphemes(text)
             .map(|g| {
-                let at = c;
-                c += str_width(g);
-                (at, g)
+                let off = b;
+                b += g.len();
+                (off, g)
             })
             .collect()
     };
-    let is_word = |g: &str| {
-        g.chars()
-            .next()
-            .is_some_and(|c| c.is_alphanumeric() || WORD_PUNCT.contains(c))
-    };
-    let hit = cells
-        .iter()
-        .rposition(|&(at, _)| at <= col)
-        .filter(|&i| col < cells[i].0 + str_width(cells[i].1).max(1))?;
+    let hit = cells.iter().position(|&(off, _)| off == at)?;
     if !is_word(cells[hit].1) {
         return None;
     }
@@ -189,8 +189,32 @@ pub(crate) fn word_at(plain: &str, col: usize) -> Option<(usize, usize)> {
     {
         return None;
     }
-    let end = cells[last].0 + str_width(cells[last].1).max(1) - 1;
-    Some((cells[first].0, end))
+    Some((cells[first].0, cells[last].0 + cells[last].1.len()))
+}
+
+/// The display columns `[from, to]` of the word under column `col` of `plain`, or `None` when
+/// `col` is on a blank, past the end, or on punctuation alone ([`word_bytes`]'s rule).
+pub(crate) fn word_at(plain: &str, col: usize) -> Option<(usize, usize)> {
+    // (column, byte, grapheme) of every cell.
+    let cells: Vec<(usize, usize, &str)> = {
+        let (mut c, mut b) = (0, 0);
+        graphemes(plain)
+            .map(|g| {
+                let cell = (c, b, g);
+                c += str_width(g);
+                b += g.len();
+                cell
+            })
+            .collect()
+    };
+    let hit = cells
+        .iter()
+        .rposition(|&(at, ..)| at <= col)
+        .filter(|&i| col < cells[i].0 + str_width(cells[i].2).max(1))?;
+    let (from, to) = word_bytes(plain, cells[hit].1)?;
+    let first = cells.iter().find(|&&(_, b, _)| b == from)?;
+    let last = cells.iter().rfind(|&&(_, b, _)| b < to)?;
+    Some((first.0, last.0 + str_width(last.2).max(1) - 1))
 }
 
 #[cfg(test)]

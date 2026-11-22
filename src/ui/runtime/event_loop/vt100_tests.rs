@@ -1371,8 +1371,12 @@ fn a_drag_through_the_loop_copies_and_the_status_row_says_so() {
 fn a_composer_selection_spans_the_wrap_and_the_write_out_stays_plain() {
     use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     let h = start_loop_mouse(true);
+    // Words and blanks (every fifth cell from the third), the first row ending on a letter.
     let draft: String = (0..100)
-        .map(|i| char::from(b'a' + u8::try_from(i % 26).unwrap()))
+        .map(|i| match i % 5 {
+            2 => ' ',
+            _ => char::from(b'a' + u8::try_from(i % 26).unwrap()),
+        })
         .collect();
     h.etx.send(Event::Paste(draft.clone())).unwrap();
     let rows_of_draft = |h: &LoopHarness| {
@@ -1435,15 +1439,19 @@ fn a_composer_selection_spans_the_wrap_and_the_write_out_stays_plain() {
     );
 }
 
-/// A double-click on a WRAPPED draft at 80 columns, through the real loop: the whole draft is
-/// reversed — all of its first row and the second up to its end, nothing else — and the release
-/// copies all of it.
+/// A triple-click on a WRAPPED draft of many words at 80 columns, through the real loop: the whole
+/// draft is reversed — all of its first row and the second up to its end, nothing else — and the
+/// release copies all of it.
 #[test]
-fn a_composer_double_click_reverses_the_whole_wrapped_draft() {
+fn a_composer_triple_click_reverses_the_whole_wrapped_draft() {
     use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     let h = start_loop_mouse(true);
+    // Words and blanks (every fifth cell from the third), the first row ending on a letter.
     let draft: String = (0..100)
-        .map(|i| char::from(b'a' + u8::try_from(i % 26).unwrap()))
+        .map(|i| match i % 5 {
+            2 => ' ',
+            _ => char::from(b'a' + u8::try_from(i % 26).unwrap()),
+        })
         .collect();
     h.etx.send(Event::Paste(draft.clone())).unwrap();
     let rows_of_draft = |h: &LoopHarness| {
@@ -1457,7 +1465,7 @@ fn a_composer_double_click_reverses_the_whole_wrapped_draft() {
         h.contents()
     );
     let top = u16::try_from(rows_of_draft(&h).unwrap()).unwrap();
-    for _ in 0..2 {
+    for _ in 0..3 {
         for kind in [
             MouseEventKind::Down(MouseButton::Left),
             MouseEventKind::Up(MouseButton::Left),

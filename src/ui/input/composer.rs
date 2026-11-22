@@ -10,8 +10,8 @@
 //! (model.go resizeComposer; a multi-line draft counts its wrapped rows, not its logical
 //! lines — `DIVERGENCES.md` X-65).
 //!
-//! The selection (`mouse.rs`: a press and a drag on the composer, a double-click for the whole
-//! draft, a triple-click for the logical line under the pointer) is an anchor and a focus,
+//! The selection (`mouse.rs`: a press and a drag on the composer, a double-click for the word
+//! under the pointer by the conversation's rule, a triple-click for the whole draft) is an anchor and a focus,
 //! byte offsets on grapheme boundaries like the cursor, either first; the cursor is the focus. A
 //! typed character, a paste or a newline replaces it, Backspace and Delete remove it, any other
 //! edit-set key drops it before it acts; a new value (a submit, a recall, a completion) drops it
@@ -22,6 +22,7 @@ use crate::text::width::{graphemes, str_width};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::editor::Editor;
+use crate::ui::render::selection;
 use crate::ui::runtime::event_loop::MAX_COMPOSER_ROWS;
 
 /// The composer state (model.go `ta` + the history/suggest model fields — the loop
@@ -160,20 +161,19 @@ impl Composer {
         self.sel = Some((anchor, at));
     }
 
-    /// Selects the whole draft (a double-click), the cursor at its end.
+    /// Selects the whole draft (a triple-click), the cursor at its end.
     pub(crate) fn select_all(&mut self) {
         let end = self.editor.value().len();
         self.editor.set_cursor(end);
         self.sel = Some((0, end));
     }
 
-    /// Selects the logical line the cursor is on (a triple-click) — between newlines, not the
-    /// wrapped row, its newline left out — the cursor at its end.
-    pub(crate) fn select_line(&mut self) {
-        let value = self.editor.value();
+    /// Selects the word under the cursor (a double-click) by the conversation's rule
+    /// ([`selection::word_bytes`]) — across a wrap when the word runs over one — the cursor at its
+    /// end; off a word, an empty selection at the cursor, as a press's.
+    pub(crate) fn select_word(&mut self) {
         let at = self.editor.cursor();
-        let from = value[..at].rfind('\n').map_or(0, |i| i + 1);
-        let to = value[at..].find('\n').map_or(value.len(), |i| at + i);
+        let (from, to) = selection::word_bytes(self.editor.value(), at).unwrap_or((at, at));
         self.editor.set_cursor(to);
         self.sel = Some((from, to));
     }
