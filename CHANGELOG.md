@@ -3,7 +3,7 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
-## Unreleased
+## 0.13.0 - 2026-11-22
 
 ### Added
 
@@ -130,13 +130,14 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   has project grants, and never when its project root is your home directory
   or a directory above it. Elsewhere the prompt offers `Allow once`, the
   session grant and `Deny`, and `/allow … project` says why it cannot. Session
-  grants and `write_roots:` work as before. A project grant made
+  grants and `allow:` work as before. A project grant made
   from a plain chat in 0.12.0 no longer applies to plain chats, and one made
   for your home directory applies to nothing.
 - **A `-m` run without a project no longer suggests a project grant.** When
-  an MCP tool is refused because nobody can approve it, the message names the
-  server's `auto_run` key, and adds `/allow <server>:<tool> project` only when
-  the run has a project in which that command works.
+  an MCP tool is refused because nobody can approve it, the message names
+  `--allow <server>:<tool>` and the agent's `allow:`, and adds
+  `/allow <server>:<tool> project` only when the run has a project in which
+  that command works.
 
 ### Removed
 
