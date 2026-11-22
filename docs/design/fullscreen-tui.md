@@ -184,7 +184,7 @@ crossterm 0.29 默认的 unix 事件源（mio、边沿触发）有两处会让�
 - **按键**：打字、粘贴、换行替换选择；Backspace、Ctrl+H、Delete 删除它；编辑集里其他键（方向键、Home、Ctrl+K …）先丢掉选择再照常执行。新值（提交——`/new` 也是一次提交——、历史召回、队列弹出、补全）丢掉它。**Esc**：落到编辑集的 Esc（没有补全循环、没有 scope）丢掉它；先被补全或 turn 的 scope 接走的 Esc 不碰它（取消正在跑的 turn 不该顺带改草稿的状态），下一个 Esc 才丢。
 - **多击**（owner 2026-11-22）：计数和对话共用 `MouseState::press`（同一格、500 ms 内）。映射和对话的一致：**双击选指针下的词**，**三击选整个草稿**。词的规则只有一条——`render/selection.rs` 的 `word_bytes`（对话的 `word_at` 也是它换成列）：字母数字加 `_-./~+:@\`，句末的 `.` `,` `:` 不算；草稿按字节找，所以一个跨折行的词整个选上；指针不在词上时什么也不选。光标都落在选择的末尾。松开照拖动的路复制，选择留着给下一个键用。计数和对话一样按 1→2→3→1 循环：第四下又是单击（放光标、不选、不复制），第五下又是双击。
 - **全选不绑键**：`Ctrl+A` 已是编辑集的行首（emacs，TUI_CONTRACTS §6），不让出来。
-- **画**：`FrameView::lit` 列出选中的帧格子，`Screen::paint` 和对话的选择一起给它们加 `REVERSED`——行本身不动，写出不带它；光标照常显示。
+- **画**：`FrameView::lit` 列出选中的帧格子，`Screen::paint` 和对话的选择一起给它们加 `REVERSED`——行本身不动，写出不带它。**选择非空时不画光标**（owner 2026-11-22，composer-word-space）：光标在选择末尾的下一格，终端的块光标盖在那格上就像它也被选中——双击 `world` 看起来选了 `world `（复制的、反显的其实都只有 5 格）。文本框的通行做法（macOS、浏览器）就是有选区时插入点隐藏；按键或单击结束选择，光标就回来（`vt100_tests::a_composer_double_click_reverses_the_word_alone_and_hides_the_caret`）。
 
 ## 关闭开关（`mouse: false`）
 

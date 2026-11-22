@@ -14,6 +14,8 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   conversation, nor the other way round. Double-click selects the word under
   the pointer — the same word a double-click picks in the conversation, a path
   or URL whole — and triple-click the whole draft; both copy.
+  While text is selected the cursor is hidden, so it never looks like one
+  more selected cell.
 - **An agent's `allow:` says what it may do without asking.** `agents.<name>.allow:
   [~/scratch, shell, edit_file, "github:*"]` takes `/allow`'s targets — a
   directory, a built-in tool that asks, `<server>:<tool>` or `<server>:*` — and

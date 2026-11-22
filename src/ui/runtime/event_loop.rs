@@ -1071,7 +1071,14 @@ impl Model {
                     u16::try_from(below).unwrap_or(u16::MAX).saturating_add(y),
                 )
             }),
-            None => Some(self.composer.cursor_pos(fw)),
+            // A selection hides the caret, as a text field's insertion point is hidden while a
+            // range is selected: a block cursor on the cell after a double-clicked word reads as
+            // that cell selected too. It comes back with the selection's end (a key, a click).
+            None => self
+                .composer
+                .selected_text()
+                .is_none()
+                .then(|| self.composer.cursor_pos(fw)),
         };
         let bottom = match &surface {
             Some(rendered) => BottomZone::Surface(&rendered.rows),

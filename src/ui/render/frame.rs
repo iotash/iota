@@ -168,7 +168,7 @@ pub(crate) const SHED_ORDER: usize = 4;
 pub(crate) struct FrameView {
     /// Every frame row, top to bottom.
     pub(crate) rows: Vec<String>,
-    /// Real-cursor (x, y) within the frame; `None` = hidden (surface open).
+    /// Real-cursor (x, y) within the frame; `None` = hidden (a surface open, a composer selection standing).
     pub(crate) cursor: Option<(u16, u16)>,
     /// Which frame rows are what — where a click lands.
     pub(crate) map: FrameMap,

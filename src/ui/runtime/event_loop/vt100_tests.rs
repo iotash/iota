@@ -1423,7 +1423,10 @@ fn a_composer_selection_spans_the_wrap_and_the_write_out_stays_plain() {
         .chain((0..10).map(|c| (top + 1, c)))
         .collect();
     assert_eq!(lit, want, "both rows of the wrap reversed, nothing else");
-    assert_eq!(h.cursor(), (top + 1, 10), "the cursor at the drag's end");
+    assert!(
+        parse(&h.buf).screen().hide_cursor(),
+        "the caret is hidden while the selection stands"
+    );
     let mark = h.buf.bytes().len();
     let buf = h.buf.clone();
     h.quit_and_join(Duration::from_secs(5));
@@ -1499,7 +1502,84 @@ fn a_composer_triple_click_reverses_the_whole_wrapped_draft() {
         lit, want,
         "the whole draft reversed across the wrap, nothing else"
     );
-    assert_eq!(h.cursor(), (top + 1, 20), "the cursor at the draft's end");
+    assert!(
+        parse(&h.buf).screen().hide_cursor(),
+        "the caret is hidden while the selection stands"
+    );
+    h.quit_and_join(Duration::from_secs(5));
+}
+
+/// A double-click on the last word of `hello world ` at 80 columns, through the real loop: exactly
+/// the word's five cells are reversed, the copy is `world` with no space, and the caret — which
+/// sits on the space after the word — is hidden while the selection stands, so its block never
+/// reads as a sixth selected cell; a key ends the selection and the caret is back.
+#[test]
+fn a_composer_double_click_reverses_the_word_alone_and_hides_the_caret() {
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+    let h = start_loop_mouse(true);
+    h.etx.send(Event::Paste("hello world ".to_owned())).unwrap();
+    let row_of = |h: &LoopHarness| {
+        let p = parse(&h.buf);
+        let rows: Vec<String> = p.screen().rows(0, 80).collect();
+        rows.iter().position(|r| r.starts_with("hello world"))
+    };
+    assert!(
+        h.wait_until(Duration::from_secs(2), |h| row_of(h).is_some()),
+        "{}",
+        h.contents()
+    );
+    let top = u16::try_from(row_of(&h).unwrap()).unwrap();
+    for _ in 0..2 {
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            h.etx
+                .send(Event::Mouse(MouseEvent {
+                    kind,
+                    column: 8,
+                    row: top,
+                    modifiers: KeyModifiers::NONE,
+                }))
+                .unwrap();
+        }
+    }
+    assert!(
+        h.wait_until(Duration::from_secs(2), |h| h.contents().contains("copied")),
+        "{}",
+        h.contents()
+    );
+    assert_eq!(*crate::sync::lock(&h.copied), ["world".to_owned()]);
+    assert!(
+        h.contents().contains("copied 5 characters"),
+        "{}",
+        h.contents()
+    );
+    let p = parse(&h.buf);
+    let lit: Vec<(u16, u16)> = (0..24)
+        .flat_map(|r| (0..80).map(move |c| (r, c)))
+        .filter(|&(r, c)| p.screen().cell(r, c).is_some_and(vt100::Cell::inverse))
+        .collect();
+    let want: Vec<(u16, u16)> = (6..11).map(|c| (top, c)).collect();
+    assert_eq!(lit, want, "the word's cells reversed, not the space");
+    assert!(
+        p.screen().hide_cursor(),
+        "the caret is hidden while the selection stands"
+    );
+    h.etx
+        .send(Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+    assert!(
+        h.wait_until(Duration::from_secs(2), |h| !parse(&h.buf)
+            .screen()
+            .hide_cursor()),
+        "a key ends the selection and the caret is back"
+    );
     h.quit_and_join(Duration::from_secs(5));
 }
 

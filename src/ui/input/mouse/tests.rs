@@ -467,6 +467,31 @@ fn a_drag_on_the_composer_selects_and_its_release_copies() {
     );
 }
 
+/// A double-click on the last word of `hello world ` selects exactly `world` — the selection ends
+/// before the space — and the release copies it without the trailing space; the cursor sits at the
+/// word's end (on the space) and the frame draws no caret while the selection stands.
+#[test]
+fn a_double_click_on_the_last_word_selects_it_without_the_space() {
+    let mut m = test_model();
+    m.composer.set_value("hello world ");
+    laid_out(&mut m);
+    let top = m.vis_h + u16::try_from(m.frame_map.composer).unwrap();
+    for _ in 0..2 {
+        m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 8, top));
+        m.handle_event(ev(MouseEventKind::Up(MouseButton::Left), 8, top));
+    }
+    assert_eq!(m.composer.selected_text(), Some("world"));
+    assert_eq!(m.view_ops, vec![ViewOp::Copy("world".to_owned())]);
+    assert_eq!(
+        m.composer.cursor_pos(80),
+        (11, 0),
+        "the cursor at the word's end"
+    );
+    let v = m.frame_view();
+    assert_eq!(v.lit, vec![(m.frame_map.composer, 6, 11)]);
+    assert_eq!(v.cursor, None, "no caret while the selection stands");
+}
+
 /// A double-click on the composer copies the WORD under the pointer by the conversation's rule —
 /// a path whole, its sentence's full stop left out; a word that wraps at 80 columns whole — and a
 /// triple-click the whole draft; the selection stays for a key to act on. A single click copies
