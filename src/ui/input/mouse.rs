@@ -9,7 +9,7 @@
 //! | the viewport's last row while scrolled back (`↓ … Ctrl+End`) | — | back to the tail |
 //! | the search line | — | the field takes the keys again |
 //! | a surface | its list (a View: three lines) | a row gets the cursor; the row it is on is chosen; a tab chip focuses it; the hint row focuses the search field |
-//! | the composer | the conversation | the cursor goes under the pointer |
+//! | the composer | the conversation | the cursor goes under the pointer; a drag selects the draft, release copies |
 //! | the completion list | the conversation | the item under the pointer (its label or description rows) is highlighted |
 //!
 //! A drag held at the viewport's top row or below its last one scrolls every [`EDGE_STEP`] (one
@@ -20,6 +20,11 @@
 //! release never came. Where a terminal delivers no reports (iTerm2 with reporting off in its
 //! profile, `tmux -CC`), nothing here runs and the keyboard does everything it did before; a tmux
 //! passes them on with its `mouse` option on or off (tmux 3.8, L4 47).
+//!
+//! A drag stays where it started: one pressed on the composer selects the draft (a pointer above
+//! it is the first visible row's start, below it the last one's end; the composer never scrolls the
+//! conversation), one pressed on the conversation selects the conversation. Pressing on either
+//! drops the other's selection, so one selection is on the screen at a time.
 
 use std::time::{Duration, Instant};
 
@@ -29,7 +34,7 @@ use super::suggest;
 use crate::ui::render::frame::FrameMap;
 use crate::ui::runtime::event_loop::Model;
 use crate::ui::runtime::screen::search::SearchOp;
-use crate::ui::runtime::screen::{SelectOp, ViewOp};
+use crate::ui::runtime::screen::{DRAG_MIN_COLS, SelectOp, ViewOp};
 
 /// Lines one wheel step scrolls the conversation.
 pub(crate) const WHEEL_LINES: i32 = 3;
@@ -48,8 +53,10 @@ pub(crate) const COPIED_SHOWN: Duration = Duration::from_secs(4);
 pub(crate) struct MouseState {
     /// The last press: its cell, when, and how many presses in a row it was.
     last_press: Option<(u16, u16, Instant, u8)>,
-    /// The pointer while the left button is held down on the conversation.
+    /// The pointer while the left button is held down on the conversation or the composer.
     pub(crate) held: Option<(u16, u16)>,
+    /// Whether the held button was pressed on the composer: its drag selects the draft.
+    pub(crate) in_composer: bool,
     /// Whether the pointer has moved since the press (a Drag report came): only then does a
     /// button held at the viewport's edge scroll it.
     pub(crate) moved: bool,
@@ -159,9 +166,11 @@ pub(crate) fn update_mouse(m: &mut Model, ev: MouseEvent) {
         }
         MouseEventKind::Down(MouseButton::Left) => {
             let clicks = m.mouse.press(col, row, Instant::now());
-            press(m, at, col);
+            press(m, at, col, row);
             if at == Target::View {
+                m.composer.clear_selection();
                 m.mouse.held = Some((col, row));
+                m.mouse.in_composer = false;
                 m.mouse.moved = false;
                 m.mouse.last_step = None;
                 m.mouse.selected = true;
@@ -170,7 +179,9 @@ pub(crate) fn update_mouse(m: &mut Model, ev: MouseEvent) {
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            if m.mouse.held.is_some() {
+            if m.mouse.in_composer {
+                composer_drag(m, col, row);
+            } else if m.mouse.held.is_some() {
                 m.mouse.held = Some((col, row));
                 m.mouse.moved = true;
                 if !at_edge(row, m.vis_h) || m.mouse.last_step.is_none() {
@@ -180,17 +191,14 @@ pub(crate) fn update_mouse(m: &mut Model, ev: MouseEvent) {
             }
         }
         MouseEventKind::Up(MouseButton::Left) if m.mouse.held.is_some() => {
-            m.mouse.held = None;
-            m.mouse.moved = false;
-            m.mouse.last_step = None;
-            m.view_ops.push(ViewOp::Select(SelectOp::Release));
+            end_drag(m, SelectOp::Release);
         }
         _ => {}
     }
 }
 
 /// A left press anywhere but the conversation.
-fn press(m: &mut Model, at: Target, col: u16) {
+fn press(m: &mut Model, at: Target, col: u16, y: u16) {
     match at {
         Target::View | Target::Frame => {}
         Target::SearchLine => {
@@ -221,20 +229,69 @@ fn press(m: &mut Model, at: Target, col: u16) {
                 m.view_ops.push(ViewOp::Search(SearchOp::Accept));
             }
             m.composer.click(col, row, m.width.max(1));
+            // The press starts the composer's selection, and the conversation's goes.
+            m.composer.select_at_cursor();
+            m.mouse.held = Some((col, y));
+            m.mouse.in_composer = true;
+            m.mouse.moved = false;
+            m.mouse.last_step = None;
+            if std::mem::take(&mut m.mouse.selected) {
+                m.view_ops.push(ViewOp::Select(SelectOp::Clear));
+            }
         }
+    }
+}
+
+/// A drag pressed on the composer: once the pointer has left the press's cell by
+/// [`DRAG_MIN_COLS`] or a row (a click's jitter selects nothing), the selection's focus follows it,
+/// by [`Composer::click`](super::composer::Composer::click)'s rule on the composer's rows.
+fn composer_drag(m: &mut Model, col: u16, row: u16) {
+    let Some((pcol, prow, ..)) = m.mouse.last_press else {
+        return;
+    };
+    if !m.mouse.moved && prow == row && usize::from(pcol.abs_diff(col)) < DRAG_MIN_COLS {
+        return;
+    }
+    m.mouse.moved = true;
+    m.mouse.held = Some((col, row));
+    let rows = m.frame_map.composer_rows.max(1);
+    let fr = usize::from(row.saturating_sub(m.vis_h)) + m.frame_map.cut;
+    let (col, at) = if row < m.vis_h || fr < m.frame_map.composer {
+        (0, 0)
+    } else if fr - m.frame_map.composer >= rows {
+        (u16::MAX, rows - 1)
+    } else {
+        (col, fr - m.frame_map.composer)
+    };
+    m.composer.select_to(col, at, m.width.max(1));
+}
+
+/// A composer drag's release: a selection is copied as a conversation release's is (the screen's
+/// copy slot, the clipboard, the status row); a press that selected nothing was a click.
+fn composer_release(m: &mut Model) {
+    match m.composer.selected_text() {
+        Some(text) => m.view_ops.push(ViewOp::Copy(text.to_owned())),
+        None => m.composer.clear_selection(),
     }
 }
 
 /// Ends a drag whose button is still held — a key, the window losing focus, a resize: the release
 /// may never be reported (the button came up outside the window), and a drag held at the edge would
 /// scroll forever. `op` is what the selection gets (`Release` keeps and copies it, `Clear` drops
-/// it). Returns whether a drag was on.
+/// it). A drag on the composer is copied by a `Release`; a `Clear` (a key) keeps its selection
+/// for the key to act on. Returns whether a drag was on.
 pub(crate) fn end_drag(m: &mut Model, op: SelectOp) -> bool {
     if m.mouse.held.take().is_none() {
         return false;
     }
     m.mouse.moved = false;
     m.mouse.last_step = None;
+    if std::mem::take(&mut m.mouse.in_composer) {
+        if op == SelectOp::Release {
+            composer_release(m);
+        }
+        return true;
+    }
     if op == SelectOp::Clear {
         m.mouse.selected = false;
     }
@@ -248,7 +305,7 @@ pub(crate) fn tick_edge(m: &mut Model, now: Instant) {
     let Some((col, row)) = m.mouse.held else {
         return;
     };
-    if !m.mouse.moved || !at_edge(row, m.vis_h) {
+    if m.mouse.in_composer || !m.mouse.moved || !at_edge(row, m.vis_h) {
         return;
     }
     if m.mouse
@@ -266,7 +323,7 @@ pub(crate) fn tick_edge(m: &mut Model, now: Instant) {
 /// edge.
 pub(crate) fn edge_due(m: &Model, now: Instant) -> Option<Duration> {
     let (_, row) = m.mouse.held?;
-    (m.mouse.moved && at_edge(row, m.vis_h)).then(|| {
+    (!m.mouse.in_composer && m.mouse.moved && at_edge(row, m.vis_h)).then(|| {
         m.mouse.last_step.map_or(Duration::ZERO, |at| {
             EDGE_STEP.saturating_sub(now.saturating_duration_since(at))
         })

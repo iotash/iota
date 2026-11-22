@@ -1098,7 +1098,15 @@ impl Model {
         });
         self.frame_map = view.map;
         self.list_items = list.items;
-        view
+        let top = view.map.composer;
+        let selected = self.composer.selected_cells(fw);
+        FrameView {
+            lit: selected
+                .into_iter()
+                .map(|(row, from, to)| (top + row, from, to))
+                .collect(),
+            ..view
+        }
     }
 
     /// How many rows the frame has without the completion list, `bottom` in its bottom zone.

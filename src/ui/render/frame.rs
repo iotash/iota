@@ -176,6 +176,9 @@ pub(crate) struct FrameView {
     /// completion list's rows, which are its whole area, and the [`LIST_GAP`] row under them. The
     /// conversation keeps the rectangle it has with no list open (`Screen::paint`).
     pub(crate) float: usize,
+    /// The frame cells the composer's selection covers, as (frame row, from column, to column):
+    /// the screen draws them in reverse video on its cells, never in the rows.
+    pub(crate) lit: Vec<(usize, usize, usize)>,
 }
 
 /// Where the frame's clickable blocks sit, in frame rows (0 = its top row).
@@ -357,6 +360,7 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
         cursor,
         map,
         float,
+        lit: Vec::new(),
     }
 }
 

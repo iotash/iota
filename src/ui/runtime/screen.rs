@@ -93,10 +93,14 @@ pub(crate) enum ViewOp {
     Wheel(i32),
     /// A mouse step of the in-app selection over the conversation (`render/selection.rs`).
     Select(SelectOp),
+    /// What a release of the composer's selection copies: handed on as a conversation release's
+    /// is ([`Screen::take_copied`]).
+    Copy(String),
 }
 
-/// The columns a drag must cover on its own line to select (and copy) anything.
-const DRAG_MIN_COLS: usize = 2;
+/// The columns a drag must cover on its own line to select (and copy) anything — the composer's
+/// drag too (`mouse.rs`).
+pub(crate) const DRAG_MIN_COLS: usize = 2;
 
 /// A mouse step of the selection, in screen cells (column, row from the top).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,6 +304,7 @@ impl<W: Write> Screen<W> {
                 }
             }
             ViewOp::Select(op) => self.select(op, width, h),
+            ViewOp::Copy(text) => self.copied = Some(text),
         }
         Ok(())
     }
@@ -644,11 +649,17 @@ impl<W: Write> Screen<W> {
             self.scroll_region(n, vis)?;
         }
         self.mark_view(usize::from(width));
-        let lit = self.selected_cells(&lines);
+        let mut lit = self.selected_cells(&lines);
         let conv = Rect::new(0, 0, width, vis);
         let frame = Rect::new(0, vis, width, frame_h);
         // A frame taller than the screen leaves rows out at its top (`FrameMap::cut_for`).
         let cut = view.map.cut_for(view.rows.len(), usize::from(frame_h));
+        // The composer's selection, on the frame rows the screen shows.
+        let cell = |v: usize| u16::try_from(v).unwrap_or(u16::MAX);
+        lit.extend(view.lit.iter().filter_map(|&(row, from, to)| {
+            let y = cell(row.checked_sub(cut)?);
+            (y < frame_h).then(|| (vis + y, cell(from), cell(to)))
+        }));
         let frame_lines: Vec<Line<'static>> =
             view.rows[cut..].iter().map(|r| ansi_to_spans(r)).collect();
         // While a query is typed the real cursor is on the search line (an IME's candidate window

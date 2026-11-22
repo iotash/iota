@@ -24,6 +24,7 @@ fn screen(w: u16, h: u16) -> (Screen<SharedBuf>, SharedBuf) {
 
 fn frame(w: usize) -> FrameView {
     FrameView {
+        lit: Vec::new(),
         float: 0,
         rows: vec![
             "─".repeat(w),

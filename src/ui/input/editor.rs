@@ -72,6 +72,14 @@ impl Editor {
         self.cursor += s.len();
     }
 
+    /// Removes bytes `[from, to)` (both grapheme boundaries); the cursor lands at `from`.
+    pub(crate) fn delete(&mut self, from: usize, to: usize) {
+        let to = to.min(self.value.len());
+        let from = from.min(to);
+        self.value.drain(from..to);
+        self.cursor = from;
+    }
+
     /// The editing set (`TUI_CONTRACTS` §6 rows 8–9): ←/→ by grapheme · Home/End ·
     /// Backspace (under any modifier) / Ctrl+H grapheme-back · Delete · Ctrl+A/E line
     /// start/end · Ctrl+B/F char · Ctrl+K kill-to-line-end · Ctrl+U kill-to-line-start ·

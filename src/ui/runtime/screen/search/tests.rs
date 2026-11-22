@@ -24,6 +24,7 @@ const H: u16 = 12;
 
 fn frame() -> FrameView {
     FrameView {
+        lit: Vec::new(),
         float: 0,
         rows: vec![
             "─".repeat(40),

@@ -299,6 +299,7 @@ fn snapshot_implies_draw_and_cursor_restored() {
 /// The four-row idle frame with `draft` typed, the cursor after it.
 fn composer(draft: &str) -> crate::ui::render::frame::FrameView {
     crate::ui::render::frame::FrameView {
+        lit: Vec::new(),
         float: 0,
         rows: vec![
             "─".repeat(80),
@@ -366,6 +367,7 @@ fn a_write_is_one_synchronized_update_exactly_when_it_is_longer_than_sync_min() 
     use crate::ui::runtime::screen::SYNC_MIN;
     let (mut t, buf) = direct_term();
     let view = |rows: Vec<String>, cursor: (u16, u16)| crate::ui::render::frame::FrameView {
+        lit: Vec::new(),
         float: 0,
         rows,
         cursor: Some(cursor),
@@ -463,6 +465,7 @@ fn a_write_is_one_synchronized_update_exactly_when_it_is_longer_than_sync_min() 
 fn a_frame_that_shrinks_leaves_no_ghost() {
     let (mut t, buf) = direct_term();
     let tall = crate::ui::render::frame::FrameView {
+        lit: Vec::new(),
         float: 0,
         rows: (0..10)
             .map(|i| {
@@ -1221,6 +1224,7 @@ fn a_resize_with_a_surface_open_leaves_one_whole_frame() {
     let history: Vec<String> = (0..6).map(|i| format!("hist-{i}")).collect();
     t.push(rows_of(&history));
     let view = |w: usize| crate::ui::render::frame::FrameView {
+        lit: Vec::new(),
         float: 0,
         rows: [
             String::new(),

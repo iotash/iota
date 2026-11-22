@@ -9,6 +9,13 @@
 //! row count — newline breaks and soft wraps alike — clamped to `MAX_COMPOSER_ROWS`
 //! (model.go resizeComposer; a multi-line draft counts its wrapped rows, not its logical
 //! lines — `DIVERGENCES.md` X-65).
+//!
+//! The selection (`mouse.rs`: a press and a drag on the composer) is an anchor and a focus,
+//! byte offsets on grapheme boundaries like the cursor, either first; the cursor is the focus. A
+//! typed character, a paste or a newline replaces it, Backspace and Delete remove it, any other
+//! edit-set key drops it before it acts; a new value (a submit, a recall, a completion) drops it
+//! too. It is drawn as reverse video on the screen's cells only ([`Composer::selected_cells`]),
+//! never in the rows.
 
 use crate::text::width::{graphemes, str_width};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -34,6 +41,13 @@ pub(crate) struct Composer {
     pub(crate) suggestion_index: Option<usize>,
     /// The candidate list's first shown item (its scroll window; `suggest::frame_list`).
     pub(crate) suggestion_top: usize,
+    /// The selection: (anchor, focus) byte offsets, either order; empty when they are equal.
+    sel: Option<(usize, usize)>,
+}
+
+/// The display columns `s` takes under the wrap walk's ruler (every grapheme one column at least).
+fn cols(s: &str) -> usize {
+    graphemes(s).map(|g| str_width(g).max(1)).sum()
 }
 
 /// Content columns: the whole width — the composer has no prompt glyph, the text starts at column 0.
@@ -80,6 +94,7 @@ impl Composer {
             suggestion_base: String::new(),
             suggestion_index: None,
             suggestion_top: 0,
+            sel: None,
         }
     }
 
@@ -90,6 +105,7 @@ impl Composer {
 
     /// Replaces the draft; cursor moves to the end (Go setDraft shape).
     pub(crate) fn set_value(&mut self, s: &str) {
+        self.sel = None;
         self.editor.set_value(s);
     }
 
@@ -101,13 +117,86 @@ impl Composer {
     /// Clears the draft back to one empty row — the Enter collapse (sheds BOTTOM
     /// rows; model.go:475-476). History, pastes and the cycle state are untouched.
     pub(crate) fn reset(&mut self) {
+        self.sel = None;
         self.editor.clear();
     }
 
     /// Inserts text at the cursor (paste tags, verbatim single-line pastes, and the
-    /// newline keys — `keys.rs`).
+    /// newline keys — `keys.rs`), in place of the selection when there is one.
     pub(crate) fn insert_str(&mut self, s: &str) {
+        self.delete_selection();
         self.editor.insert_str(s);
+    }
+
+    // ---- the selection (`mouse.rs` makes it; module docs) ----
+
+    /// The selected bytes `[from, to)`, while the selection is not empty.
+    fn selection(&self) -> Option<(usize, usize)> {
+        let (a, f) = self.sel?;
+        (a != f).then(|| (a.min(f), a.max(f)))
+    }
+
+    /// The selected text, while the selection is not empty (what a release copies).
+    pub(crate) fn selected_text(&self) -> Option<&str> {
+        self.selection().map(|(from, to)| &self.editor.value()[from..to])
+    }
+
+    /// Starts a selection at the cursor (a press): anchor and focus both there, nothing selected.
+    pub(crate) fn select_at_cursor(&mut self) {
+        let at = self.editor.cursor();
+        self.sel = Some((at, at));
+    }
+
+    /// Moves the selection's focus — and the cursor — to the cell a click on (`col`, visible
+    /// `row`) would put the cursor on.
+    pub(crate) fn select_to(&mut self, col: u16, row: usize, width: u16) {
+        let Some((anchor, _)) = self.sel else {
+            return;
+        };
+        let at = self.offset_at(col, row, width);
+        self.editor.set_cursor(at);
+        self.sel = Some((anchor, at));
+    }
+
+    /// Drops the selection; the cursor stays.
+    pub(crate) fn clear_selection(&mut self) {
+        self.sel = None;
+    }
+
+    /// Removes the selected text (the cursor lands where it began) and drops the selection;
+    /// whether there was any.
+    fn delete_selection(&mut self) -> bool {
+        let range = self.selection();
+        self.sel = None;
+        let Some((from, to)) = range else {
+            return false;
+        };
+        self.editor.delete(from, to);
+        self.end_history_nav();
+        true
+    }
+
+    /// The cells the selection covers on the composer's visible rows at `width`, as (visible row,
+    /// from column, to column): a row's selected text, one cell for a selected empty row.
+    pub(crate) fn selected_cells(&self, width: u16) -> Vec<(usize, usize, usize)> {
+        let Some((from, to)) = self.selection() else {
+            return Vec::new();
+        };
+        let w = content_width(width);
+        let value = self.editor.value();
+        let spans = wrap_spans(value, w);
+        let h = Self::effective_height(spans.len());
+        let offset = Self::scroll_offset(self.cursor_rowcol(w).0, h);
+        let mut out = Vec::new();
+        for (vi, &(s, e)) in spans.iter().skip(offset).take(h).enumerate() {
+            let (a, b) = (from.max(s), to.min(e));
+            if a < b {
+                out.push((vi, cols(&value[s..a]), cols(&value[s..b])));
+            } else if s == e && from <= s && e < to {
+                out.push((vi, 0, 1));
+            }
+        }
+        out
     }
 
     /// Whether the draft is blank (whitespace only) — the ↑ queue-pop gate.
@@ -196,14 +285,21 @@ impl Composer {
     /// the click is past it (a row past the draft's last: the draft's end). A wide glyph's second
     /// column is that glyph.
     pub(crate) fn click(&mut self, col: u16, row: usize, width: u16) {
+        self.sel = None;
+        let at = self.offset_at(col, row, width);
+        self.editor.set_cursor(at);
+        self.end_history_nav();
+    }
+
+    /// The byte offset [`Composer::click`] puts the cursor on for (`col`, visible `row`).
+    fn offset_at(&self, col: u16, row: usize, width: u16) -> usize {
         let w = content_width(width);
         let spans = wrap_spans(self.editor.value(), w);
         let h = Self::effective_height(spans.len());
         let (cursor_row, _) = self.cursor_rowcol(w);
         let offset = Self::scroll_offset(cursor_row, h);
         let Some(&(start, end)) = spans.get(offset + row) else {
-            self.editor.move_to_end();
-            return;
+            return self.editor.value().len();
         };
         let col = usize::from(col);
         let mut walked = 0usize;
@@ -216,8 +312,7 @@ impl Composer {
             walked += gw;
             off += g.len();
         }
-        self.editor.set_cursor(off);
-        self.end_history_nav();
+        off
     }
 
     // ---- history ring (model.go:497-524) ----
@@ -302,8 +397,20 @@ impl Composer {
 
     /// The editing set is the shared [`Editor`]'s (`on_key`); what stays here is what only a
     /// multi-row composer has — ↑/↓ as display-row cursor movement, reached only when history
-    /// navigation did not claim the arrows.
+    /// navigation did not claim the arrows. Over a selection, Backspace and Delete remove it, a
+    /// typed character replaces it, and any other key drops it, then acts as it would.
     pub(crate) fn handle_edit_key(&mut self, key: &KeyEvent, width: u16) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let removes = matches!(
+            (ctrl, key.code),
+            (_, KeyCode::Backspace) | (true, KeyCode::Char('h')) | (false, KeyCode::Delete)
+        );
+        let inserts = matches!((ctrl, key.code), (false, KeyCode::Char(_)));
+        if !(removes || inserts) {
+            self.sel = None;
+        } else if self.delete_selection() && removes {
+            return;
+        }
         if !self.editor.on_key(key) && !key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Up => self.move_cursor_row(false, width),

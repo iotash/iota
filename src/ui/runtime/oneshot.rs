@@ -128,6 +128,7 @@ pub(crate) fn run_surface(spec: TabbedSpec, dark: bool, mouse: bool) -> io::Resu
             // One-shot mode renders only the surface, so the cursor target is the
             // surface-block coordinate itself (no composer offset).
             let view = FrameView {
+                lit: Vec::new(),
                 float: 0,
                 rows: rendered.rows,
                 cursor: rendered.cursor,
