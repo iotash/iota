@@ -325,6 +325,7 @@ Bun 字节码，读不出逻辑，只能拿到字符串常量。
 
 - **数据**：region 的预览标签加 `since`（`src/ui/render/frame.rs:131-168`）。渲染成 `⠦ <label>`，下面一行是 `⎿ <detail> · <elapsed> · ESC to cancel`（`:163-165`）。
 - **正文的顺序（2026-11-24 定，DIVERGENCES X-118）**：标签和 `⎿` 行之间最多 3 行正文（`PREVIEW_WINDOW`），是已完成事件的行（`finish_call` 的调用行、`◇ thought …`）。**最新的一行在最上面**，紧挨着标签——眼睛本来就在那里；旧的行往下推，窗口满了从底部丢掉最旧的一行（`Region::preview_line`）。Go 是反过来的：新行加在底部，最旧的从顶部丢，每来一行整块上移。渐进图片帧（`Region::set_call_body`）不在此列：那是一张图，按给定的顺序从上到下画。
+- **落定不重放正文**：group 落定时（`settle_group`），这些正文行不会按时间顺序写进会话——widget 变成 group 的落定形态（一行汇总，或单个调用的标签 + 结果），所以步骤行只在 group 运行时存在（`a_settle_replaces_the_widgets_rows_with_its_summary`）。
 - **生命周期跟着 activity group**（`src/repl/render/group.rs`）：
   - 升起：`ensure_widget`（`:72-80`），调用方有 `open_call`（`:311-319`）、`open_showcase`（`:382-387`）、`open_thinking`（`:437-451`）。
   - 每完成一个调用，`finish_call` 把标签改成 `Working…`（`:374`）。

@@ -289,6 +289,65 @@ fn a_call_line_lands_under_the_widget_header() {
     h.quit_and_join(Duration::from_secs(2));
 }
 
+/// A settle does not replay the widget's rows: what `settle_group` does to the Region — close the
+/// preview, commit the group's settled form — takes the header and the step rows off the screen and
+/// leaves the summary, once, in the conversation above an intact frame.
+#[test]
+fn a_settle_replaces_the_widgets_rows_with_its_summary() {
+    let h = start_loop();
+    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
+    {
+        let mut r = h.region.lock().unwrap();
+        r.open_call_preview("[shell …]");
+        r.preview_line("step-first");
+        r.preview_line("step-second");
+    }
+    assert!(
+        h.wait_until(Duration::from_secs(1), |h| h
+            .contents()
+            .contains("step-second")),
+        "the widget never rendered:\n{}",
+        h.contents()
+    );
+    {
+        let mut r = h.region.lock().unwrap();
+        r.close_preview();
+        r.commit(vec!["◇ ran 2 tools in 5s".to_owned()]);
+    }
+    assert!(
+        h.wait_until(Duration::from_secs(1), |h| h
+            .contents()
+            .contains("ran 2 tools")),
+        "the summary never rendered:\n{}",
+        h.contents()
+    );
+    let rows: Vec<String> = h.contents().lines().map(str::to_owned).collect();
+    for gone in ["[shell …]", "step-first", "step-second"] {
+        assert!(
+            !rows.iter().any(|l| l.contains(gone)),
+            "{gone} left on the screen: {rows:#?}"
+        );
+    }
+    let summary: Vec<usize> = (0..rows.len())
+        .filter(|&i| rows[i].contains("ran 2 tools"))
+        .collect();
+    assert_eq!(summary.len(), 1, "{rows:#?}");
+    let seps: Vec<usize> = (0..rows.len())
+        .filter(|&i| rows[i].starts_with('─'))
+        .collect();
+    assert_eq!(seps.len(), 2, "{rows:#?}");
+    assert!(
+        summary[0] < seps[0],
+        "the summary is not above the frame: {rows:#?}"
+    );
+    assert_eq!(
+        seps[1],
+        seps[0] + 2,
+        "the composer is not between the separators: {rows:#?}"
+    );
+    h.quit_and_join(Duration::from_secs(2));
+}
+
 /// W4's law, kept: an iteration that lands committed rows ends with a draw + cursor restore — the
 /// composer cursor cell is IDENTICAL before and after each batch of rows, and the idle frame
 /// carries no spinner glyph. Replaces Go's `TestRegionSnapshotChangesView` cursor-bump
