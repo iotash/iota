@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # L4 scenario 37 — the full screen (tui-plan S1): the alternate screen is
 # held, the frame is the screen's bottom rows at full width, the conversation sits on it, and
-# PgUp walks the whole session back to the banner while PgDn returns to the tail.
+# PgUp walks the whole session back to the banner while PgDn returns to the tail; a submit from a
+# scrolled-back view follows the tail again.
 #
 # Reads the visible pane only (`cap`): the alternate screen has no history to read.
 # shellcheck source=../lib.sh
@@ -92,13 +93,17 @@ if contiguous; then ok "at the tail, the rows are contiguous again"; else bad "a
 check "the tail sits on the frame again" "$(row_of 'l#59 line')" "$last"
 if _vis_lacks 'Ctrl+End'; then ok "following again: no indicator"; else bad "the indicator outlived the return"; dump_pane; fi
 
-# Ctrl+Home, then output while paused: the view does not move, the indicator counts it, and
-# Ctrl+End follows again.
+# Output while paused: the stream is sent from the tail (a submit follows the tail) and holds after
+# its first line; Ctrl+Home, then the release — the view does not move, the indicator counts the
+# rest, and Ctrl+End follows again.
+HOLD="s37-$$"
+type_ "stream 30 5 hold@1:$HOLD"
+key Enter
+wait_vis 'l#00 line' || miss "the held stream never started"
 page C-Home || miss "Ctrl+Home moved nothing"
 if _vis_has 'ι> iota'; then ok "Ctrl+Home shows the first line"; else bad "Ctrl+Home is not at the top"; dump_pane; fi
 top="$(cap | head -8)"
-type_ 'stream 30 5'
-key Enter
+release "$HOLD"
 wait_vis 'new lines · Ctrl+End' || miss "no new-lines count while paused"
 check "new output does not move a paused view" "$(cap | head -8)" "$top"
 key C-End
@@ -107,10 +112,15 @@ settle
 if _vis_lacks 'Ctrl+End'; then ok "Ctrl+End follows again"; else bad "still paused after Ctrl+End"; dump_pane; fi
 fs_frame "back on the tail" 80 24
 
-# Following the tail: the next turn's rows show without a key.
+# A submit from a scrolled-back view follows the tail again: the next turn's rows show without a
+# key, and the indicator is gone.
+page C-Home || miss "Ctrl+Home moved nothing"
+if _vis_has 'Ctrl+End'; then ok "scrolled back before the submit"; else bad "Ctrl+Home left no indicator"; dump_pane; fi
 type_ 'echo-after'
 key Enter
 wait_vis 'echo: echo-after' || miss "the next turn's reply is not on screen"
+settle
+if _vis_lacks 'Ctrl+End'; then ok "the submit followed the tail"; else bad "still paused after the submit"; dump_pane; fi
 fs_frame "the next turn" 80 24
 
 finish

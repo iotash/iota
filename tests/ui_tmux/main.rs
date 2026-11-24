@@ -643,7 +643,7 @@ fn tmux_config_trust() {
 }
 
 /// L4 #37 (tui-plan S1) — the full screen: the alternate screen held, the frame pinned to the bottom at
-/// full width, `PgUp` walking back to the banner and `PgDn` returning to the tail.
+/// full width, `PgUp` walking back to the banner and `PgDn` returning to the tail, a submit following the tail.
 #[test]
 fn tmux_fullscreen_scroll() {
     run_scenario("37-fullscreen-scroll.sh");
