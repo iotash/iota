@@ -7,6 +7,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **The newest step of a running tool call shows at the top.** The rows under
+  a tool call's spinner — each finished step, a `◇ thought` — now put the
+  latest one directly under the spinner line and push the older ones down,
+  the oldest dropping off the bottom, instead of adding it at the bottom and
+  shifting everything up.
 - **Sending a message brings the conversation back to the bottom.** Scrolled up
   to read something earlier, type a message and press Enter: the view follows
   the newest output again, as `Ctrl+End` would, so the answer streams in where

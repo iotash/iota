@@ -222,6 +222,9 @@ impl Region {
     /// Replaces the call preview's body rows wholesale (region.go:377-388): each progressive
     /// image frame supersedes the last, so the widget refines in place instead of scrolling.
     ///
+    /// The rows keep the order they are given, top to bottom: they are a picture, not a log, so
+    /// [`Region::preview_line`]'s newest-first roll does not apply to them.
+    ///
     /// A no-op unless a call preview is up and still receiving — a frame racing the settle must
     /// not resurrect the widget. Bounded by the caller (frames are 64×12, so ≤ 12 rows); rows go
     /// through [`one_row`] like every preview entry, then the snapshot is published.
@@ -233,16 +236,15 @@ impl Region {
         self.publish(Vec::new());
     }
 
-    /// Appends a raw source line to the rolling preview window (region.go:422-436).
+    /// Rolls a raw source line into the preview window newest-first (X-118; Go appended,
+    /// region.go:422-436): the new row lands at the front — directly under the header, where the
+    /// eye already is — the older rows move down, and the oldest drops off the end.
     pub(crate) fn preview_line(&mut self, line: &str) {
         if !self.open {
             return;
         }
-        self.preview_tail.push(one_row(line));
-        if self.preview_tail.len() > PREVIEW_WINDOW {
-            let excess = self.preview_tail.len() - PREVIEW_WINDOW;
-            self.preview_tail.drain(..excess);
-        }
+        self.preview_tail.insert(0, one_row(line));
+        self.preview_tail.truncate(PREVIEW_WINDOW);
         self.publish(Vec::new());
     }
 

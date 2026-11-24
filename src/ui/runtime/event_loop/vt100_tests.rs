@@ -262,6 +262,33 @@ fn the_exit_writes_the_conversation_out_once_and_no_frame() {
     assert!(row_of(TRANSCRIPT_MARK) < row_of("banner-row"), "{dump}");
 }
 
+/// X-118 on the wire: a row rolled into the call widget lands directly under its header, over
+/// the one before it.
+#[test]
+fn a_call_line_lands_under_the_widget_header() {
+    let h = start_loop();
+    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
+    {
+        let mut r = h.region.lock().unwrap();
+        r.open_call_preview("[shell …]");
+        r.preview_line("row-first");
+        r.preview_line("row-second");
+    }
+    assert!(
+        h.wait_until(Duration::from_secs(1), |h| h
+            .contents()
+            .contains("row-second")),
+        "the widget never rendered:\n{}",
+        h.contents()
+    );
+    let rows: Vec<String> = h.contents().lines().map(str::to_owned).collect();
+    let row_of = |needle: &str| rows.iter().position(|l| l.contains(needle)).unwrap();
+    let header = row_of("[shell …]");
+    assert_eq!(row_of("row-second"), header + 1, "{rows:#?}");
+    assert_eq!(row_of("row-first"), header + 2, "{rows:#?}");
+    h.quit_and_join(Duration::from_secs(2));
+}
+
 /// W4's law, kept: an iteration that lands committed rows ends with a draw + cursor restore — the
 /// composer cursor cell is IDENTICAL before and after each batch of rows, and the idle frame
 /// carries no spinner glyph. Replaces Go's `TestRegionSnapshotChangesView` cursor-bump

@@ -44,7 +44,8 @@ fn region_commit_splits_embedded_newlines() {
 /// The one-row invariant on the preview side: labels (fresh open AND the in-place
 /// relabel), rolling preview lines, and the status-row detail each render — and count
 /// in the cursor offset — as exactly one frame row, so embedded line breaks collapse to
-/// spaces on entry. The rolling body keeps the last [`PREVIEW_WINDOW`] lines.
+/// spaces on entry. The rolling body keeps the last [`PREVIEW_WINDOW`] lines, newest first
+/// (X-118): a fourth row drops the oldest, the last one.
 #[test]
 fn region_preview_entries_collapse_to_one_row() {
     let mut r = region_emitting(|_, _| {});
@@ -58,11 +59,13 @@ fn region_preview_entries_collapse_to_one_row() {
 
     r.preview_line("|a|\n|b|");
     assert_eq!(r.preview_tail, s(&["|a| |b|"]));
-    for l in ["c", "d", "e"] {
+    for l in ["c", "d"] {
         r.preview_line(l);
     }
+    assert_eq!(r.preview_tail, s(&["d", "c", "|a| |b|"]), "newest at [0]");
+    r.preview_line("e");
     assert_eq!(r.preview_tail.len(), PREVIEW_WINDOW);
-    assert_eq!(r.preview_tail, s(&["c", "d", "e"]));
+    assert_eq!(r.preview_tail, s(&["e", "d", "c"]), "the oldest dropped");
 }
 
 /// New (no Go twin — `setCallBody` ships without a unit test; `T3_TEST_PLAN` §2 pins it):
@@ -92,6 +95,10 @@ fn region_set_call_body_replaces_the_widget_body() {
         before + 1,
         "each frame publishes"
     );
+
+    // A picture keeps its own order: no newest-first roll.
+    r.set_call_body(s(&["top", "middle", "bottom"]));
+    assert_eq!(r.preview_tail, s(&["top", "middle", "bottom"]));
 
     // The next frame REPLACES (a longer body does not append to the last).
     r.set_call_body(s(&["only"]));

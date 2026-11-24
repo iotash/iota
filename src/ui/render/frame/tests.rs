@@ -882,6 +882,37 @@ fn region_rendering() {
     );
 }
 
+/// The widget draws `preview_tail` in its order — newest first (X-118): the header is row 0,
+/// the newest body row row 1, the oldest row 3, then the `⎿` status row.
+#[test]
+fn region_body_draws_newest_first_under_the_header() {
+    let v = view(&Case {
+        region: RegionSnapshot {
+            label: "[shell …]".to_owned(),
+            preview_tail: vec![
+                "newest".to_owned(),
+                "middle".to_owned(),
+                "oldest".to_owned(),
+            ],
+            since: Some(Instant::now()),
+            ..RegionSnapshot::default()
+        },
+        ..Case::default()
+    });
+    let rows = plain(&v);
+    assert!(rows[0].contains("[shell …]"), "header:\n{rows:#?}");
+    assert!(
+        rows[1].contains("newest"),
+        "newest under the header:\n{rows:#?}"
+    );
+    assert!(rows[2].contains("middle"), "{rows:#?}");
+    assert!(rows[3].contains("oldest"), "oldest last:\n{rows:#?}");
+    assert!(
+        rows[4].contains('⎿'),
+        "status row after the body:\n{rows:#?}"
+    );
+}
+
 /// Queue rendering laws at the frame level: the hint rides the last fully-visible row
 /// only when nothing is hidden; the overflow row carries it otherwise; slash items
 /// re-wrap green.
