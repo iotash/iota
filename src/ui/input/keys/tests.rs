@@ -705,6 +705,28 @@ fn row_7_enter_submits_trimmed_or_ignores_blank() {
     );
 }
 
+/// Row 7 and the view: a sent draft asks for the tail (`ViewOp::Bottom`, Ctrl+End's op) —
+/// to a parked reader and onto the queue alike; Enter on a blank draft moves nothing.
+#[test]
+fn row_7_a_submit_follows_the_tail_and_a_blank_one_moves_nothing() {
+    use crate::ui::runtime::screen::ViewOp;
+    let mut m = test_model();
+    type_text(&mut m, "   ");
+    enter(&mut m);
+    assert!(m.view_ops.is_empty(), "a blank draft: {:?}", m.view_ops);
+
+    type_text(&mut m, "queued");
+    enter(&mut m);
+    assert_eq!(m.view_ops, vec![ViewOp::Bottom], "the queue path");
+
+    m.view_ops.clear();
+    let mut reader = park(&mut m, 1);
+    type_text(&mut m, "served");
+    enter(&mut m);
+    assert!(reader.try_recv().is_ok(), "served");
+    assert_eq!(m.view_ops, vec![ViewOp::Bottom], "the parked-reader path");
+}
+
 /// Row 7a: Ctrl+J, Alt+Enter and Shift+Enter each insert a newline at the cursor and submit
 /// nothing; the two-line draft then goes out WHOLE on Enter — through `submit`'s trim and
 /// `make_input`, to the reader.

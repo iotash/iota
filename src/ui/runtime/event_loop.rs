@@ -877,7 +877,8 @@ impl Model {
     }
 
     /// Enter: trim; empty ignored; a parked waiter gets it directly, else it queues
-    /// (type-ahead); the composer collapses to one row (model.go:473-488).
+    /// (type-ahead); the composer collapses to one row (model.go:473-488). A sent draft puts
+    /// the view back on the tail, as Ctrl+End does: the answer is what the user waits for.
     pub(crate) fn submit(&mut self) {
         let text = self.composer.value().trim().to_owned();
         self.composer.reset();
@@ -886,6 +887,7 @@ impl Model {
             return;
         }
         self.composer.push_history(&text);
+        self.view_ops.push(ViewOp::Bottom);
         if let Some(w) = self.waiter.take() {
             let _ = w.reply.send(Ok(paste::make_input(&self.pastes, &text)));
         } else {

@@ -1363,6 +1363,45 @@ fn a_drag_through_the_loop_copies_and_the_status_row_says_so() {
     h.quit_and_join(Duration::from_secs(5));
 }
 
+/// A sent draft follows the tail again: forty committed rows, `PgUp` leaves the tail (the
+/// `↓ … Ctrl+End` row shows), then a typed line and Enter put the view back on it — that row is
+/// gone and the newest committed row is the conversation's last visible one.
+#[test]
+fn a_submit_puts_a_scrolled_view_back_on_the_tail() {
+    use crossterm::event::KeyCode;
+    let h = start_loop();
+    let rows: Vec<String> = (0..40).map(|i| format!("row-{i:02}")).collect();
+    h.tx.send(UiMsg::Scrollback(Block::rows(rows))).unwrap();
+    assert!(
+        h.wait_until(Duration::from_secs(2), |h| h.contents().contains("row-39")),
+        "{}",
+        h.contents()
+    );
+    h.etx.send(key(KeyCode::PageUp)).unwrap();
+    assert!(
+        h.wait_until(Duration::from_secs(2), |h| h
+            .contents()
+            .contains("Ctrl+End")),
+        "PgUp left the tail: {}",
+        h.contents()
+    );
+    for ev in typed("hello") {
+        h.etx.send(ev).unwrap();
+    }
+    h.etx.send(key(KeyCode::Enter)).unwrap();
+    assert!(
+        h.wait_until(Duration::from_secs(2), |h| !h
+            .contents()
+            .contains("Ctrl+End")),
+        "the submit followed the tail: {}",
+        h.contents()
+    );
+    let shown = h.contents();
+    let last = shown.lines().rfind(|l| l.starts_with("row-"));
+    assert_eq!(last, Some("row-39"), "{shown}");
+    h.quit_and_join(Duration::from_secs(5));
+}
+
 /// The composer's selection on a WRAPPED draft at 80 columns, through the real loop: a drag from
 /// the first row to the second selects across the wrap — both rows' cells reversed, nothing else
 /// — the real cursor stays at the drag's end, the release copies exactly the selected text, and

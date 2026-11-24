@@ -3,6 +3,15 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Changed
+
+- **Sending a message brings the conversation back to the bottom.** Scrolled up
+  to read something earlier, type a message and press Enter: the view follows
+  the newest output again, as `Ctrl+End` would, so the answer streams in where
+  you can see it. Enter on an empty composer leaves the view where it is.
+
 ## 0.13.0 - 2026-11-22
 
 ### Added
