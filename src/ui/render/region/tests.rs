@@ -330,8 +330,17 @@ fn theme_sgr_pins() {
     assert_eq!(crate::ui::render::theme::REV_ON, "\x1b[7m");
     assert_eq!(crate::ui::render::theme::RESET, "\x1b[0m");
     assert_eq!(crate::ui::render::theme::ERR_PREFIX, "\x1b[31m⚠ \x1b[0m");
-    assert_eq!(crate::ui::render::theme::SEARCH_HIT, "\x1b[7m");
-    assert_eq!(crate::ui::render::theme::SEARCH_CUR, "\x1b[7;33m");
+    assert_eq!(crate::ui::render::theme::SELECTION_BG, 243);
+    assert_eq!(
+        crate::ui::render::theme::search_hit(true),
+        "\x1b[27;48;5;243m"
+    );
+    assert_eq!(
+        crate::ui::render::theme::search_cur(true),
+        "\x1b[27;48;5;243;33m"
+    );
+    assert_eq!(crate::ui::render::theme::search_hit(false), "\x1b[7m");
+    assert_eq!(crate::ui::render::theme::search_cur(false), "\x1b[7;33m");
 
     assert_eq!(crate::ui::render::theme::input_bg(true), "\x1b[48;5;236m");
     assert_eq!(crate::ui::render::theme::input_bg(false), "\x1b[48;5;254m");

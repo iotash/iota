@@ -1403,9 +1403,9 @@ fn a_submit_puts_a_scrolled_view_back_on_the_tail() {
 }
 
 /// The composer's selection on a WRAPPED draft at 80 columns, through the real loop: a drag from
-/// the first row to the second selects across the wrap — both rows' cells reversed, nothing else
+/// the first row to the second selects across the wrap — both rows' cells filled, nothing else
 /// — the real cursor stays at the drag's end, the release copies exactly the selected text, and
-/// the exit's write-out carries no reverse video.
+/// the exit's write-out carries neither the fill nor reverse video.
 #[test]
 fn a_composer_selection_spans_the_wrap_and_the_write_out_stays_plain() {
     use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -1455,13 +1455,13 @@ fn a_composer_selection_spans_the_wrap_and_the_write_out_stays_plain() {
     let p = parse(&h.buf);
     let lit: Vec<(u16, u16)> = (0..24)
         .flat_map(|r| (0..80).map(move |c| (r, c)))
-        .filter(|&(r, c)| p.screen().cell(r, c).is_some_and(vt100::Cell::inverse))
+        .filter(|&(r, c)| p.screen().cell(r, c).is_some_and(filled))
         .collect();
     let want: Vec<(u16, u16)> = (70..80)
         .map(|c| (top, c))
         .chain((0..10).map(|c| (top + 1, c)))
         .collect();
-    assert_eq!(lit, want, "both rows of the wrap reversed, nothing else");
+    assert_eq!(lit, want, "both rows of the wrap filled, nothing else");
     assert!(
         parse(&h.buf).screen().hide_cursor(),
         "the caret is hidden while the selection stands"
@@ -1475,17 +1475,19 @@ fn a_composer_selection_spans_the_wrap_and_the_write_out_stays_plain() {
         .find("\u{1b}[?1049l")
         .expect("the exit left the alternate screen");
     assert!(
-        !out[left..].contains("\u{1b}[7m") && !out[left..].contains(";7m"),
+        !out[left..].contains("\u{1b}[7m")
+            && !out[left..].contains(";7m")
+            && !out[left..].contains("48;5;243"),
         "the write-out carries the selection: {:?}",
         &out[left..]
     );
 }
 
 /// A triple-click on a WRAPPED draft of many words at 80 columns, through the real loop: the whole
-/// draft is reversed — all of its first row and the second up to its end, nothing else — and the
+/// draft is filled — all of its first row and the second up to its end, nothing else — and the
 /// release copies all of it.
 #[test]
-fn a_composer_triple_click_reverses_the_whole_wrapped_draft() {
+fn a_composer_triple_click_fills_the_whole_wrapped_draft() {
     use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     let h = start_loop_mouse(true);
     // Words and blanks (every fifth cell from the third), the first row ending on a letter.
@@ -1531,7 +1533,7 @@ fn a_composer_triple_click_reverses_the_whole_wrapped_draft() {
     let p = parse(&h.buf);
     let lit: Vec<(u16, u16)> = (0..24)
         .flat_map(|r| (0..80).map(move |c| (r, c)))
-        .filter(|&(r, c)| p.screen().cell(r, c).is_some_and(vt100::Cell::inverse))
+        .filter(|&(r, c)| p.screen().cell(r, c).is_some_and(filled))
         .collect();
     let want: Vec<(u16, u16)> = (0..80)
         .map(|c| (top, c))
@@ -1539,7 +1541,7 @@ fn a_composer_triple_click_reverses_the_whole_wrapped_draft() {
         .collect();
     assert_eq!(
         lit, want,
-        "the whole draft reversed across the wrap, nothing else"
+        "the whole draft filled across the wrap, nothing else"
     );
     assert!(
         parse(&h.buf).screen().hide_cursor(),
@@ -1549,11 +1551,11 @@ fn a_composer_triple_click_reverses_the_whole_wrapped_draft() {
 }
 
 /// A double-click on the last word of `hello world ` at 80 columns, through the real loop: exactly
-/// the word's five cells are reversed, the copy is `world` with no space, and the caret — which
+/// the word's five cells are filled, the copy is `world` with no space, and the caret — which
 /// sits on the space after the word — is hidden while the selection stands, so its block never
 /// reads as a sixth selected cell; a key ends the selection and the caret is back.
 #[test]
-fn a_composer_double_click_reverses_the_word_alone_and_hides_the_caret() {
+fn a_composer_double_click_fills_the_word_alone_and_hides_the_caret() {
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
@@ -1599,10 +1601,10 @@ fn a_composer_double_click_reverses_the_word_alone_and_hides_the_caret() {
     let p = parse(&h.buf);
     let lit: Vec<(u16, u16)> = (0..24)
         .flat_map(|r| (0..80).map(move |c| (r, c)))
-        .filter(|&(r, c)| p.screen().cell(r, c).is_some_and(vt100::Cell::inverse))
+        .filter(|&(r, c)| p.screen().cell(r, c).is_some_and(filled))
         .collect();
     let want: Vec<(u16, u16)> = (6..11).map(|c| (top, c)).collect();
-    assert_eq!(lit, want, "the word's cells reversed, not the space");
+    assert_eq!(lit, want, "the word's cells filled, not the space");
     assert!(
         p.screen().hide_cursor(),
         "the caret is hidden while the selection stands"
@@ -2800,4 +2802,9 @@ mod asked_again {
         }
         h.quit_and_join(LONG);
     }
+}
+
+/// Whether a replayed cell is the selection's fill (`theme::SELECTION_BG`), not reversed.
+fn filled(c: &vt100::Cell) -> bool {
+    c.bgcolor() == vt100::Color::Idx(243) && !c.inverse()
 }

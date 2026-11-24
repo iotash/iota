@@ -6,7 +6,9 @@
 //! a display column. A selection can therefore run past the viewport — the drag scrolls it, and the
 //! ends stay on their text while new output arrives.
 //!
-//! - **Drawn** as reverse video on the screen's cells only ([`span`]): the rows themselves are
+//! - **Drawn** as a fill on the screen's cells only ([`span`]): the cells keep their foreground
+//!   and take the `theme::SELECTION_BG` background, their reverse dropped (a user block's cells
+//!   read as the fill too); under `NO_COLOR` reverse video instead. The rows themselves are
 //!   never touched, so a write-out (`Ctrl+O`, the exit) never carries a selection's styling.
 //! - **Copied** as plain text ([`text`]): SGR stripped, the segments the SCREEN wrapped a line into
 //!   joined back into that line, every other line — between blocks, and the lines a laid-out block

@@ -1039,10 +1039,15 @@ fn a_double_click_copies_the_word_and_a_click_nothing() {
     assert_eq!(s.take_copied(), None);
 }
 
-/// The selection is drawn on the screen's cells only: shown in reverse video, and a write-out
-/// after it carries the rows as committed — no reverse video, no selection at all.
+/// Whether a replayed cell is the selection's fill: the `SELECTION_BG` background, not reversed.
+fn filled(c: &vt100::Cell) -> bool {
+    c.bgcolor() == vt100::Color::Idx(243) && !c.inverse()
+}
+
+/// The selection is drawn on the screen's cells only: shown as the fill, and a write-out after
+/// it carries the rows as committed — no fill, no selection at all.
 #[test]
-fn the_selection_is_drawn_reversed_and_never_written_out() {
+fn the_selection_is_drawn_as_a_fill_and_never_written_out() {
     let (mut s, buf) = mouse_screen(40, 12);
     s.push(rows_of(&rows(8)));
     s.draw_frame(&frame(40), None).unwrap();
@@ -1057,14 +1062,17 @@ fn the_selection_is_drawn_reversed_and_never_written_out() {
     select(&mut s, SelectOp::Drag { col: 7, row: 4 });
     s.draw_frame(&frame(40), None).unwrap();
     let p = replay(&buf, 12, 40);
-    let inv = |row, col| p.screen().cell(row, col).is_some_and(vt100::Cell::inverse);
-    assert!(inv(2, 0) && inv(3, 7) && inv(4, 7), "drawn reversed");
-    assert!(!inv(1, 0) && !inv(4, 8) && !inv(5, 0), "only the selection");
+    let lit = |row, col| p.screen().cell(row, col).is_some_and(filled);
+    assert!(lit(2, 0) && lit(3, 7) && lit(4, 7), "drawn as the fill");
+    assert!(!lit(1, 0) && !lit(4, 8) && !lit(5, 0), "only the selection");
     let mark = buf.bytes().len();
     s.view(ViewOp::Dump).unwrap();
     let out = buf.bytes()[mark..].to_vec();
     assert!(has(&out, b"line-002") && has(&out, b"line-004"));
-    assert!(!has(&out, b"\x1b[7m"), "no reverse video in the write-out");
+    assert!(
+        !has(&out, b"\x1b[7m") && !has(&out, b"243"),
+        "no selection styling in the write-out"
+    );
     assert_eq!(s.take_copied(), None, "a write-out copies nothing");
 }
 
@@ -1398,7 +1406,7 @@ fn a_floating_area_covers_the_last_rows_and_the_way_back_stays_visible() {
 }
 
 /// A selection never reaches the floating rows: a drag down onto them selects to the end of the
-/// last visible line, and nothing on the area is drawn reversed.
+/// last visible line, and nothing on the area is drawn as the fill.
 #[test]
 fn a_selection_is_never_drawn_on_the_floating_rows() {
     let (mut s, buf) = mouse_screen(40, 12);
@@ -1415,9 +1423,9 @@ fn a_selection_is_never_drawn_on_the_floating_rows() {
     select(&mut s, SelectOp::Drag { col: 3, row: 6 });
     s.draw_frame(&floating(40, 3), None).unwrap();
     let p = replay(&buf, 12, 40);
-    let inv = |row, col| p.screen().cell(row, col).is_some_and(vt100::Cell::inverse);
-    assert!(inv(2, 0) && inv(4, 7), "drawn reversed above the area");
-    assert!((5..12).all(|r| (0..40).all(|c| !inv(r, c))), "on the frame");
+    let lit = |row, col| p.screen().cell(row, col).is_some_and(filled);
+    assert!(lit(2, 0) && lit(4, 7), "drawn as the fill above the area");
+    assert!((5..12).all(|r| (0..40).all(|c| !lit(r, c))), "on the frame");
     select(&mut s, SelectOp::Release);
     let copied = s.take_copied().unwrap();
     assert_eq!(
@@ -1467,4 +1475,68 @@ fn paging_under_a_floating_area_skips_no_line() {
     s.view(ViewOp::HalfUp).unwrap();
     s.draw_frame(&floating(40, 3), None).unwrap();
     assert_eq!(grid(&replay(&buf, 12, 40))[0], "line-000");
+}
+
+/// The case the fill exists for: a user block is reverse video already, so a reversed selection
+/// over it could not be seen. Selected, the block's cells — its `▌` bar among them — are the fill
+/// behind the terminal's foreground, not reversed; the rows around it are filled the same way.
+#[test]
+fn a_selection_over_a_user_block_is_the_fill_not_reverse_video() {
+    let (mut s, buf) = mouse_screen(40, 12);
+    s.push(rows_of(&rows(2)));
+    s.push(vec![crate::ui::block::Block::laid(
+        crate::ui::block::UserBlock::new("hello there", None),
+    )]);
+    s.push(rows_of(&rows(2)));
+    s.draw_frame(&frame(40), None).unwrap();
+    let p = replay(&buf, 12, 40);
+    let at = grid(&p)
+        .iter()
+        .position(|r| r.starts_with("▌ hello there"))
+        .expect("the user block's row");
+    let row = u16::try_from(at).unwrap();
+    assert!(
+        p.screen().cell(row, 4).is_some_and(vt100::Cell::inverse),
+        "a user block is reverse video"
+    );
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 0,
+            row: 0,
+            clicks: 1,
+        },
+    );
+    select(
+        &mut s,
+        SelectOp::Drag {
+            col: 5,
+            row: row + 1,
+        },
+    );
+    s.draw_frame(&frame(40), None).unwrap();
+    let p = replay(&buf, 12, 40);
+    let lit = |r, c| p.screen().cell(r, c).is_some_and(filled);
+    assert!(lit(0, 0) && lit(1, 3), "the rows above");
+    assert!(
+        (0..13).all(|c| lit(row, c)),
+        "the block's cells, its bar too: the fill, not reversed"
+    );
+}
+
+/// With colour off the fill would be dropped like every colour, so a selected cell is reverse
+/// video — the one marker left; with it on the reverse goes and the fill comes.
+#[test]
+fn a_selected_cell_is_reversed_with_colour_off_and_filled_with_it_on() {
+    use ratatui::buffer::Cell;
+    use ratatui::style::{Color, Modifier};
+    let mut off = Cell::default();
+    super::select_cell(&mut off, false);
+    assert!(off.modifier.contains(Modifier::REVERSED));
+    assert_eq!(off.bg, Color::Reset);
+    let mut on = Cell::default();
+    on.modifier.insert(Modifier::REVERSED);
+    super::select_cell(&mut on, true);
+    assert!(!on.modifier.contains(Modifier::REVERSED));
+    assert_eq!(on.bg, Color::Indexed(243));
 }

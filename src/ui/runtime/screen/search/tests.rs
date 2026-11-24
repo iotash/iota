@@ -15,7 +15,7 @@ fn rows_of(lines: &[String]) -> Vec<crate::ui::block::Block> {
 
 use super::SearchOp;
 use crate::ui::render::frame::FrameView;
-use crate::ui::render::theme::{SEARCH_CUR, SEARCH_HIT};
+use crate::ui::render::theme::{search_cur, search_hit};
 use crate::ui::runtime::screen::{Prompt, Screen, ViewOp};
 use crate::ui::testutil::SharedBuf;
 
@@ -108,12 +108,12 @@ impl T {
         self.grid()[..usize::from(H) - 5].to_vec()
     }
 
-    /// Whether the cell at (row, col) is drawn reversed (a highlight).
-    fn reversed(&self, row: u16, col: u16) -> bool {
+    /// Whether the cell at (row, col) is lit: the selection's fill, not reversed (a highlight).
+    fn lit(&self, row: u16, col: u16) -> bool {
         self.parser()
             .screen()
             .cell(row, col)
-            .is_some_and(vt100::Cell::inverse)
+            .is_some_and(|c| c.bgcolor() == vt100::Color::Idx(243) && !c.inverse())
     }
 }
 
@@ -286,22 +286,27 @@ fn hits_are_highlighted_the_current_one_brighter_and_they_go_with_the_search() {
         .find(|&r| t.view()[r].starts_with("line-00020"))
         .unwrap();
     let col = u16::try_from("line-00021 ".len()).unwrap();
-    assert!(t.reversed(u16::try_from(cur).unwrap(), col));
-    assert!(t.reversed(u16::try_from(other).unwrap(), col));
-    assert!(
-        !t.reversed(u16::try_from(cur).unwrap(), 0),
-        "only the match"
+    assert!(t.lit(u16::try_from(cur).unwrap(), col));
+    assert!(t.lit(u16::try_from(other).unwrap(), col));
+    assert!(!t.lit(u16::try_from(cur).unwrap(), 0), "only the match");
+    let fg = |r: usize| {
+        t.parser()
+            .screen()
+            .cell(u16::try_from(r).unwrap(), col)
+            .map(vt100::Cell::fgcolor)
+    };
+    assert_eq!(
+        fg(cur),
+        Some(vt100::Color::Idx(3)),
+        "the current hit is yellow"
     );
-    let bytes = String::from_utf8_lossy(&t.buf.bytes()).into_owned();
-    assert!(
-        bytes.contains("\u{1b}[7;33m") || bytes.contains(SEARCH_CUR) || bytes.contains(SEARCH_HIT)
-    );
+    assert_eq!(fg(other), Some(vt100::Color::Default), "the other is not");
     t.op(SearchOp::Accept);
     let cur = (0..8)
         .find(|&r| t.view()[r].starts_with("line-00021"))
         .unwrap();
     assert!(
-        !t.reversed(u16::try_from(cur).unwrap(), col),
+        !t.lit(u16::try_from(cur).unwrap(), col),
         "the highlight left with the search"
     );
 }
@@ -321,9 +326,9 @@ fn a_hit_that_straddles_a_wrap_is_found_lands_on_its_first_line_and_lights_both(
     assert_eq!(v[first + 1], "dle and the rest", "{v:#?}");
     assert_eq!(first, 4, "centred on the line the match starts on: {v:#?}");
     let f = u16::try_from(first).unwrap();
-    assert!(t.reversed(f, 37) && t.reversed(f, 39), "`nee` lit");
-    assert!(t.reversed(f + 1, 0) && t.reversed(f + 1, 2), "`dle` lit");
-    assert!(!t.reversed(f + 1, 4), "and nothing past it");
+    assert!(t.lit(f, 37) && t.lit(f, 39), "`nee` lit");
+    assert!(t.lit(f + 1, 0) && t.lit(f + 1, 2), "`dle` lit");
+    assert!(!t.lit(f + 1, 4), "and nothing past it");
 }
 
 #[test]
@@ -389,7 +394,7 @@ fn a_write_out_during_a_search_writes_plain_rows_and_the_search_survives() {
         "the row, plain: {dumped:?}"
     );
     assert!(
-        !dumped.contains(SEARCH_HIT) && !dumped.contains(SEARCH_CUR),
+        !dumped.contains(search_hit(true)) && !dumped.contains(search_cur(true)),
         "a highlight was written out"
     );
     t.s.view(ViewOp::Return).unwrap();
@@ -405,7 +410,7 @@ fn a_write_out_during_a_search_writes_plain_rows_and_the_search_survives() {
     t.s.leave().unwrap();
     let out = String::from_utf8_lossy(&t.buf.bytes()[mark..]).into_owned();
     assert!(
-        out.contains("line-00000 needle\u{1b}[0m\r\n") && !out.contains(SEARCH_HIT),
+        out.contains("line-00000 needle\u{1b}[0m\r\n") && !out.contains(search_hit(true)),
         "{out:?}"
     );
 }

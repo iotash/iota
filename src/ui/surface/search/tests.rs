@@ -18,10 +18,10 @@ use crossterm::event::KeyCode;
 
 use crate::ui::testutil::{Surf, ch, closed, key};
 
-use crate::ui::render::theme::{CYAN, FAINT, RESET, SEARCH_CUR, SEARCH_HIT};
+use crate::ui::render::theme::{CYAN, FAINT, RESET, REV_ON, search_cur, search_hit};
 use crate::ui::surface::SurfaceEffect;
 use crate::ui::surface::search::{
-    SearchMode, ascii_fold, highlight_line, match_ranges, matches_query,
+    SearchMode, ascii_fold, highlight_line, highlight_line_with, match_ranges, matches_query,
 };
 
 fn long_items(n: usize) -> Vec<String> {
@@ -85,13 +85,13 @@ fn match_ranges_index_the_original_string() {
 
 // --- highlighting -----------------------------------------------------------
 
-/// The basic wrap: the hit is reversed, the rest of the line is untouched, and
+/// The basic wrap: the hit is filled, the rest of the line is untouched, and
 /// stripping the SGR gives the original back.
 #[test]
 fn highlight_line_wraps_a_plain_hit() {
     let got = highlight_line("hello world", "world", None);
     assert!(
-        got.contains(&format!("{SEARCH_HIT}world")),
+        got.contains(&format!("{}world", search_hit(true))),
         "hit not highlighted: {got:?}"
     );
     assert_eq!(strip_sgr(&got), "hello world");
@@ -127,13 +127,38 @@ fn highlight_line_never_splits_an_escape() {
 fn highlight_line_marks_the_current_hit_differently() {
     let got = highlight_line("foo bar foo", "foo", Some(8));
     assert!(
-        got.contains(SEARCH_CUR),
+        got.contains(search_cur(true)),
         "current hit not distinguished: {got:?}"
     );
     assert!(
-        got.contains(SEARCH_HIT),
+        got.contains(search_hit(true)),
         "other hit not highlighted: {got:?}"
     );
+}
+
+/// A hit inside a user block (a `\x1b[7m` span) opens with reverse off and the fill, so it reads
+/// as the fill instead of a hole in the block, and the block's reverse comes back after it.
+#[test]
+fn a_hit_inside_a_reversed_span_drops_the_reverse_and_restores_it_after() {
+    let line = format!("{REV_ON}▌ find the needle here{RESET}");
+    let got = highlight_line_with(&line, "needle", None, true);
+    assert_eq!(strip_sgr(&got), "▌ find the needle here");
+    assert!(
+        got.contains("\x1b[27;48;5;243mneedle\x1b[0m\x1b[7m here"),
+        "reverse off + the fill, then the block's reverse replayed: {got:?}"
+    );
+    let cur = highlight_line_with(&line, "needle", Some(13), true);
+    assert!(cur.contains("\x1b[27;48;5;243;33mneedle"), "{cur:?}");
+}
+
+/// With colour off the fill would be dropped at the cell boundary, so a hit is reverse video.
+#[test]
+fn with_colour_off_a_hit_is_reverse_video() {
+    let line = format!("{REV_ON}▌ find the needle here{RESET}");
+    let got = highlight_line_with(&line, "needle", None, false);
+    assert!(got.contains("\x1b[7mneedle\x1b[0m\x1b[7m here"), "{got:?}");
+    let cur = highlight_line_with("a needle", "needle", Some(2), false);
+    assert!(cur.contains("\x1b[7;33mneedle"), "{cur:?}");
 }
 
 #[test]

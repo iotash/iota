@@ -22,7 +22,7 @@ use crossterm::event::KeyCode;
 
 use crate::ui::testutil::{Surf, ch, key};
 
-use crate::ui::render::theme::SEARCH_CUR;
+use crate::ui::render::theme::search_cur;
 use crate::ui::surface::SurfaceEffect;
 use crate::ui::surface::search::{SearchHit, SearchMode};
 
@@ -207,13 +207,13 @@ fn the_highlight_lives_in_the_rendered_body_and_leaves_with_the_search() {
     let mut s = open_search_view(view_body(60));
     s.search("needle");
     assert!(
-        s.content().contains(SEARCH_CUR),
+        s.content().contains(search_cur(true)),
         "the current hit is not highlighted in the rendered body"
     );
     s.tap(key(KeyCode::Esc)); // → typing
     s.tap(key(KeyCode::Esc)); // → off
     assert!(
-        !s.content().contains(SEARCH_CUR),
+        !s.content().contains(search_cur(true)),
         "the highlight survived leaving search"
     );
 }

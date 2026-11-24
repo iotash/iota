@@ -11,8 +11,9 @@
 //! - row bg — the current row of a list ([`row_bg`]): tint + [`CURSOR_MARK`] + bold label
 //! - yellow — warning: a figure heading somewhere the user should notice
 //! - red    — alerts ([`ERR_PREFIX`])
-//! - revOn  — strong emphasis, "this is yours / this is focused": user blocks, focused tab chips,
-//!   search hits
+//! - revOn  — strong emphasis, "this is yours / this is focused": user blocks, focused tab chips
+//! - fill   — the in-app selection and the search hits ([`SELECTION_BG`]): a mid-gray background,
+//!   reverse video only under `NO_COLOR`
 //! - bar    — a user block's `▌` column and its tab's fill: gray ([`USER_BAR`]) typed, teal
 //!   ([`HOST_BAR`]) a block with a tab (a host's message) (X-105, X-107)
 //!
@@ -47,10 +48,46 @@ pub(crate) const RESET: &str = "\x1b[0m";
 /// `RED` + `"⚠ "` + `RESET`).
 pub(crate) const ERR_PREFIX: &str = "\x1b[31m⚠ \x1b[0m";
 
-/// Search-hit highlight: reverse video (`TUI_CONTRACTS` §9).
-pub(crate) const SEARCH_HIT: &str = "\x1b[7m";
-/// Current search hit: reverse + yellow (`TUI_CONTRACTS` §9).
-pub(crate) const SEARCH_CUR: &str = "\x1b[7;33m";
+/// The palette index of [`SELECTION_BG`], as a literal `concat!` can splice into an SGR string,
+/// so the cell paint and the search hits read ONE value.
+macro_rules! selection_bg {
+    () => {
+        243
+    };
+}
+
+/// The fill of a selected cell and of a search hit: a mid gray (#767676), a BACKGROUND behind
+/// the cell's own foreground, never reverse video (X-102). One constant serves a dark terminal
+/// and a light one and every cell it can land on: with the reverse dropped the glyph is the
+/// terminal's foreground everywhere, and #767676 gives white text 4.5:1 and black text 4.6:1 —
+/// the balanced mid-gray. It differs from a user block's own pair (the terminal's fg/bg), from
+/// [`USER_BAR`] (245) and from [`row_bg`] / [`input_bg`] (237/253, 236/254). Reverse video
+/// could not mark a user block — its cells are reversed already, so a reversed selection or a
+/// `7m` hit over one was invisible or a hole. Under `NO_COLOR` the fill is dropped with every
+/// other colour, and reverse video, the one marker left, comes back (`Screen::paint`,
+/// [`search_hit`]).
+pub(crate) const SELECTION_BG: u8 = selection_bg!();
+
+/// Search-hit highlight (`TUI_CONTRACTS` §9): reverse off and the [`SELECTION_BG`] fill, so a hit
+/// inside a user block reads as the fill and the block's reverse comes back after it
+/// (`highlight_line` replays the line's own SGR); `\x1b[7m` when `color` is off.
+pub(crate) const fn search_hit(color: bool) -> &'static str {
+    if color {
+        concat!("\x1b[27;48;5;", selection_bg!(), "m")
+    } else {
+        "\x1b[7m"
+    }
+}
+
+/// The current search hit: [`search_hit`] in yellow; `\x1b[7;33m` when `color` is off (the
+/// yellow is dropped at the cell boundary then, the reverse kept).
+pub(crate) const fn search_cur(color: bool) -> &'static str {
+    if color {
+        concat!("\x1b[27;48;5;", selection_bg!(), ";33m")
+    } else {
+        "\x1b[7;33m"
+    }
+}
 
 /// A typed user block's `▌` bar, INSIDE its reversed span: a mid gray (#8a8a8a) that reads on a dark
 /// terminal and a light one alike, so one constant serves both. It is a BACKGROUND colour because

@@ -11,6 +11,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   to read something earlier, type a message and press Enter: the view follows
   the newest output again, as `Ctrl+End` would, so the answer streams in where
   you can see it. Enter on an empty composer leaves the view where it is.
+- **A selection shows over your own messages too.** Selected text — in the
+  conversation or the composer — and search matches are now marked with a
+  gray background instead of inverted colours, so they stand out inside the
+  inverted block of a message you sent, on a dark or a light terminal alike.
+  With `NO_COLOR` set they are still shown inverted.
 
 ## 0.13.0 - 2026-11-22
 

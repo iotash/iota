@@ -9,7 +9,7 @@
 use crate::text::ansi::{escape_len_at, sgr_carry, strip_ansi, strip_ansi_into, strip_sgr};
 
 use super::tabbed::{PanelState, panel_height};
-use super::theme::{SEARCH_CUR, SEARCH_HIT};
+use super::theme::{search_cur, search_hit};
 use crate::ui::facade::{Panel, PanelKind};
 
 /// The per-panel search mode (search.go:24-31).
@@ -162,8 +162,9 @@ pub(crate) fn matches_query(text: &str, query: &str) -> bool {
 
 // --- highlighting -----------------------------------------------------------
 
-/// Reverse-videos every occurrence of `query` in `line`, which may already carry its
-/// own SGR (search.go:134-180).
+/// Highlights every occurrence of `query` in `line`, which may already carry its own SGR
+/// (search.go:134-180): reverse off and the selection's fill ([`search_hit`]), so a hit inside a
+/// user block's reversed span reads as the fill, not a hole; reverse video under `NO_COLOR`.
 ///
 /// Offsets are computed on the PLAIN text and walked back through the escapes, so a
 /// highlight can never land inside an escape sequence and slice it apart. A highlight
@@ -173,6 +174,17 @@ pub(crate) fn matches_query(text: &str, query: &str) -> bool {
 /// `cur_off` is the plain-text offset of the hit n/p is parked on (`None` for none),
 /// which gets the brighter treatment.
 pub(crate) fn highlight_line(line: &str, query: &str, cur_off: Option<usize>) -> String {
+    highlight_line_with(line, query, cur_off, crate::app::color::enabled())
+}
+
+/// [`highlight_line`] with the colour decision made explicit (`false`: the hits are reverse
+/// video, the fill being dropped at the cell boundary).
+pub(crate) fn highlight_line_with(
+    line: &str,
+    query: &str,
+    cur_off: Option<usize>,
+    color: bool,
+) -> String {
     if query.is_empty() {
         return line.to_owned();
     }
@@ -217,9 +229,9 @@ pub(crate) fn highlight_line(line: &str, query: &str, cur_off: Option<usize>) ->
         }
         if hl_end.is_none() && ri < ranges.len() && pos == ranges[ri].0 {
             open = if cur_off == Some(pos) {
-                SEARCH_CUR
+                search_cur(color)
             } else {
-                SEARCH_HIT
+                search_hit(color)
             };
             b.push_str(open);
             hl_end = Some(ranges[ri].1);

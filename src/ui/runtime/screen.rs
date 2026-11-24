@@ -41,7 +41,7 @@ use crossterm::terminal::{Clear, ClearType as CtClear, EnterAlternateScreen};
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Rect, Size};
-use ratatui::style::Modifier;
+use ratatui::style::{Color, Modifier};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::{Terminal, TerminalOptions, Viewport};
@@ -49,7 +49,7 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 use crate::ui::render::frame::FrameView;
 use crate::ui::render::selection::{self, Point, Selection};
 use crate::ui::render::spans::ansi_to_spans;
-use crate::ui::render::theme::{FAINT, RESET, REV_ON};
+use crate::ui::render::theme::{FAINT, RESET, REV_ON, SELECTION_BG};
 
 /// Whether a live [`Screen`] holds the alternate screen now — set by the live constructor only
 /// (`Term::new`), cleared by [`Screen::leave`] and by `restore_terminal`, which reads it.
@@ -689,10 +689,12 @@ impl<W: Write> Screen<W> {
             f.render_widget(Paragraph::new(Text::from(lines)), conv);
             f.render_widget(Paragraph::new(Text::from(frame_lines)), frame);
             // The selection is the screen's cells only, never the rows: a write-out stays plain.
+            // Painted after `ansi_to_spans`, so the colour decision is asked here by hand.
+            let color = crate::app::color::enabled();
             let buf = f.buffer_mut();
             for &(y, from, to) in &lit {
                 for x in from..to.min(width) {
-                    buf[(x, y)].modifier.insert(Modifier::REVERSED);
+                    select_cell(&mut buf[(x, y)], color);
                 }
             }
             if let Some(pos) = cursor {
@@ -984,6 +986,19 @@ impl<W: Write> Backend for Out<W> {
 
     fn flush(&mut self) -> io::Result<()> {
         Backend::flush(&mut self.inner)
+    }
+}
+
+/// Paints one selected cell, the conversation's selection or the composer's (X-102): the
+/// [`SELECTION_BG`] fill behind the cell's own foreground, its reverse dropped so a cell of a user
+/// block reads as the fill too — kept, the reverse would turn the fill into the glyph's colour.
+/// With `color` off the fill would be dropped like every colour, so the cell is reversed instead.
+fn select_cell(cell: &mut Cell, color: bool) {
+    if color {
+        cell.modifier.remove(Modifier::REVERSED);
+        cell.bg = Color::Indexed(SELECTION_BG);
+    } else {
+        cell.modifier.insert(Modifier::REVERSED);
     }
 }
 

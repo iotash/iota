@@ -168,7 +168,7 @@ crossterm 0.29 默认的 unix 事件源（mio、边沿触发）有两处会让�
 ## 应用内选择（`render/selection.rs`）
 
 - **点是缓冲里的格，不是屏幕的格**：(行号, 折行内第几行, 显示列)。块号按提交编号，所以 20 万块上限丢旧块不移动它；新输出到来时选择留在原文上。resize 换了折行，选择清掉。
-- **画**：只改屏幕 cell 的 `REVERSED`，行本身不动——**写出（Ctrl+O、退出）永远不带选择的样式**（`screen::tests::the_selection_is_drawn_reversed_and_never_written_out`）。
+- **画**：一层**底色**，不是反显（owner 2026-11-24，selection-fill）：选中的格保留自己的前景，背景换成中灰 243（`theme::SELECTION_BG`，#767676）。用户块本身就是反显（格子的背景就是终端的前景色），反显的选择落在上面看不出来；去掉反显之后，字形在哪里都是终端的前景色，#767676 对白字 4.5:1、对黑字 4.6:1，一个常量同时服务深浅终端，也和用户块自己那一对颜色、`USER_BAR`（245）、`row_bg`/`input_bg`（237/253、236/254）都不同。**用户块里的格同时去掉 `REVERSED`**——留着的话反显会把底色换成字形的颜色，变成白底灰字；去掉后整个选择读作同一层底色，块的 `▌` 那一列在选择里也一样。**`NO_COLOR` 下照旧加 `REVERSED`**：颜色在 `ansi_to_spans` 那道闸门已经丢了，反显是唯一剩下的标记（这些格是在 spans 之后直接画到 ratatui buffer 上的，所以颜色开关在 `Screen::paint` 里手动问一次，`select_cell(cell, color)`）。搜索命中用同一层底色：`theme::search_hit` 是关反显 + 底色 `\x1b[27;48;5;243m`，当前命中再加黄 `\x1b[27;48;5;243;33m`，用户块里的命中不再是一个"洞"，命中结束后 `highlight_line` 回放行自己的 SGR，块的反显接着回来；`NO_COLOR` 下仍是 `\x1b[7m` / `\x1b[7;33m`。只改屏幕的 cell，行本身不动——**写出（Ctrl+O、退出）永远不带选择的样式**（`screen::tests::{the_selection_is_drawn_as_a_fill_and_never_written_out, a_selection_over_a_user_block_is_the_fill_not_reverse_video, a_selected_cell_is_reversed_with_colour_off_and_filled_with_it_on}`）。
 - **复制的内容**：屏幕上看得见的纯文本——SGR 和 OSC 8 超链接都去掉（链接只复制它的文字，搜索也不会命中看不见的 URL）；一个布局出零行的块占一行空行（块的行数只有 `Entry::lines` 一个来源，视口、命中和三击都按它算）；**屏幕**把一行折成的几段拼回成那一行（缓冲按 `Block::display` 标出哪些显示行是续段）；其余的行，包括块与块之间、布局块自己的行（表格的、代码块的），之间都是 `\n`；行尾空白去掉。三击选指针下那一行连同它的续段，不是整块（S7a 评审 B1）。双击的"词"＝字母数字加路径/URL/标识符的标点 `_-./~+:@\`，句末的 `.` `,` `:` 不算。
 - **按键清掉选择**（也结束一次没收到松开的拖动）；单击（不拖，或只抖一格）什么也不选、不复制。
 - **复制路径**（`runtime/clipboard.rs`；X-109，owner 2026-11-19，推翻 11-16 的"只走一条"与"状态行不提路径"）：
@@ -186,7 +186,7 @@ crossterm 0.29 默认的 unix 事件源（mio、边沿触发）有两处会让�
 - **按键**：打字、粘贴、换行替换选择；Backspace、Ctrl+H、Delete 删除它；编辑集里其他键（方向键、Home、Ctrl+K …）先丢掉选择再照常执行。新值（提交——`/new` 也是一次提交——、历史召回、队列弹出、补全）丢掉它。**Esc**：落到编辑集的 Esc（没有补全循环、没有 scope）丢掉它；先被补全或 turn 的 scope 接走的 Esc 不碰它（取消正在跑的 turn 不该顺带改草稿的状态），下一个 Esc 才丢。
 - **多击**（owner 2026-11-22）：计数和对话共用 `MouseState::press`（同一格、500 ms 内）。映射和对话的一致：**双击选指针下的词**，**三击选整个草稿**。词的规则只有一条——`render/selection.rs` 的 `word_bytes`（对话的 `word_at` 也是它换成列）：字母数字加 `_-./~+:@\`，句末的 `.` `,` `:` 不算；草稿按字节找，所以一个跨折行的词整个选上；指针不在词上时什么也不选。光标都落在选择的末尾。松开照拖动的路复制，选择留着给下一个键用。计数和对话一样按 1→2→3→1 循环：第四下又是单击（放光标、不选、不复制），第五下又是双击。
 - **全选不绑键**：`Ctrl+A` 已是编辑集的行首（emacs，TUI_CONTRACTS §6），不让出来。
-- **画**：`FrameView::lit` 列出选中的帧格子，`Screen::paint` 和对话的选择一起给它们加 `REVERSED`——行本身不动，写出不带它。**选择非空时不画光标**（owner 2026-11-22，composer-word-space）：光标在选择末尾的下一格，终端的块光标盖在那格上就像它也被选中——双击 `world` 看起来选了 `world `（复制的、反显的其实都只有 5 格）。文本框的通行做法（macOS、浏览器）就是有选区时插入点隐藏；按键或单击结束选择，光标就回来（`vt100_tests::a_composer_double_click_reverses_the_word_alone_and_hides_the_caret`）。
+- **画**：`FrameView::lit` 列出选中的帧格子，`Screen::paint` 和对话的选择一起给它们画同一层底色（243，见上文"应用内选择"的"画"；`NO_COLOR` 下是 `REVERSED`）——行本身不动，写出不带它。**选择非空时不画光标**（owner 2026-11-22，composer-word-space）：光标在选择末尾的下一格，终端的块光标盖在那格上就像它也被选中——双击 `world` 看起来选了 `world `（复制的、填了底色的其实都只有 5 格）。文本框的通行做法（macOS、浏览器）就是有选区时插入点隐藏；按键或单击结束选择，光标就回来（`vt100_tests::a_composer_double_click_fills_the_word_alone_and_hides_the_caret`）。
 
 ## 关闭开关（`mouse: false`）
 

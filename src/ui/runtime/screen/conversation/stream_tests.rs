@@ -181,7 +181,11 @@ fn a_search_finds_what_a_growing_block_takes_and_a_grown_block_counts_once() {
         current: Some(hit),
     };
     let lit = c.view_lines(80, 10, Some(&hl));
-    assert!(lit.iter().any(|l| l.contains("\x1b[7;33m")), "{lit:#?}");
+    assert!(
+        lit.iter()
+            .any(|l| l.contains(crate::ui::render::theme::search_cur(true))),
+        "{lit:#?}"
+    );
     // Many replacements and still one block: the cap of three never trims it.
     for i in 0..50 {
         c.push(s.feed(&format!("{i}\n")));
