@@ -27,10 +27,12 @@ use crate::shell::jobs::JobInfo;
 use crate::text;
 use crate::text::ansi::{ansi_width, truncate_ansi};
 use crate::text::width::str_width;
+use crate::ui::block::Layout;
 use crate::ui::facade::StatusData;
 
 use super::region::RegionSnapshot;
 use super::theme::{CYAN, FAINT, GREEN, RED, RESET, YELLOW};
+use super::widget::CallWidget;
 
 /// Braille spinner frames — single column, width-safe (model.go:25). One counter
 /// drives both the preview header and the status-line busy glyph.
@@ -225,39 +227,8 @@ fn budget(width: u16, reserve: usize) -> usize {
 pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
     let mut rows: Vec<String> = Vec::new();
 
-    if !fi.region.label.is_empty() {
-        // The label renders as supplied (callers pre-style it), so a streamed tool
-        // call's header looks exactly like its final committed form (model.go:954).
-        rows.push(format!(
-            "{CYAN}{}{RESET} {}{RESET}",
-            SPINNER_FRAMES[fi.spin % SPINNER_FRAMES.len()],
-            fi.region.label
-        ));
-        for line in &fi.region.preview_tail {
-            rows.push(format!(
-                "{FAINT}  {}{RESET}",
-                truncate_ansi(line, budget(fi.width, 4), "…")
-            ));
-        }
-        if let Some(since) = fi.region.since {
-            // The call preview's live status row: detail and elapsed (frozen while the
-            // clock is paused) (model.go:966-978). The cancel hint is the status row's alone
-            // (docs/design/busy-span.md §3.4, point 6): one place, where it never moves.
-            let mut status = String::from("⎿ ");
-            if !fi.region.detail.is_empty() {
-                status.push_str(&fi.region.detail);
-                status.push_str(" · ");
-            }
-            let elapsed = fi
-                .region
-                .paused_at
-                .map_or_else(|| fi.now.duration_since(since), |p| p.duration_since(since));
-            status.push_str(&text::elapsed(elapsed));
-            rows.push(format!(
-                "{FAINT}  {}{RESET}",
-                truncate_ansi(&status, budget(fi.width, 4), "…")
-            ));
-        }
+    if let Some(widget) = CallWidget::new(fi.region, fi.spin, fi.now) {
+        rows.extend(widget.lines(fi.width as usize));
     }
 
     // Spacer: one CONSTANT blank row between the content side and everything

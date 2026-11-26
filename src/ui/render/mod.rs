@@ -10,3 +10,4 @@ pub(crate) mod selection;
 pub(crate) mod sink;
 pub(crate) mod spans;
 pub(crate) mod theme;
+pub(crate) mod widget;
