@@ -18,6 +18,14 @@
 //!   text are dropped and recomputed from the new source, the anchor (a block number and a line)
 //!   stays on it, and it still counts as one block. Its closing commit is the last replacement. A
 //!   write-out stops above a block still open, so each block is written once, whole.
+//! - **The tail slot** is a block not committed: the running call's widget, laid out at the
+//!   width of the draw like any block and set again on every frame it changes
+//!   ([`Conversation::set_tail`]). It is always the last entry, numbered [`Conversation::pushed`]
+//!   (the next block's number) — so an append lands above it and moves its number on — and it is
+//!   drawn, marked, selected and copied like a block, but never written out, never searched,
+//!   never counted by the cap or by `↓ N new lines`: only its height's change scrolls the tail
+//!   (net of what new blocks add). Clearing it takes it away; a view anchored on it moves to the
+//!   last committed block.
 //! - **The cap**: past [`BLOCK_CAP`] blocks the oldest are dropped — each one whole — and a first
 //!   row says so. The session log (`messages.jsonl`) holds everything; `/export` writes it out.
 //!
@@ -222,6 +230,9 @@ pub(crate) struct Conversation {
     view: View,
     /// Rows committed while the view is anchored.
     unseen: usize,
+    /// Whether the tail slot showed new activity (a step row) while the view is anchored —
+    /// what the way back says when nothing was committed ([`Conversation::note_activity`]).
+    activity: bool,
     /// Rows committed since the last [`Conversation::take_fresh`].
     fresh: usize,
     /// Rows ever committed (a row's number, for [`Conversation::lines_after`]).
@@ -237,6 +248,11 @@ pub(crate) struct Conversation {
     /// A block replaced since the last [`Conversation::take_fresh`], with the height it had at
     /// the width it was last drawn at: how far its growth scrolls the tail.
     grew: Option<(u64, usize, usize)>,
+    /// Whether the last entry of `rows` is the tail slot (module docs).
+    tail: bool,
+    /// The tail slot's height at the last [`Conversation::take_fresh`] and the width it had then
+    /// (0 without one): what its growth is measured from.
+    tail_seen: (usize, usize),
 }
 
 impl Conversation {
@@ -251,13 +267,91 @@ impl Conversation {
             trimmed: false,
             view: View::Follow,
             unseen: 0,
+            activity: false,
             fresh: 0,
             pushed: 0,
             held: false,
             live: None,
             changed: None,
             grew: None,
+            tail: false,
+            tail_seen: (0, 0),
         }
+    }
+
+    /// The entries committed, the [`TRIMMED`] row among them: `rows` without the tail slot.
+    fn committed(&self) -> usize {
+        self.rows.len() - usize::from(self.tail)
+    }
+
+    /// Sets the tail slot (module docs): `Some` puts the block there, in place of the one there
+    /// was; `None` takes it away — a view anchored on it then moves to the start of the last
+    /// committed block (following the tail when there is none).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the loop sets the tail slot from widget-in-transcript S2 on"
+        )
+    )]
+    pub(crate) fn set_tail(&mut self, block: Option<Block>) {
+        match (block, self.tail) {
+            (Some(b), true) => {
+                if let Some(last) = self.rows.back_mut() {
+                    *last = Entry::new(b);
+                }
+            }
+            (Some(b), false) => {
+                self.rows.push_back(Entry::new(b));
+                self.tail = true;
+            }
+            (None, true) => {
+                self.rows.pop_back();
+                self.tail = false;
+                let n = self.rows.len();
+                if let View::At(p) = &mut self.view
+                    && p.row >= n
+                {
+                    match n.checked_sub(1) {
+                        Some(row) => *p = Pos { row, line: 0 },
+                        None => self.view = View::Follow,
+                    }
+                }
+            }
+            (None, false) => {}
+        }
+    }
+
+    /// Whether the tail slot holds a block.
+    pub(crate) const fn has_tail(&self) -> bool {
+        self.tail
+    }
+
+    /// The tail slot showed new activity — a step row, not its animation: noted while the view is
+    /// anchored, forgotten where [`Conversation::unseen`] is.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the loop sets the tail slot from widget-in-transcript S2 on"
+        )
+    )]
+    pub(crate) fn note_activity(&mut self) {
+        if matches!(self.view, View::At(_)) {
+            self.activity = true;
+        }
+    }
+
+    /// Whether the tail slot showed new activity since the view left the tail.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the loop sets the tail slot from widget-in-transcript S2 on"
+        )
+    )]
+    pub(crate) const fn activity(&self) -> bool {
+        self.activity
     }
 
     /// Appends committed blocks — a live block committed again replaces itself instead (module
@@ -273,9 +367,15 @@ impl Conversation {
         self.trim();
     }
 
-    /// One block more at the tail.
+    /// One block more at the tail — above the tail slot, whose index (an anchor on it) moves on.
     fn append(&mut self, block: Block) {
-        self.rows.push_back(Entry::new(block));
+        let at = self.committed();
+        self.rows.insert(at, Entry::new(block));
+        if let View::At(p) = &mut self.view
+            && p.row >= at
+        {
+            p.row += 1;
+        }
         self.fresh += 1;
         self.pushed += 1;
         if matches!(self.view, View::At(_)) {
@@ -323,7 +423,7 @@ impl Conversation {
 
     /// Past the cap, drops the oldest blocks, each whole.
     fn trim(&mut self) {
-        if self.rows.len() <= self.cap {
+        if self.committed() <= self.cap {
             return;
         }
         if !self.trimmed {
@@ -334,7 +434,7 @@ impl Conversation {
                 p.row += 1;
             }
         }
-        let excess = self.rows.len() - self.cap;
+        let excess = self.committed() - self.cap;
         self.rows.drain(1..=excess);
         if let View::At(p) = &mut self.view {
             *p = if p.row > excess {
@@ -360,7 +460,7 @@ impl Conversation {
         whole: bool,
     ) -> (Vec<String>, u64) {
         let kept = u64::from(self.trimmed);
-        let real = self.rows.len() as u64 - kept;
+        let real = self.committed() as u64 - kept;
         let first = self.pushed - real;
         let start = if from < first {
             0
@@ -371,7 +471,10 @@ impl Conversation {
             Some((_, n)) if !whole && n >= from => n,
             _ => self.pushed,
         };
-        let end = self.index_of(upto).unwrap_or(self.rows.len());
+        let end = self
+            .index_of(upto)
+            .unwrap_or(self.committed())
+            .min(self.committed());
         let mut out = Vec::new();
         for row in self.rows.iter_mut().take(end).skip(start) {
             out.extend(row.lines(width).iter().cloned());
@@ -382,13 +485,13 @@ impl Conversation {
     /// The number of the oldest row still held (rows are numbered as they are committed; the
     /// [`TRIMMED`] row has none).
     fn first_number(&self) -> u64 {
-        self.pushed - (self.rows.len() as u64 - u64::from(self.trimmed))
+        self.pushed - (self.committed() as u64 - u64::from(self.trimmed))
     }
 
-    /// Where row number `n` sits, if it is still held.
+    /// Where row number `n` sits, if it is still held (the tail slot is number [`Self::pushed`]).
     fn index_of(&self, n: u64) -> Option<usize> {
         let first = self.first_number();
-        (n >= first && n < self.pushed)
+        (n >= first && (n < self.pushed || (self.tail && n == self.pushed)))
             .then(|| usize::try_from(n - first).ok())
             .flatten()
             .map(|i| i + usize::from(self.trimmed))
@@ -406,17 +509,19 @@ impl Conversation {
         self.first_number()
     }
 
-    /// The blocks numbered `from` on, as (number, search text) — what a search scans. A laid-out
-    /// block's text is the one it got when it was first laid out, so this lays out only the blocks
-    /// no draw ever reached (at `width`), once.
+    /// The blocks numbered `from` on, as (number, search text) — what a search scans (the tail
+    /// slot is not one of them). A laid-out block's text is the one it got when it was first laid
+    /// out, so this lays out only the blocks no draw ever reached (at `width`), once.
     pub(crate) fn texts_from(&mut self, from: u64, width: usize) -> Vec<(u64, &str)> {
         let first = self.first_number().max(from);
-        let skip = self.index_of(first).unwrap_or(self.rows.len());
-        for e in self.rows.iter_mut().skip(skip) {
+        let end = self.committed();
+        let skip = self.index_of(first).unwrap_or(end).min(end);
+        for e in self.rows.iter_mut().take(end).skip(skip) {
             e.search_text(width);
         }
         self.rows
             .iter()
+            .take(end)
             .skip(skip)
             .zip(first..)
             .map(|(e, n)| (n, e.searched()))
@@ -443,7 +548,12 @@ impl Conversation {
         match mark {
             None => self.go_bottom(),
             Some((n, line)) => {
-                let row = self.index_of(n).unwrap_or(0);
+                // A mark on a tail slot gone since: the last committed block.
+                let row = self.index_of(n).unwrap_or(if n >= self.pushed {
+                    self.committed().saturating_sub(1)
+                } else {
+                    0
+                });
                 self.view = View::At(Pos { row, line });
                 self.follow_if_at_bottom(width, h);
             }
@@ -462,15 +572,15 @@ impl Conversation {
         self.follow_if_at_bottom(width, h);
     }
 
-    /// The number of the last row the viewport shows (0 when that is the [`TRIMMED`] row).
+    /// The number of the last committed row the viewport shows (0 when that is the [`TRIMMED`]
+    /// row); the tail slot shown counts as the last committed row.
     pub(crate) fn last_shown(&mut self, width: usize, h: usize) -> u64 {
-        if self.rows.is_empty() {
+        let Some(last) = self.committed().checked_sub(1) else {
             return 0;
-        }
+        };
         let top = self.top_line(width, h);
         let bottom = self.down(top, h.saturating_sub(1), width);
-        self.number_of(bottom.row.min(self.rows.len() - 1))
-            .unwrap_or(0)
+        self.number_of(bottom.row.min(last)).unwrap_or(0)
     }
 
     /// Whether the view follows the tail.
@@ -487,9 +597,18 @@ impl Conversation {
     /// the tail up to `limit + 1` at most: only a count under the viewport's height is used (one
     /// scroll of that many), so a big batch lays out the blocks a viewport shows, not all of them.
     /// A live block replaced since — when it was drawn at this width and is not one of the new
-    /// blocks — adds what it grew by: its growth scrolls the tail like new lines.
+    /// blocks — adds what it grew by: its growth scrolls the tail like new lines. The tail slot
+    /// adds its height's change since the last call at this width — the count is the NET growth,
+    /// 0 when the slot shrank by as much as or more than the rest added.
     pub(crate) fn take_fresh(&mut self, width: usize, limit: usize) -> usize {
-        let n = std::mem::take(&mut self.fresh).min(self.rows.len());
+        let tail_now = match self.rows.back_mut() {
+            Some(e) if self.tail => e.height(width),
+            _ => 0,
+        };
+        let (seen_h, seen_w) = std::mem::replace(&mut self.tail_seen, (tail_now, width));
+        let tail_was = if seen_w == width { seen_h } else { tail_now };
+        let end = self.committed();
+        let n = std::mem::take(&mut self.fresh).min(end);
         let mut lines = 0;
         if let Some((g, old, w)) = self.grew.take()
             && w == width
@@ -498,13 +617,13 @@ impl Conversation {
         {
             lines += self.rows[i].height(width).saturating_sub(old);
         }
-        for i in (self.rows.len() - n..self.rows.len()).rev() {
+        for i in (end - n..end).rev() {
             lines += self.rows[i].height(width);
             if lines > limit {
-                break;
+                return lines;
             }
         }
-        lines
+        (lines + tail_now).saturating_sub(tail_was)
     }
 
     /// Scrolls `n` display lines toward the start (`h` is the viewport's height).
@@ -565,6 +684,7 @@ impl Conversation {
     pub(crate) fn go_bottom(&mut self) {
         self.view = View::Follow;
         self.unseen = 0;
+        self.activity = false;
     }
 
     /// The viewport's lines, top to bottom: `h` of them, or fewer when the whole session is
@@ -587,7 +707,10 @@ impl Conversation {
         let mut out = Vec::with_capacity(h);
         let mut pos = top;
         while out.len() < h && pos.row < self.rows.len() {
-            let lit = hl.and_then(|hl| self.highlighted(pos.row, width, hl));
+            // The tail slot is not searched, so nothing in it is lit either.
+            let lit = hl
+                .filter(|_| pos.row < self.committed())
+                .and_then(|hl| self.highlighted(pos.row, width, hl));
             let lines = match &lit {
                 Some(lines) => lines.as_slice(),
                 None => self.rows[pos.row].lines(width),
@@ -694,6 +817,7 @@ impl Conversation {
     fn anchor(&mut self, top: Pos) {
         if self.following() {
             self.unseen = 0;
+            self.activity = false;
         }
         self.view = View::At(top);
     }
@@ -792,3 +916,5 @@ mod relayout_tests;
 
 #[cfg(test)]
 mod stream_tests;
+#[cfg(test)]
+mod tail_tests;

@@ -271,7 +271,52 @@ impl<W: Write> Screen<W> {
     /// Appends committed blocks to the conversation. Nothing is written: the next draw lays out
     /// what it shows.
     pub(crate) fn push(&mut self, blocks: Vec<Block>) {
+        let tail = self.conv.has_tail().then(|| self.conv.pushed());
         self.conv.push(blocks);
+        // The blocks went in above the tail slot and moved its number on: a selection point on it
+        // follows it.
+        if let (Some(t), Some(sel)) = (tail, &mut self.sel) {
+            let k = self.conv.pushed() - t;
+            for p in [&mut sel.anchor, &mut sel.head] {
+                if p.row == t {
+                    p.row += k;
+                }
+            }
+        }
+    }
+
+    /// Sets the conversation's tail slot (`Conversation::set_tail`). Taking it away drops a
+    /// selection that reaches into it — the text it held is gone, as a resize drops one.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the loop sets the tail slot from widget-in-transcript S2 on"
+        )
+    )]
+    pub(crate) fn set_tail(&mut self, block: Option<Block>) {
+        if block.is_none()
+            && self.conv.has_tail()
+            && self.sel.is_some_and(|s| {
+                let t = self.conv.pushed();
+                s.anchor.row == t || s.head.row == t
+            })
+        {
+            self.select(SelectOp::Clear, 0, 0);
+        }
+        self.conv.set_tail(block);
+    }
+
+    /// The tail slot showed new activity (`Conversation::note_activity`).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the loop sets the tail slot from widget-in-transcript S2 on"
+        )
+    )]
+    pub(crate) fn note_activity(&mut self) {
+        self.conv.note_activity();
     }
 
     /// Whether the view is scrolled back from the tail.
@@ -1011,3 +1056,6 @@ use search::{Search, SearchOp};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tail_tests;
