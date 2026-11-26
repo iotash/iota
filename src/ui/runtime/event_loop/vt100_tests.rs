@@ -348,6 +348,114 @@ fn a_settle_replaces_the_widgets_rows_with_its_summary() {
     h.quit_and_join(Duration::from_secs(2));
 }
 
+/// The rows of the screen, top first.
+fn screen_rows(h: &LoopHarness) -> Vec<String> {
+    h.contents().lines().map(str::to_owned).collect()
+}
+
+/// The first separator's row: the frame's top edge under the spacer.
+fn first_separator(rows: &[String]) -> usize {
+    rows.iter().position(|l| l.starts_with('─')).unwrap()
+}
+
+/// The widget is the conversation's tail block (fullscreen-tui.md §尾块): its header is the row
+/// under the conversation's last line, and the frame's height does not change while it is up.
+#[test]
+fn the_widget_sits_under_the_last_line_and_the_frame_keeps_its_height() {
+    let h = start_loop();
+    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
+    h.region
+        .lock()
+        .unwrap()
+        .commit(vec!["out-first".to_owned(), "out-last".to_owned()]);
+    assert!(h.wait_until(Duration::from_secs(1), |h| {
+        h.contents().contains("out-last")
+    }));
+    let idle = first_separator(&screen_rows(&h));
+    {
+        let mut r = h.region.lock().unwrap();
+        r.open_call_preview("[shell …]");
+        r.preview_line("step-row");
+    }
+    assert!(
+        h.wait_until(Duration::from_secs(1), |h| h
+            .contents()
+            .contains("step-row")),
+        "the widget never rendered:\n{}",
+        h.contents()
+    );
+    let rows = screen_rows(&h);
+    let row_of = |needle: &str| rows.iter().position(|l| l.contains(needle)).unwrap();
+    assert_eq!(row_of("[shell …]"), row_of("out-last") + 1, "{rows:#?}");
+    assert!(row_of("step-row") < first_separator(&rows), "{rows:#?}");
+    assert_eq!(first_separator(&rows), idle, "the frame grew: {rows:#?}");
+    h.quit_and_join(Duration::from_secs(2));
+}
+
+/// Scrolled back, the widget scrolls away with the output; its animation is not activity, but a
+/// step row arriving is: the way-back row says `new activity` then, with nothing committed.
+#[test]
+fn scrolling_back_takes_the_widget_off_and_a_step_row_is_new_activity() {
+    use crossterm::event::KeyCode;
+    let h = start_loop();
+    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('─')));
+    h.region
+        .lock()
+        .unwrap()
+        .commit((0..60).map(|i| format!("out-{i}")).collect());
+    h.region.lock().unwrap().open_call_preview("[shell …]");
+    assert!(
+        h.wait_until(Duration::from_secs(1), |h| h
+            .contents()
+            .contains("[shell …]")),
+        "the widget never rendered:\n{}",
+        h.contents()
+    );
+    for _ in 0..2 {
+        h.etx.send(key(KeyCode::PageUp)).unwrap();
+    }
+    assert!(
+        h.wait_until(Duration::from_secs(1), |h| h
+            .contents()
+            .contains("Ctrl+End follows the output again")),
+        "never scrolled back:\n{}",
+        h.contents()
+    );
+    assert!(!h.contents().contains("[shell …]"), "{}", h.contents());
+    // Several spinner frames: still no activity.
+    thread::sleep(Duration::from_millis(400));
+    h.sync();
+    assert!(
+        h.contents().contains("Ctrl+End follows the output again"),
+        "animation counted as activity:\n{}",
+        h.contents()
+    );
+    h.region.lock().unwrap().preview_line("step-row");
+    assert!(
+        h.wait_until(Duration::from_secs(1), |h| h
+            .contents()
+            .contains("↓ new activity · Ctrl+End")),
+        "a step row is new activity:\n{}",
+        h.contents()
+    );
+    assert!(!h.contents().contains("step-row"), "{}", h.contents());
+    h.etx
+        .send(Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::End,
+            crossterm::event::KeyModifiers::CONTROL,
+        )))
+        .unwrap();
+    assert!(
+        h.wait_until(Duration::from_secs(1), |h| h
+            .contents()
+            .contains("step-row")
+            && !h.contents().contains("new activity")),
+        "Ctrl+End never brought the widget back:\n{}",
+        h.contents()
+    );
+    h.quit_and_join(Duration::from_secs(2));
+}
+
 /// W4's law, kept: an iteration that lands committed rows ends with a draw + cursor restore — the
 /// composer cursor cell is IDENTICAL before and after each batch of rows, and the idle frame
 /// carries no spinner glyph. Replaces Go's `TestRegionSnapshotChangesView` cursor-bump
@@ -377,6 +485,18 @@ fn snapshot_implies_draw_and_cursor_restored() {
     assert!(
         !h.contents().chars().any(|c| SPINNER_GLYPHS.contains(c)),
         "idle frame must carry no spinner glyph:\n{}",
+        h.contents()
+    );
+    // The widget is the conversation's: it appearing moves no composer cursor.
+    h.region.lock().unwrap().open_call_preview("[shell …]");
+    h.region.lock().unwrap().preview_line("step-row");
+    assert!(
+        h.wait_until(Duration::from_secs(1), |h| h
+            .contents()
+            .contains("step-row")
+            && h.cursor() == pos0),
+        "the widget moved the cursor from {pos0:?} to {:?}:\n{}",
+        h.cursor(),
         h.contents()
     );
     h.quit_and_join(Duration::from_secs(2));

@@ -3,6 +3,17 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Changed
+
+- **A running tool call scrolls with the output.** The spinner block of a
+  running tool call is now part of the conversation: it sits under the last
+  line of output and scrolls with it, instead of staying pinned above the
+  input. Scroll back while it runs and it scrolls away — the status row still
+  says the turn is running, and the way back says `new activity` when the
+  call has a new step to show.
+
 ## 0.13.1 - 2026-11-24
 
 ### Changed

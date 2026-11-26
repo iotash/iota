@@ -287,13 +287,6 @@ impl<W: Write> Screen<W> {
 
     /// Sets the conversation's tail slot (`Conversation::set_tail`). Taking it away drops a
     /// selection that reaches into it — the text it held is gone, as a resize drops one.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the loop sets the tail slot from widget-in-transcript S2 on"
-        )
-    )]
     pub(crate) fn set_tail(&mut self, block: Option<Block>) {
         if block.is_none()
             && self.conv.has_tail()
@@ -308,13 +301,6 @@ impl<W: Write> Screen<W> {
     }
 
     /// The tail slot showed new activity (`Conversation::note_activity`).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the loop sets the tail slot from widget-in-transcript S2 on"
-        )
-    )]
     pub(crate) fn note_activity(&mut self) {
         self.conv.note_activity();
     }
@@ -849,6 +835,7 @@ impl<W: Write> Screen<W> {
             && let Some(last) = lines.last_mut()
         {
             *last = match self.conv.unseen() {
+                0 if self.conv.activity() => format!("{REV_ON} ↓ new activity · Ctrl+End {RESET}"),
                 0 => format!("{REV_ON} ↓ Ctrl+End follows the output again {RESET}"),
                 1 => format!("{REV_ON} ↓ 1 new line · Ctrl+End {RESET}"),
                 n => format!("{REV_ON} ↓ {n} new lines · Ctrl+End {RESET}"),

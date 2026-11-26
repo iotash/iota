@@ -8,6 +8,7 @@ use crate::text::width::str_width;
 use crate::ui::block::Layout;
 use crate::ui::render::frame::SPINNER_FRAMES;
 use crate::ui::render::region::RegionSnapshot;
+use crate::ui::render::theme::FAINT;
 
 use super::CallWidget;
 
@@ -98,4 +99,45 @@ fn rows_cut_at_width_less_four() {
         }
         assert_eq!(ansi_width(&w.lines(width)[0]), str_width(&rows[0]));
     }
+}
+
+/// The widget's rolling body is dim under the spinner header, the `⎿` row last — the rows the
+/// frame drew above its separator before the widget became the conversation's tail block.
+#[test]
+fn region_rendering() {
+    let w = CallWidget::new(&snap(&["|src|"], Some(Instant::now())), 0, Instant::now()).unwrap();
+    let lines = w.lines(80);
+    let rows = plain(&w, 80);
+    assert!(rows[0].contains("[shell sleep 4]"), "header: {rows:#?}");
+    assert!(
+        rows[1].contains("|src|"),
+        "body under the header: {rows:#?}"
+    );
+    assert!(lines[1].starts_with(FAINT), "the body is dim: {lines:#?}");
+    assert!(rows[2].contains('⎿'), "status row last: {rows:#?}");
+    assert_eq!(rows.len(), 3, "{rows:#?}");
+}
+
+/// The widget draws `preview_tail` in its order — newest first (X-118): the header is row 0,
+/// the newest body row row 1, the oldest row 3, then the `⎿` status row.
+#[test]
+fn region_body_draws_newest_first_under_the_header() {
+    let w = CallWidget::new(
+        &snap(&["newest", "middle", "oldest"], Some(Instant::now())),
+        0,
+        Instant::now(),
+    )
+    .unwrap();
+    let rows = plain(&w, 80);
+    assert!(rows[0].contains("[shell sleep 4]"), "header:\n{rows:#?}");
+    assert!(
+        rows[1].contains("newest"),
+        "newest under the header:\n{rows:#?}"
+    );
+    assert!(rows[2].contains("middle"), "{rows:#?}");
+    assert!(rows[3].contains("oldest"), "oldest last:\n{rows:#?}");
+    assert!(
+        rows[4].contains('⎿'),
+        "status row after the body:\n{rows:#?}"
+    );
 }

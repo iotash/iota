@@ -19,7 +19,6 @@ use crate::ui::input::suggest::item_rows;
 use crate::ui::render::frame::{
     BottomZone, BusyView, FrameInput, FrameView, build_frame, status_line,
 };
-use crate::ui::render::region::RegionSnapshot;
 use crate::ui::render::theme::{CYAN, FAINT, GREEN, RED, RESET, YELLOW};
 use crate::ui::testutil::SPINNER_GLYPHS;
 use ratatui::style::{Color, Modifier};
@@ -27,7 +26,6 @@ use ratatui::style::{Color, Modifier};
 /// One frame case; defaults = idle 80-col frame with an EMPTY composer.
 struct Case {
     width: u16,
-    region: RegionSnapshot,
     spin: usize,
     scopes_active: bool,
     queue: Vec<String>,
@@ -47,7 +45,6 @@ impl Default for Case {
     fn default() -> Self {
         Self {
             width: 80,
-            region: RegionSnapshot::default(),
             spin: 0,
             scopes_active: false,
             queue: Vec::new(),
@@ -74,7 +71,6 @@ fn view(c: &Case) -> FrameView {
     };
     build_frame(&FrameInput {
         width: c.width,
-        region: &c.region,
         spin: c.spin,
         scopes_active: c.scopes_active,
         queue: &c.queue.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -777,49 +773,35 @@ fn status_line_debug_marker() {
     }
 }
 
-/// The call widget: spinner header over the live `"⎿ elapsed"` row; the detail rides ahead of
-/// the elapsed figure. The cancel hint is never the widget's: it lives on the status row alone
-/// (docs/design/busy-span.md §3.4, point 6), so a turn shows it exactly once.
+/// The frame of a running call: the cancel hint is the status row's alone (docs/design/busy-span.md
+/// §3.4, point 6), once, and no row of the call widget is in the frame — the widget is the
+/// conversation's tail block (fullscreen-tui.md §尾块), so the frame is the idle frame's five rows.
 #[test]
-fn call_preview_rendering() {
+fn a_running_call_has_no_widget_rows_in_the_frame_and_one_cancel_hint() {
     let base = Instant::now();
-    let mut case = Case {
-        region: RegionSnapshot {
-            label: "[shell …]".to_owned(),
-            since: Some(base),
-            ..RegionSnapshot::default()
-        },
+    let idle = plain(&view(&Case::default()));
+    let case = Case {
+        scopes_active: true,
+        busy: Some(BusyView {
+            label: "Running tools".to_owned(),
+            detail: String::new(),
+            since: base,
+        }),
+        spin: 3,
         now: base + Duration::from_secs(3),
         ..Case::default()
     };
     let rows = plain(&view(&case));
-    let joined = rows.join("\n");
-    assert!(
-        joined.contains("[shell …]"),
-        "widget header missing:\n{joined}"
+    assert_eq!(rows.len(), idle.len(), "the frame's height: {rows:#?}");
+    assert_eq!(
+        rows.len(),
+        5,
+        "spacer, sep, composer, sep, status: {rows:#?}"
     );
     assert!(
-        joined.contains("⎿ 3s"),
-        "elapsed status row missing:\n{joined}"
+        !rows.iter().any(|r| r.contains('⎿')),
+        "no widget status row in the frame: {rows:#?}"
     );
-    assert!(
-        !joined.contains("ESC to cancel"),
-        "cancel hint without a cancel scope:\n{joined}"
-    );
-
-    // A turn: an active scope and the busy segment. The hint is on the status row, once.
-    case.scopes_active = true;
-    case.busy = Some(BusyView {
-        label: "Running tools".to_owned(),
-        detail: String::new(),
-        since: base,
-    });
-    let rows = plain(&view(&case));
-    let widget = rows
-        .iter()
-        .find(|r| r.contains('⎿'))
-        .expect("the widget's status row");
-    assert_eq!(widget.trim(), "⎿ 3s", "the widget carries no cancel hint");
     let hints: Vec<&String> = rows
         .iter()
         .filter(|r| r.contains("ESC to cancel"))
@@ -828,88 +810,6 @@ fn call_preview_rendering() {
     assert!(
         hints[0].contains("Running tools  3s (ESC to cancel)"),
         "the hint is the status row's: {hints:?}"
-    );
-    case.busy = None;
-
-    case.region.detail = "1.2k tokens".to_owned();
-    let joined = plain(&view(&case)).join("\n");
-    assert!(
-        joined.contains("⎿ 1.2k tokens · 3s"),
-        "detail missing from the status row:\n{joined}"
-    );
-
-    // A paused clock freezes the figure where it stopped.
-    case.region.detail = String::new();
-    case.region.paused_at = Some(base + Duration::from_secs(1));
-    case.now = base + Duration::from_secs(5);
-    let joined = plain(&view(&case)).join("\n");
-    assert!(
-        joined.contains("⎿ 1s"),
-        "paused clock must freeze the elapsed figure:\n{joined}"
-    );
-
-    // The TestBackend grid renders the header + status row too.
-    case.region.paused_at = None;
-    let v = view(&case);
-    let h = u16::try_from(v.rows.len()).unwrap();
-    let grid = render_plain(&v.rows, 80, h);
-    assert!(
-        grid.iter().any(|r| r.contains("[shell …]")),
-        "grid header:\n{grid:#?}"
-    );
-}
-
-/// The call preview renders above the separator — its rolling body dim under the spinner
-/// header. Nothing else of the conversation is in the frame (tui-plan S7b).
-#[test]
-fn region_rendering() {
-    let v = view(&Case {
-        region: RegionSnapshot {
-            label: "[shell …]".to_owned(),
-            preview_tail: vec!["|src|".to_owned()],
-            since: Some(Instant::now()),
-            ..RegionSnapshot::default()
-        },
-        ..Case::default()
-    });
-    let rows = plain(&v);
-    let header = find(&rows, |r| r.contains("[shell …]")).expect("preview header");
-    let preview_tail = find(&rows, |r| r.contains("|src|")).expect("preview_tail row");
-    let sep = separator_indices(&rows)[0];
-    assert!(
-        header == 0 && header < preview_tail && preview_tail < sep,
-        "preview order wrong (header={header} preview_tail={preview_tail} sep={sep}):\n{rows:#?}"
-    );
-}
-
-/// The widget draws `preview_tail` in its order — newest first (X-118): the header is row 0,
-/// the newest body row row 1, the oldest row 3, then the `⎿` status row.
-#[test]
-fn region_body_draws_newest_first_under_the_header() {
-    let v = view(&Case {
-        region: RegionSnapshot {
-            label: "[shell …]".to_owned(),
-            preview_tail: vec![
-                "newest".to_owned(),
-                "middle".to_owned(),
-                "oldest".to_owned(),
-            ],
-            since: Some(Instant::now()),
-            ..RegionSnapshot::default()
-        },
-        ..Case::default()
-    });
-    let rows = plain(&v);
-    assert!(rows[0].contains("[shell …]"), "header:\n{rows:#?}");
-    assert!(
-        rows[1].contains("newest"),
-        "newest under the header:\n{rows:#?}"
-    );
-    assert!(rows[2].contains("middle"), "{rows:#?}");
-    assert!(rows[3].contains("oldest"), "oldest last:\n{rows:#?}");
-    assert!(
-        rows[4].contains('⎿'),
-        "status row after the body:\n{rows:#?}"
     );
 }
 

@@ -2,8 +2,9 @@
 //! (internal/ui/model.go:914-1193).
 //!
 //! Builds the pinned bottom frame as raw ANSI rows in the FIXED stacking order
-//! `[call preview][spacer][queue] ─sep─ [completion list][gap] [composer] ─sep─
-//! [surface | status]`, tracking `rows_above`
+//! `[spacer][queue] ─sep─ [completion list][gap] [composer] ─sep─ [surface | status]`
+//! — the running call's widget is not here: it is the conversation's tail block
+//! (`render/widget.rs`, docs/design/fullscreen-tui.md §尾块), tracking `rows_above`
 //! for the real-cursor offset. Every appended row is exactly one visual line (the
 //! one-entry-one-row law) or the cursor desyncs. Above the composer the frame only ever
 //! GROWS; busy is a status-row SEGMENT so toggling it never changes the frame height
@@ -27,15 +28,12 @@ use crate::shell::jobs::JobInfo;
 use crate::text;
 use crate::text::ansi::{ansi_width, truncate_ansi};
 use crate::text::width::str_width;
-use crate::ui::block::Layout;
 use crate::ui::facade::StatusData;
 
-use super::region::RegionSnapshot;
 use super::theme::{CYAN, FAINT, GREEN, RED, RESET, YELLOW};
-use super::widget::CallWidget;
 
 /// Braille spinner frames — single column, width-safe (model.go:25). One counter
-/// drives both the preview header and the status-line busy glyph.
+/// drives both the call widget's header and the status-line busy glyph.
 pub(crate) const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Visible queued lines cap; beyond it a `"+N more"` row (model.go:32).
@@ -118,8 +116,6 @@ pub(crate) enum BottomZone<'a> {
 pub(crate) struct FrameInput<'a> {
     /// Terminal width (0/unknown → separators fall back to 80 columns).
     pub(crate) width: u16,
-    /// The region snapshot (the call preview).
-    pub(crate) region: &'a RegionSnapshot,
     /// The shared spinner counter.
     pub(crate) spin: usize,
     /// Whether any cancel scope is active (renders the ESC hints).
@@ -204,7 +200,7 @@ pub(crate) struct FrameMap {
 impl FrameMap {
     /// How many of a `rows`-row frame's top rows a `height`-row screen leaves out: none while it
     /// fits; with a surface open the frame's BOTTOM is kept — the surface (an approval dialog) must
-    /// be on the screen, the previews and the composer above it yield; otherwise the rows above the
+    /// be on the screen, the spacer, the queue and the composer above it yield; otherwise the rows above the
     /// completion list and the composer yield. The list itself is never cut here: the loop sizes
     /// the frame so it fits, shedding chrome ([`SHED_ORDER`]) and the highlighted item's
     /// description rows before its label.
@@ -226,10 +222,6 @@ fn budget(width: u16, reserve: usize) -> usize {
 /// Builds the frame rows in the fixed stacking order (model.go View, 914-1076).
 pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
     let mut rows: Vec<String> = Vec::new();
-
-    if let Some(widget) = CallWidget::new(fi.region, fi.spin, fi.now) {
-        rows.extend(widget.lines(fi.width as usize));
-    }
 
     // Spacer: one CONSTANT blank row between the content side and everything
     // input-side — it can never bounce the frame (model.go:983-988).

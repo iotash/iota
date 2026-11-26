@@ -49,6 +49,7 @@ use crate::ui::render::frame::{
     build_frame,
 };
 use crate::ui::render::region::RegionSnapshot;
+use crate::ui::render::widget::CallWidget;
 use crate::ui::surface::tabbed::SURFACE_MIN_ROWS;
 use crate::ui::surface::{self, SurfaceEffect};
 
@@ -239,8 +240,11 @@ pub(crate) struct Model {
     /// The whole-turn layer's clock while a turn runs (`UiMsg::Turn`): the busy segment's clock then, and
     /// its label [`TURN_LABEL`] between phases.
     pub(crate) turn: Option<TurnClock>,
-    /// The region snapshot (the call preview) the frame renders.
+    /// The region snapshot: the running call's widget, the conversation's tail block.
     pub(crate) region_snap: RegionSnapshot,
+    /// What the widget showed at the last frame — its label, body rows and detail — to tell new
+    /// activity from animation ([`Model::tail_widget`]).
+    widget_shown: (String, Vec<String>, String),
     /// The open surface, if any.
     pub(crate) surface: Option<SurfaceOpen>,
     /// Live surface generation (the stale-tick guard's counter).
@@ -387,6 +391,7 @@ impl Model {
             busy: None,
             turn: None,
             region_snap: RegionSnapshot::default(),
+            widget_shown: Default::default(),
             surface: None,
             surface_gen: 0,
             cancels: Vec::new(),
@@ -581,7 +586,7 @@ impl Model {
     pub(crate) fn apply(&mut self, msg: UiMsg) {
         match msg {
             UiMsg::Region(snap) => {
-                // Every snapshot changes the rendered preview; a labelled one
+                // Every snapshot changes the call widget (the tail block); a labelled one
                 // also keeps the spinner chain alive (model.go:197-205).
                 let animate = !snap.label.is_empty();
                 self.region_snap = snap;
@@ -997,6 +1002,24 @@ impl Model {
         self.search.as_mut().map(|s| s.prompt(width))
     }
 
+    /// The running call's widget at `now`, as the conversation's tail block (`None` without a
+    /// call), and whether its content changed since the last frame. The comparison is of what the
+    /// snapshot SAYS — the label, the body rows (a step row, a `◇ thought` row), the detail — and
+    /// never of the drawn rows: those change every spinner frame and every elapsed second, and
+    /// animation is not activity (a view scrolled back would say `new activity` forever).
+    pub(crate) fn tail_widget(&mut self, now: Instant) -> (Option<Block>, bool) {
+        let snap = &self.region_snap;
+        let widget = CallWidget::new(snap, self.spin, now).map(Block::laid);
+        let shown = (
+            snap.label.clone(),
+            snap.preview_tail.clone(),
+            snap.detail.clone(),
+        );
+        let changed = widget.is_some() && shown != self.widget_shown;
+        self.widget_shown = shown;
+        (widget, changed)
+    }
+
     /// Assembles the frame from the model state (the WP46/WP47 slots come through
     /// their seams as plain data).
     pub(crate) fn frame_view(&mut self) -> FrameView {
@@ -1089,7 +1112,6 @@ impl Model {
         let notice = self.copied.as_ref().map(|(n, _)| n.as_str());
         let view = build_frame(&FrameInput {
             width: fw,
-            region: &self.region_snap,
             spin: self.spin,
             scopes_active: !self.cancels.is_empty(),
             queue: &queue_rows,
@@ -1129,7 +1151,6 @@ impl Model {
         let queue_rows = self.queue_rows();
         build_frame(&FrameInput {
             width: self.width.max(1),
-            region: &self.region_snap,
             spin: self.spin,
             scopes_active: !self.cancels.is_empty(),
             queue: &queue_rows,
@@ -1283,6 +1304,13 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             }
             if let Some(c) = term.copy_selection()? {
                 m.copy_done(c);
+            }
+            // The running call's widget is the conversation's tail block (fullscreen-tui.md §尾块):
+            // under the rows committed above, laid out by the draw below.
+            let (widget, changed) = m.tail_widget(Instant::now());
+            term.set_tail(widget);
+            if changed {
+                term.note_activity();
             }
             let view = m.frame_view();
             term.set_title(&m.title)?;

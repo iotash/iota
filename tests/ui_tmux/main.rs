@@ -85,6 +85,7 @@
 //! | `53-mcp-grant.sh` | grants-refactor, X-112 | — (a stdio MCP server's tool called by the model: the dialog's four items, Esc denying it, `/allow srv:echo` saying the grant and the bare `/allow`'s Grants tab listing it, the same call then running without a dialog) |
 //! | `54-allow-panel.sh` | allow-panel, X-111 | — (`/allow ../zz-out` grants a sibling directory and the transcript says it is writable, `/status` counting it; the bare `/allow` opens `Grants` and `Static` and no directory browser; the `Grants` tab lists the grant, Space and Enter revoke it, `/status`'s Grants row down to `1 static`; the next bare `/allow`'s Grants tab says `No grants.`, and the `Static` tab says what it is, lists the directory as `allow:   <path>`, and Enter there closes it changing nothing) |
 //! | `55-allow-completion.sh` | allow-rows-mcp, X-111 | — (the `/allow ` completion list walked key by key against a stdio MCP server `github`: level 1 lists the built-ins that ask and `github:` with its count once it connects, `g` leaves the server alone, Tab writes `/allow github:`, Enter on it submits nothing and shows `*` and the tool with its description, `e` Tab Space Tab Enter grants `github:echo` for the project, and the model's next call of it runs without a dialog) |
+//! | `56-widget-scrolls.sh` | widget-in-frame-switch, X-119 | — (the running call's widget is the conversation's tail block: during a `sleep 4` call PgUp takes its rows off the screen while the status row says `Running tools`, Ctrl+End brings them back, and after the settle the call's committed form is there once and no widget row is left) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -772,6 +773,14 @@ fn tmux_allow_panel() {
 #[test]
 fn tmux_allow_completion() {
     run_scenario("55-allow-completion.sh");
+}
+
+/// widget-in-frame-switch (X-119, docs/design/fullscreen-tui.md §尾块): the running call's widget is the
+/// conversation's tail block — `PgUp` during a `sleep 4` call scrolls it away while the status row says the turn
+/// runs, Ctrl+End brings it back, and the settle leaves its committed form once and no widget row.
+#[test]
+fn tmux_widget_scrolls_with_the_output() {
+    run_scenario("56-widget-scrolls.sh");
 }
 
 /// M2 (tui-plan §7) — a measurement, not a check: the bytes the tmux iota runs in sends to its own

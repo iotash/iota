@@ -287,13 +287,6 @@ impl Conversation {
     /// Sets the tail slot (module docs): `Some` puts the block there, in place of the one there
     /// was; `None` takes it away — a view anchored on it then moves to the start of the last
     /// committed block (following the tail when there is none).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the loop sets the tail slot from widget-in-transcript S2 on"
-        )
-    )]
     pub(crate) fn set_tail(&mut self, block: Option<Block>) {
         match (block, self.tail) {
             (Some(b), true) => {
@@ -329,13 +322,6 @@ impl Conversation {
 
     /// The tail slot showed new activity — a step row, not its animation: noted while the view is
     /// anchored, forgotten where [`Conversation::unseen`] is.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the loop sets the tail slot from widget-in-transcript S2 on"
-        )
-    )]
     pub(crate) fn note_activity(&mut self) {
         if matches!(self.view, View::At(_)) {
             self.activity = true;
@@ -343,13 +329,6 @@ impl Conversation {
     }
 
     /// Whether the tail slot showed new activity since the view left the tail.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the loop sets the tail slot from widget-in-transcript S2 on"
-        )
-    )]
     pub(crate) const fn activity(&self) -> bool {
         self.activity
     }

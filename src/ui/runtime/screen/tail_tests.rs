@@ -125,7 +125,8 @@ fn an_append_above_the_tail_block_is_one_scroll_and_lands_above_it() {
 }
 
 #[test]
-fn scrolled_back_the_tail_block_scrolls_away_and_the_way_back_counts_commits_only() {
+fn scrolled_back_the_tail_block_scrolls_away_and_the_way_back_says_activity_but_counts_commits_only()
+ {
     let (mut s, buf) = screen();
     s.push(Block::rows(rows(0, 30)));
     s.set_tail(Some(tail(3)));
@@ -137,14 +138,21 @@ fn scrolled_back_the_tail_block_scrolls_away_and_the_way_back_counts_commits_onl
         before.iter().all(|r| !r.starts_with("tail-")),
         "{before:#?}"
     );
+    s.set_tail(Some(tail(4)));
+    s.draw_frame(&frame(), None).unwrap();
+    assert_eq!(
+        grid(&buf),
+        before,
+        "its growth alone moved and said nothing"
+    );
     s.set_tail(Some(tail(5)));
     s.note_activity();
     s.draw_frame(&frame(), None).unwrap();
     let g = grid(&buf);
-    assert_eq!(g, before, "its growth moved nothing");
+    assert_eq!(g[..7], before[..7], "its growth moved nothing");
     assert!(
-        g[7].contains("Ctrl+End follows"),
-        "no new line counted: {g:#?}"
+        g[7].contains("↓ new activity · Ctrl+End"),
+        "no new line counted, the activity said: {g:#?}"
     );
     s.push(Block::rows(["summary"]));
     s.draw_frame(&frame(), None).unwrap();

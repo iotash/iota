@@ -105,6 +105,16 @@ impl<W: Write> Term<W> {
         self.screen.push(blocks);
     }
 
+    /// Sets the conversation's tail slot — the running call's widget, or `None` ([`Screen::set_tail`]).
+    pub(crate) fn set_tail(&mut self, block: Option<crate::ui::block::Block>) {
+        self.screen.set_tail(block);
+    }
+
+    /// The tail slot showed new activity ([`Screen::note_activity`]).
+    pub(crate) fn note_activity(&mut self) {
+        self.screen.note_activity();
+    }
+
     /// Clears the screen and forgets what it showed — the T-32 `tea.ClearScreen` twin for
     /// surface Tab switches: the next draw writes every cell.
     pub(crate) fn clear(&mut self) -> io::Result<()> {
