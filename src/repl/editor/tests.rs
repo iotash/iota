@@ -80,7 +80,10 @@ async fn ctrl_g_with(
     .await
     .expect("the flow never answered");
     stop.cancel();
-    task.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .expect("the flow never stopped")
+        .unwrap();
     (answer.0, answer.1, ui.events())
 }
 
@@ -321,7 +324,10 @@ async fn the_list_chooses_runs_and_writes_the_editor() {
         .expect("the flow never answered");
     }
     stop.cancel();
-    task.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .expect("the flow never stopped")
+        .unwrap();
     let events = ui.events();
     let opened = lists(&events);
     assert_eq!(opened.len(), 1, "the list is asked once: {opened:?}");

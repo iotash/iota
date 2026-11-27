@@ -686,6 +686,19 @@ mod tests {
             }
         }
 
+        /// Waits until the terminal is lent: the alternate screen left in what was written since
+        /// byte `since`. The loop is then inside the program's wait, serving only its mailbox.
+        #[cfg(unix)]
+        fn wait_lent(&self, since: usize) {
+            assert!(
+                self.wait_until(Duration::from_secs(5), |h| has(
+                    &h.buf.bytes()[since..],
+                    b"\x1b[?1049l"
+                )),
+                "the terminal was never lent"
+            );
+        }
+
         /// Returns once the loop has APPLIED every mailbox message posted before this call.
         ///
         /// A facade request travels on the mailbox, a key travels on the event channel, and
@@ -697,12 +710,20 @@ mod tests {
         /// assert pins the one precondition: it is a barrier only while the queue is empty,
         /// because otherwise it would also DRAIN the queue it walks past.
         async fn barrier(&self) {
-            let drained = self.ui.take_queued_messages().await;
+            let drained = bounded("the barrier", self.ui.take_queued_messages()).await;
             assert!(
                 drained.is_empty(),
                 "barrier drained queued input: {drained:?}"
             );
         }
+    }
+
+    /// Awaits `f`, failing the test after 10 s with `what` named: a wait the loop never answers
+    /// fails in seconds instead of holding the CI job until its timeout.
+    async fn bounded<T>(what: &str, f: impl Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(10), f)
+            .await
+            .unwrap_or_else(|_| panic!("stalled: {what}"))
     }
 
     /// One poll of `f` under a no-op waker — enough to run an async block up to its first await,
@@ -717,15 +738,15 @@ mod tests {
     async fn enter_delivers_the_input_to_the_pending_reader() {
         let h = start_facade();
         h.wait_frame();
-        let ui = Arc::clone(&h.ui);
-        let reader = tokio::spawn(async move {
-            let cancel = CancellationToken::new();
-            ui.read_input(&cancel).await
-        });
-        tokio::time::sleep(Duration::from_millis(100)).await; // let the waiter park
+        let cancel = CancellationToken::new();
+        let mut read = h.ui.read_input(&cancel);
+        assert!(poll_once(&mut read).is_pending());
+        h.barrier().await; // the waiter is parked
         h.type_text("hello");
         h.key(KeyCode::Enter, KeyModifiers::NONE);
-        let got = reader.await.unwrap().expect("waiter delivered");
+        let got = bounded("the reader's answer", read)
+            .await
+            .expect("waiter delivered");
         assert_eq!(got.text, "hello");
         assert_eq!(got.display, "hello");
         h.ui.close().await.expect("close");
@@ -739,13 +760,14 @@ mod tests {
         let h = start_facade();
         h.wait_frame();
         let cancel = CancellationToken::new();
-        let ui = Arc::clone(&h.ui);
-        let token = cancel.clone();
-        let reader = tokio::spawn(async move { ui.read_input(&token).await });
-        tokio::time::sleep(Duration::from_millis(100)).await; // park the waiter
+        let mut read = h.ui.read_input(&cancel);
+        assert!(poll_once(&mut read).is_pending());
+        h.barrier().await; // the waiter is parked
         cancel.cancel();
         assert_eq!(
-            reader.await.unwrap().expect_err("cancelled call"),
+            bounded("the revoke's acknowledgement", read)
+                .await
+                .expect_err("cancelled call"),
             UiError::Cancelled,
             "the cancel arm resolves the caller once the loop acknowledged the revoke"
         );
@@ -753,10 +775,12 @@ mod tests {
         h.type_text("late");
         h.key(KeyCode::Enter, KeyModifiers::NONE);
         // The late submit queued; a fresh read_input drains the queue head.
-        let got =
-            h.ui.read_input(&CancellationToken::new())
-                .await
-                .expect("queued late submit drained");
+        let got = bounded(
+            "the queued late submit",
+            h.ui.read_input(&CancellationToken::new()),
+        )
+        .await
+        .expect("queued late submit drained");
         assert_eq!(got.text, "late");
         h.ui.close().await.expect("close");
     }
@@ -820,15 +844,6 @@ mod tests {
         h.ui.close().await.expect("close");
     }
 
-    /// With no cancel scopes, Ctrl+C surfaces `Err(Interrupted)` to the pending
-    /// `read_input` — the caller's cue to exit (double-Ctrl+C-exits emerges from this).
-    /// An idle Ctrl+C is the ONE input this loop drops when no waiter is parked
-    /// (`fail_waiter_interrupted` takes an `Option`), and nothing else would ever resolve the call
-    /// — so a Ctrl+C that overtakes the `ReadReq` does not fail this test, it hangs it forever.
-    /// That is not hypothetical: the 100ms sleep this once slept lost the race on a macOS runner,
-    /// libtest has no per-test timeout, and the test binary held the CI job until the 45-minute
-    /// cap ended it (run 34772709712). Hence the barrier, and hence the deadline: whatever else
-    /// this test does, it must not be able to hang.
     /// An idle Ctrl+D that lands while no reader is parked — between a turn's end and the REPL's
     /// next `read_input` — is the next read's answer, not a lost key (tui-plan S4, S2's lead (a)).
     #[tokio::test(flavor = "multi_thread")]
@@ -845,6 +860,15 @@ mod tests {
         h.ui.close().await.expect("close");
     }
 
+    /// With no cancel scopes, Ctrl+C surfaces `Err(Interrupted)` to the pending
+    /// `read_input` — the caller's cue to exit (double-Ctrl+C-exits emerges from this).
+    /// An idle Ctrl+C is the ONE input this loop drops when no waiter is parked
+    /// (`fail_waiter_interrupted` takes an `Option`), and nothing else would ever resolve the call
+    /// — so a Ctrl+C that overtakes the `ReadReq` does not fail this test, it hangs it forever.
+    /// That is not hypothetical: the 100ms sleep this once slept lost the race on a macOS runner,
+    /// libtest has no per-test timeout, and the test binary held the CI job until the 45-minute
+    /// cap ended it (run 34772709712). Hence the barrier, and hence the deadline: whatever else
+    /// this test does, it must not be able to hang.
     #[tokio::test(flavor = "multi_thread")]
     async fn an_idle_ctrl_c_interrupts_the_pending_reader() {
         let h = start_facade();
@@ -870,17 +894,14 @@ mod tests {
     async fn waiter_fails_on_shutdown() {
         let h = start_facade();
         h.wait_frame();
-        let ui = Arc::clone(&h.ui);
-        let reader = tokio::spawn(async move {
-            let cancel = CancellationToken::new();
-            ui.read_input(&cancel).await
-        });
-        tokio::time::sleep(Duration::from_millis(100)).await; // park the waiter
+        let cancel = CancellationToken::new();
+        let mut read = h.ui.read_input(&cancel);
+        assert!(poll_once(&mut read).is_pending());
+        h.barrier().await; // the waiter is parked
         h.ui.close().await.expect("close");
         assert_eq!(
-            reader
+            bounded("the parked waiter's failure", read)
                 .await
-                .unwrap()
                 .expect_err("shutdown fails the waiter"),
             UiError::Closed
         );
@@ -925,7 +946,10 @@ mod tests {
         );
         h.key(KeyCode::Down, KeyModifiers::NONE);
         h.key(KeyCode::Enter, KeyModifiers::NONE);
-        let r = sel.await.unwrap().expect("select reply");
+        let r = bounded("the select reply", sel)
+            .await
+            .unwrap()
+            .expect("select reply");
         assert!(!r.cancelled);
         assert_eq!(r.index, 1);
         h.ui.close().await.expect("close");
@@ -960,7 +984,10 @@ mod tests {
             h.contents()
         );
         h.key(KeyCode::Esc, KeyModifiers::NONE);
-        let r = sel.await.unwrap().expect("select reply");
+        let r = bounded("the select reply", sel)
+            .await
+            .unwrap()
+            .expect("select reply");
         assert!(r.cancelled, "esc should cancel the select");
         assert!(
             !token.is_cancelled(),
@@ -1058,22 +1085,24 @@ mod tests {
     async fn ctrl_g_hands_out_the_draft_and_the_answer_replaces_it() {
         let h = start_facade();
         h.wait_frame();
-        let ui = Arc::clone(&h.ui);
-        let edit = tokio::spawn(async move { ui.next_edit(&CancellationToken::new()).await });
-        tokio::time::sleep(Duration::from_millis(100)).await; // let the waiter park
+        let cancel = CancellationToken::new();
+        let mut edit = h.ui.next_edit(&cancel);
+        assert!(poll_once(&mut edit).is_pending());
+        h.barrier().await; // the edit waiter is parked
         h.etx.send(Event::Paste("one\ntwo".to_owned())).unwrap();
         h.type_text(" tail");
         h.key(KeyCode::Char('g'), KeyModifiers::CONTROL);
-        let seed = edit
+        let seed = bounded("the draft handed to the edit waiter", edit)
             .await
-            .unwrap()
             .expect("the waiter was handed the draft");
         assert_eq!(seed, "one\ntwo tail", "paste tags expanded");
         let before = h.buf.bytes().len();
-        let status =
-            h.ui.run_external(vec!["sh".into(), "-c".into(), "exit 3".into()])
-                .await
-                .expect("the program ran");
+        let status = bounded(
+            "the program's exit",
+            h.ui.run_external(vec!["sh".into(), "-c".into(), "exit 3".into()]),
+        )
+        .await
+        .expect("the program ran");
         assert_eq!(status.code(), Some(3));
         h.ui.edit_done(Some("edited".to_owned()), Some("draft updated".to_owned()));
         // The loop reads keys before its mailbox: the answer lands first, then the key.
@@ -1104,12 +1133,18 @@ mod tests {
     async fn a_draft_changed_while_editing_is_kept() {
         let h = start_facade();
         h.wait_frame();
-        let ui = Arc::clone(&h.ui);
-        let edit = tokio::spawn(async move { ui.next_edit(&CancellationToken::new()).await });
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        let cancel = CancellationToken::new();
+        let mut edit = h.ui.next_edit(&cancel);
+        assert!(poll_once(&mut edit).is_pending());
+        h.barrier().await; // the edit waiter is parked
         h.type_text("ab");
         h.key(KeyCode::Char('g'), KeyModifiers::CONTROL);
-        assert_eq!(edit.await.unwrap().unwrap(), "ab");
+        assert_eq!(
+            bounded("the draft handed to the edit waiter", edit)
+                .await
+                .unwrap(),
+            "ab"
+        );
         h.type_text("c");
         h.barrier().await;
         h.ui.edit_done(Some("zzz".to_owned()), Some("draft updated".to_owned()));
@@ -1132,17 +1167,32 @@ mod tests {
     async fn rows_committed_while_lent_land_after() {
         let h = start_facade();
         h.wait_frame();
-        let ui = Arc::clone(&h.ui);
-        let run =
-            tokio::spawn(async move { ui.run_external(vec!["sleep".into(), "0.6".into()]).await });
-        tokio::time::sleep(Duration::from_millis(200)).await; // lent by now
+        // The program runs until the test lets it go, so the row is committed while it certainly runs.
+        let dir = tempfile::tempdir().unwrap();
+        let go = dir.path().join("go");
+        let before = h.buf.bytes().len();
+        let mut run = h.ui.run_external(vec![
+            "sh".into(),
+            "-c".into(),
+            r#"while [ ! -e "$1" ]; do sleep 0.02; done"#.into(),
+            "sh".into(),
+            go.clone().into_os_string(),
+        ]);
+        assert!(poll_once(&mut run).is_pending());
+        h.wait_lent(before);
         h.ui.print(Block::rows(["committed while lent"]));
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        h.barrier().await; // the row was applied, while lent
         assert!(
             !has(&h.buf.bytes(), b"committed while lent"),
             "a row was drawn while the terminal was lent"
         );
-        assert!(run.await.unwrap().expect("ran").success());
+        std::fs::write(&go, b"").unwrap();
+        assert!(
+            bounded("the program's exit", run)
+                .await
+                .expect("ran")
+                .success()
+        );
         assert!(
             h.wait_until(Duration::from_secs(2), |h| h
                 .contents()
@@ -1159,14 +1209,14 @@ mod tests {
     async fn close_while_lent_kills_the_program() {
         let h = start_facade();
         h.wait_frame();
-        let ui = Arc::clone(&h.ui);
-        let run =
-            tokio::spawn(async move { ui.run_external(vec!["sleep".into(), "30".into()]).await });
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        let before = h.buf.bytes().len();
+        let mut run = h.ui.run_external(vec!["sleep".into(), "30".into()]);
+        assert!(poll_once(&mut run).is_pending());
+        h.wait_lent(before);
         let t0 = Instant::now();
         h.ui.close().await.expect("close");
         assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
-        let ran = run.await.unwrap();
+        let ran = bounded("the ended program's status", run).await;
         assert!(
             ran.as_ref().map_or(true, |s| !s.success()),
             "the program was not ended: {ran:?}"

@@ -1441,11 +1441,11 @@ fn an_idle_ctrl_d_with_no_reader_answers_the_next_read_after_the_queue() {
     enter(&mut m);
     m.handle_key(ctrl('d'));
     assert!(m.pending_eof);
-    let first = park(&mut m, 1);
-    assert_eq!(first.blocking_recv().unwrap().unwrap().text, "typed ahead");
-    let second = park(&mut m, 2);
+    let mut first = park(&mut m, 1);
+    assert_eq!(first.try_recv().unwrap().unwrap().text, "typed ahead");
+    let mut second = park(&mut m, 2);
     assert_eq!(
-        second.blocking_recv().unwrap().unwrap_err(),
+        second.try_recv().unwrap().unwrap_err(),
         UiError::Interrupted
     );
     assert!(!m.pending_eof);
