@@ -1540,3 +1540,51 @@ fn a_selected_cell_is_reversed_with_colour_off_and_filled_with_it_on() {
     assert!(!on.modifier.contains(Modifier::REVERSED));
     assert_eq!(on.bg, Color::Indexed(243));
 }
+
+/// `suspend` is `lend` + the stop + `reclaim`: lending writes, byte for byte, what a suspend
+/// writes (mouse off, the main screen with the cursor shown, paste and focus reporting off), a
+/// test's screen reclaims without a byte, and the next frame enters the alternate screen again
+/// and paints every cell.
+#[cfg(unix)]
+#[test]
+fn lend_and_reclaim_write_what_suspend_writes() {
+    let run = |split: bool| {
+        let (mut s, buf) = mouse_screen(40, 12);
+        s.push(rows_of(&rows(3)));
+        s.draw_frame(&frame(40), None).unwrap();
+        let mark = buf.bytes().len();
+        let size = if split {
+            s.lend(true).unwrap();
+            let lent = buf.bytes().len();
+            let size = s.reclaim(true).unwrap();
+            assert_eq!(buf.bytes().len(), lent, "a test's screen reclaims silently");
+            size
+        } else {
+            s.suspend(true).unwrap()
+        };
+        assert_eq!(size, None);
+        let handed = buf.bytes()[mark..].to_vec();
+        let mark = buf.bytes().len();
+        s.draw_frame(&frame(40), None).unwrap();
+        (handed, buf.bytes()[mark..].to_vec(), replay(&buf, 12, 40))
+    };
+    let (suspended, back, _) = run(false);
+    let (lent, back_split, p) = run(true);
+    let mut want = MOUSE_OFF.to_vec();
+    want.extend_from_slice(LEAVE);
+    want.extend_from_slice(b"\x1b[?2004l");
+    want.extend_from_slice(crate::ui::runtime::osc::CSI_FOCUS_OFF.as_bytes());
+    assert_eq!(suspended, want);
+    assert_eq!(lent, suspended);
+    assert_eq!(back_split, back);
+    assert!(has(&back, b"\x1b[?1049h") && has(&back, MOUSE_ON));
+    assert!(grid(&p).iter().any(|r| r == "line-002"), "repainted whole");
+
+    let (mut s, buf) = mouse_screen(40, 12);
+    s.lend(false).unwrap();
+    assert_eq!(
+        buf.bytes(),
+        b"\x1b[?2004l",
+        "off the alternate screen: only the modes"
+    );
+}

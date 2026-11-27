@@ -134,6 +134,28 @@ impl<W: Write> Term<W> {
         self.screen.suspend(self.focus_on)
     }
 
+    /// Lends the terminal to a program run in it ([`Screen::lend`]): the main screen, cooked mode,
+    /// no mouse, paste or focus reporting; nothing is drawn until [`Term::reclaim`].
+    #[cfg(unix)]
+    #[expect(
+        dead_code,
+        reason = "the Ctrl+G flow lends the terminal to the editor from S2"
+    )]
+    pub(crate) fn lend(&mut self) -> io::Result<()> {
+        self.screen.lend(self.focus_on)
+    }
+
+    /// Takes a lent terminal back ([`Screen::reclaim`]). Returns the size it has now (`None` for
+    /// a headless screen).
+    #[cfg(unix)]
+    #[expect(
+        dead_code,
+        reason = "the Ctrl+G flow lends the terminal to the editor from S2"
+    )]
+    pub(crate) fn reclaim(&mut self) -> io::Result<Option<Size>> {
+        self.screen.reclaim(self.focus_on)
+    }
+
     /// Whether the view is scrolled back from the tail.
     pub(crate) fn view_paused(&self) -> bool {
         self.screen.paused()

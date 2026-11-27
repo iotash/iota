@@ -555,9 +555,22 @@ impl<W: Write> Screen<W> {
     /// the process (`SIGSTOP`, which nothing can catch — the shell sees a stopped job). On `fg` the
     /// modes go back on; the next frame enters the alternate screen again and paints every cell
     /// ([`Place::Main`]). Returns the terminal's size then (`None` for a test's screen, which does
-    /// not stop).
+    /// not stop). [`Screen::lend`] and [`Screen::reclaim`] around the stop.
     #[cfg(unix)]
     pub(crate) fn suspend(&mut self, focus: bool) -> io::Result<Option<Size>> {
+        self.lend(focus)?;
+        if self.live {
+            nix::sys::signal::raise(nix::sys::signal::Signal::SIGSTOP).map_err(io::Error::from)?;
+        }
+        self.reclaim(focus)
+    }
+
+    /// Lends the terminal to someone else — the shell after a stop, a program run in it: the main
+    /// screen without the conversation written out, mouse reporting (when on), bracketed paste and
+    /// focus reporting (when `focus`) off, the cursor shown, the tty cooked. Nothing is drawn until
+    /// [`Screen::reclaim`]. A test's screen writes the same bytes and leaves raw mode alone.
+    #[cfg(unix)]
+    pub(crate) fn lend(&mut self, focus: bool) -> io::Result<()> {
         let mut seq = Vec::new();
         if self.place == Place::Alt {
             self.place = Place::Main;
@@ -570,11 +583,26 @@ impl<W: Write> Screen<W> {
         }
         self.write_raw(&seq)?;
         self.last = None;
+        if self.live {
+            crossterm::terminal::disable_raw_mode()?;
+        }
+        Ok(())
+    }
+
+    /// Takes a lent terminal back ([`Screen::lend`]): what was typed meanwhile and not read — a
+    /// program's late terminal replies among it — is dropped (`TCIFLUSH`, so none of it reaches the
+    /// composer), the tty goes raw, bracketed paste and focus reporting (when `focus`) on again.
+    /// The next frame enters the alternate screen and paints every cell ([`Place::Main`]). Returns
+    /// the terminal's size now — it may have changed meanwhile — and `None` for a test's screen,
+    /// which writes nothing here.
+    #[cfg(unix)]
+    pub(crate) fn reclaim(&mut self, focus: bool) -> io::Result<Option<Size>> {
         if !self.live {
             return Ok(None);
         }
-        crossterm::terminal::disable_raw_mode()?;
-        nix::sys::signal::raise(nix::sys::signal::Signal::SIGSTOP).map_err(io::Error::from)?;
+        let tty = std::fs::File::open("/dev/tty")?;
+        nix::sys::termios::tcflush(&tty, nix::sys::termios::FlushArg::TCIFLUSH)
+            .map_err(io::Error::from)?;
         crossterm::terminal::enable_raw_mode()?;
         let mut seq = String::from("\x1b[?2004h");
         if focus {
