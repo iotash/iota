@@ -557,7 +557,7 @@ fn an_unknown_key_is_refused_with_its_coordinate() {
         ),
         (
             "agnets:\n  coder: {}\n",
-            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, mouse:)",
+            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, mouse:, editor:)",
         ),
     ] {
         assert_eq!(
@@ -700,6 +700,80 @@ fn mouse_is_a_top_level_bool_the_last_file_decides() {
         assert_eq!(cfg.mouse, want, "{home:?} then {cwd:?}");
         let _ = dir;
     }
+}
+
+/// `editor:` is a top-level scalar split into argv the way a shell would (quotes group); nothing to run
+/// and unbalanced quotes fail the load rather than read as unset; the home and `-c` files may set it,
+/// a project file may not — it names a program to run and is the user's own choice.
+#[test]
+fn editor_is_split_into_argv_and_only_the_users_own_files_set_it() {
+    assert_eq!(parse("").expect("parses").editor, None);
+    assert_eq!(
+        parse("editor: vim\n").expect("parses").editor,
+        Some(vec!["vim".to_owned()])
+    );
+    assert_eq!(
+        parse("editor: code --wait\n").expect("parses").editor,
+        Some(vec!["code".to_owned(), "--wait".to_owned()])
+    );
+    assert_eq!(
+        parse("editor: \"'/Applications/My Editor' -w\"\n")
+            .expect("parses")
+            .editor,
+        Some(vec!["/Applications/My Editor".to_owned(), "-w".to_owned()])
+    );
+    for (yaml, want) in [
+        (
+            "editor: ''\n",
+            "editor: names no command — write the program to run, e.g. `vim` or `code --wait`",
+        ),
+        (
+            "editor: '   '\n",
+            "editor: names no command — write the program to run, e.g. `vim` or `code --wait`",
+        ),
+        (
+            "editor: \"vim 'x\"\n",
+            "editor: unbalanced quotes in \"vim 'x\"",
+        ),
+    ] {
+        assert_eq!(parse(yaml).expect_err(yaml).to_string(), want);
+    }
+
+    // The home file sets it; the `-c` file does too.
+    let (dir, dirs) = temp_project(&[("home/.iota.yaml", "editor: nvim\n"), (".iota.yaml", "")]);
+    let cfg = Config::load(
+        None,
+        &Env::default().with_dirs(dirs),
+        &mut |_, _, _| true,
+        &mut |_| {},
+    )
+    .expect("loads");
+    assert_eq!(cfg.editor, Some(vec!["nvim".to_owned()]));
+    let explicit = dir.path().join("explicit.yaml");
+    fs::write(&explicit, "editor: hx\n").unwrap();
+    let (cfg, warnings) = load_explicit(&explicit, &Env::default());
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(cfg.editor, Some(vec!["hx".to_owned()]));
+
+    // A project file does not, even an admitted one.
+    let (dir, dirs) = temp_project(&[
+        ("home/.iota.yaml", "editor: nvim\n"),
+        (".iota.yaml", "editor: evil\n"),
+    ]);
+    let err = Config::load(
+        None,
+        &Env::default().with_dirs(dirs),
+        &mut |_, _, _| true,
+        &mut |_| {},
+    )
+    .expect_err("a project file's editor fails the load");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "config {}: editor: a project file cannot set the editor — it names a program to run; set it in ~/.iota.yaml or the -c file",
+            dir.path().join(".iota.yaml").display()
+        )
+    );
 }
 
 /// An `allow:` directory that names nothing refuses the load, by position and with the reason: a blank one

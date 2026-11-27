@@ -97,6 +97,8 @@ ratatui   = "=0.30.2"
 # with a resize waited for the next keystroke (L4 42; scenario 39's idle Ctrl+D) while the loop spun on
 # the readable tty. Nothing else changes — crossterm reads the same stdin or /dev/tty.
 crossterm = { version = "=0.29.0", features = ["use-dev-tty"] }
+# `editor:` is split into argv the way a shell would (no shell runs it); already in the tree.
+shlex = "2.0"
 unicode-width        = "=0.2.2"
 unicode-segmentation = "1.13"
 # token accounting (WP53) — embeds the o200k_base BPE ranks (zstd-compressed, decompressed

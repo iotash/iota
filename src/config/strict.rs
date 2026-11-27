@@ -16,7 +16,14 @@ use crate::provider::MODERATION_LEVELS;
 use crate::tool::sets::SET_NAMES;
 
 /// The top-level maps.
-const TOP_KEYS: [&str; 5] = ["providers", "models", "agents", "mcp_servers", MOUSE];
+const TOP_KEYS: [&str; 6] = [
+    "providers",
+    "models",
+    "agents",
+    "mcp_servers",
+    MOUSE,
+    crate::config::EDITOR,
+];
 /// The top-level bool: whether the full screen captures the mouse. A terminal setting, not an agent's, so
 /// the audit keeps it out of the layers and the typed decode checks its value.
 const MOUSE: &str = "mouse";
@@ -489,7 +496,7 @@ mod tests {
         );
         assert_eq!(
             check("agnets:\n  a: {}\n"),
-            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, mouse:)"
+            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, mouse:, editor:)"
         );
         assert_eq!(
             check("mcp_servers:\n  fs: {commadn: npx}\n"),

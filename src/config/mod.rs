@@ -140,6 +140,9 @@ struct ConfigFile {
     /// `mouse:` — whether the full screen captures the mouse; absent leaves the stack's value as it is.
     #[serde(deserialize_with = "crate::tool::yaml11::deserialize_opt_bool")]
     mouse: Option<bool>,
+    /// `editor:` — the command the composer's draft is edited with, as written (split by
+    /// [`editor_argv`]); absent leaves the stack's value as it is.
+    editor: Option<String>,
 }
 
 /// The merged, expanded and validated config.
@@ -163,6 +166,12 @@ pub struct Config {
     /// all, so the terminal keeps its own selection. The last file of the stack that sets it wins; `None`
     /// when none does (on).
     pub mouse: Option<bool>,
+    /// `editor:` — the program the composer's draft is edited in, split into argv the way a shell
+    /// would (`code --wait` → `["code", "--wait"]`; the file name is appended when it runs). Written in
+    /// the home file or the `-c` file only — it names a program to run and is the user's own choice,
+    /// so a project file setting it is an error. The last file that sets it wins; `None` when none
+    /// does.
+    pub editor: Option<Vec<String>>,
 }
 
 /// What a positional name resolved to: one entry from each layer, defaults where the name reached no further.
@@ -277,7 +286,7 @@ impl Config {
             if layer == Layer::Project && !admit(&path, &data, warn) {
                 continue;
             }
-            cfg.merge_bytes(&path, &data, env, warn)?;
+            cfg.merge_bytes(&path, &data, layer, env, warn)?;
         }
         cfg.validate(env, warn)?;
         Ok(cfg)
@@ -342,10 +351,19 @@ impl Config {
         &mut self,
         path: &Path,
         data: &[u8],
+        layer: Layer,
         env: &Env,
         warn: &mut dyn FnMut(String),
     ) -> Result<(), ConfigError> {
-        let merged = decode(data).and_then(|file| self.merge_document(file, env));
+        let merged = decode(data).and_then(|file| {
+            if layer == Layer::Project && file.editor.is_some() {
+                return Err(ConfigError::Key {
+                    at: EDITOR.to_owned(),
+                    message: "a project file cannot set the editor — it names a program to run; set it in ~/.iota.yaml or the -c file".to_owned(),
+                });
+            }
+            self.merge_document(file, env)
+        });
         match merged {
             Ok(()) => {}
             // config.go:178-185: a file that is not YAML at all is dropped with a warning saying why — there
@@ -388,6 +406,9 @@ impl Config {
         }
         if file.mouse.is_some() {
             self.mouse = file.mouse;
+        }
+        if let Some(editor) = &file.editor {
+            self.editor = Some(editor_argv(editor)?);
         }
         Ok(())
     }
@@ -834,6 +855,34 @@ fn decode(data: &[u8]) -> Result<ConfigFile, ConfigError> {
         serde_norway::from_slice(data).map_err(|e| ConfigError::Parse(e.to_string()))?;
     strict::audit(&doc)?;
     serde_norway::from_slice(data).map_err(|e| ConfigError::Parse(e.to_string()))
+}
+
+/// The top-level `editor:` key.
+pub(crate) const EDITOR: &str = "editor";
+
+/// An `editor:` value as argv, split the way a shell would (quotes group, no expansion — the
+/// program is run without a shell). Nothing to run (empty, blanks only) and unbalanced quotes are
+/// mistakes with an obvious fix, so they fail the load rather than read as unset.
+fn editor_argv(value: &str) -> Result<Vec<String>, ConfigError> {
+    let fail = |message: &str| ConfigError::Key {
+        at: EDITOR.to_owned(),
+        message: message.to_owned(),
+    };
+    match shlex::split(value) {
+        None => Err(fail(&format!("unbalanced quotes in {value:?}"))),
+        Some(argv) if argv.is_empty() => Err(fail(
+            "names no command — write the program to run, e.g. `vim` or `code --wait`",
+        )),
+        Some(argv) => Ok(argv),
+    }
+}
+
+/// Whether ONE document is one a load accepts on its own: the YAML, the key audit, the typed decode
+/// and the `editor:` value — what [`edit::write_editor`] checks before and after it writes.
+pub(crate) fn check_document(data: &[u8]) -> Result<(), ConfigError> {
+    let file = decode(data)?;
+    file.editor.as_deref().map(editor_argv).transpose()?;
+    Ok(())
 }
 
 /// The `mcp_servers:` entries of ONE document, decoded under the same audit as a load — what

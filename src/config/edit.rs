@@ -52,7 +52,7 @@ pub enum EditError {
         source: std::io::Error,
     },
     /// The block could not be serialised (a value serde cannot represent — not reachable from the CLI).
-    #[error("mcp_servers: {0}")]
+    #[error("could not serialise the config: {0}")]
     Serialize(#[from] serde_norway::Error),
 }
 
@@ -160,6 +160,61 @@ pub fn rewrite_mcp_servers(
     })
 }
 
+/// Writes `editor: <value>` into the config file at `path` ([`set_scalar`]) atomically — the file a
+/// symlink names, not the link (a rename over the link would turn it into a regular file); a missing
+/// file is created holding that one line. Nothing is written into a document the next load would
+/// refuse, nor a value it would refuse ([`crate::config::check_document`]).
+pub fn write_editor(path: &Path, value: &str) -> Result<(), EditError> {
+    let path = crate::app::fs::physical(path).unwrap_or_else(|| path.to_path_buf());
+    let display = path.display().to_string();
+    let text = match std::fs::read(&path) {
+        Ok(bytes) => String::from_utf8(bytes).map_err(|e| EditError::Config {
+            path: display.clone(),
+            source: ConfigError::Parse(e.to_string()),
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(source) => {
+            return Err(EditError::Read {
+                path: display,
+                source,
+            });
+        }
+    };
+    let refused = |source| EditError::Config {
+        path: display.clone(),
+        source,
+    };
+    crate::config::check_document(text.as_bytes()).map_err(refused)?;
+    let out = set_scalar(&text, crate::config::EDITOR, value)?;
+    crate::config::check_document(out.as_bytes()).map_err(refused)?;
+    crate::app::fs::write_atomic(&path, out.as_bytes(), None).map_err(|source| EditError::Write {
+        path: display.clone(),
+        source,
+    })
+}
+
+/// `text` with the top-level scalar `key` set to `value`, as one line `serde_norway` writes (so a
+/// value YAML would misread is quoted): the key's line — and any indented continuation — replaced in
+/// place when the document has it, else the line appended at the end (after a newline when the
+/// file lacks a final one). Every other byte is returned as it came in; a commented-out `# key:` is
+/// not the key and stays. An inline comment on the replaced line goes with it.
+pub fn set_scalar(text: &str, key: &str, value: &str) -> Result<String, EditError> {
+    let line = serde_norway::to_string(&BTreeMap::from([(key, value)]))?;
+    if let Some(range) = locate_block(text, key) {
+        return Ok(format!(
+            "{}{line}{}",
+            &text[..range.start],
+            &text[range.end..]
+        ));
+    }
+    let mut out = text.to_owned();
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&line);
+    Ok(out)
+}
+
 /// The byte range of the top-level block `key` in `text`: from the start of its key line to the end of its
 /// last indented line (newline included), or `None` when no line at column 0 is `key:`.
 ///
@@ -239,7 +294,10 @@ mod tests {
 
     use pretty_assertions::assert_eq;
 
-    use super::{locate_block, read_mcp_servers, rewrite_mcp_servers, write_mcp_servers};
+    use super::{
+        locate_block, read_mcp_servers, rewrite_mcp_servers, set_scalar, write_editor,
+        write_mcp_servers,
+    };
     use crate::config::McpServerConfig;
 
     fn servers(entries: &[(&str, McpServerConfig)]) -> BTreeMap<String, McpServerConfig> {
@@ -477,6 +535,115 @@ agents:
                 "config {}: providers.p.kye: unknown key (want type, key, url)",
                 path.display()
             )
+        );
+    }
+
+    /// `set_scalar` touches the key's own line and nothing else: present (with an indented
+    /// continuation) it is replaced in place, absent it is appended — after a newline when the file
+    /// lacks one — and a commented-out `# editor:` is not the key. A value YAML would misread is
+    /// quoted by the serialiser; one that is a plain word or two is not.
+    #[test]
+    fn set_scalar_replaces_the_line_or_appends_one() {
+        let set = |text: &str, value: &str| set_scalar(text, "editor", value).expect("set");
+        assert_eq!(set("", "vim"), "editor: vim\n");
+        assert_eq!(set("mouse: false", "vim"), "mouse: false\neditor: vim\n");
+        assert_eq!(
+            set("# top\nmouse: false\n\n# tail\n", "vim"),
+            "# top\nmouse: false\n\n# tail\neditor: vim\n"
+        );
+        assert_eq!(
+            set("# editor: nano\nmouse: false\n", "vim"),
+            "# editor: nano\nmouse: false\neditor: vim\n",
+            "a comment is not the key"
+        );
+        assert_eq!(
+            set("# a\neditor: nano  # mine\nmouse: false\n", "code --wait"),
+            "# a\neditor: code --wait\nmouse: false\n",
+            "in place; its inline comment goes with the line"
+        );
+        assert_eq!(
+            set("editor:\n  nano\n# next\nmouse: false\n", "hx"),
+            "editor: hx\n# next\nmouse: false\n",
+            "the indented continuation goes too"
+        );
+        assert_eq!(set("editor: nano", "hx"), "editor: hx\n");
+        for value in ["vim 'my file'", "yes", "", "#x", "a: b"] {
+            let text = set("mouse: true\n", value);
+            let back: std::collections::BTreeMap<String, serde_norway::Value> =
+                serde_norway::from_str(&text).expect("YAML");
+            assert_eq!(back["editor"], serde_norway::Value::from(value), "{text:?}");
+        }
+    }
+
+    /// `write_editor` goes through the file: created when missing, every other byte kept, the file a
+    /// symlink points at written (the link stays a link), and nothing written into a file the next
+    /// load would refuse or with a value it would refuse.
+    #[test]
+    fn write_editor_goes_through_the_file_and_refuses_a_broken_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".iota.yaml");
+        write_editor(&path, "code --wait").expect("created");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "editor: code --wait\n"
+        );
+        let cfg = crate::config::Config::parse(
+            &std::fs::read(&path).expect("read"),
+            &crate::app::env::Env::default(),
+            &mut |_| {},
+        )
+        .expect("loads back");
+        assert_eq!(
+            cfg.editor,
+            Some(vec!["code".to_owned(), "--wait".to_owned()])
+        );
+
+        std::fs::write(&path, "# mine\nmouse: false # yes\neditor: nano\n").expect("write");
+        write_editor(&path, "nvim").expect("replaced");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "# mine\nmouse: false # yes\neditor: nvim\n"
+        );
+
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link.yaml");
+            std::os::unix::fs::symlink(&path, &link).expect("symlink");
+            write_editor(&link, "hx").expect("through the link");
+            assert!(
+                std::fs::symlink_metadata(&link)
+                    .expect("lstat")
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("read"),
+                "# mine\nmouse: false # yes\neditor: hx\n"
+            );
+        }
+
+        let broken = "providers:\n  p: {kye: k}\n";
+        std::fs::write(&path, broken).expect("write");
+        let err = write_editor(&path, "vim").expect_err("a broken config is not written");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "config {}: providers.p.kye: unknown key (want type, key, url)",
+                crate::app::fs::physical(&path).expect("physical").display()
+            )
+        );
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), broken);
+
+        std::fs::write(&path, "mouse: false\n").expect("write");
+        let err = write_editor(&path, "vim 'x").expect_err("an unbalanced value is not written");
+        assert!(
+            err.to_string()
+                .ends_with("editor: unbalanced quotes in \"vim 'x\""),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "mouse: false\n"
         );
     }
 }
