@@ -1454,10 +1454,8 @@ fn an_idle_ctrl_d_with_no_reader_answers_the_next_read_after_the_queue() {
     drop(third);
 }
 
-/// Row 0: Ctrl+Z is the job-control stop — the loop hands the terminal back before it stops
-/// (`Term::suspend`).
-#[cfg(unix)]
 /// Parks the edit waiter; the receiver sees the draft a Ctrl+G hands it.
+#[cfg(unix)]
 fn park_edit(m: &mut Model) -> oneshot::Receiver<String> {
     let (tx, rx) = oneshot::channel();
     m.apply(UiMsg::EditReq(tx));
@@ -1466,6 +1464,7 @@ fn park_edit(m: &mut Model) -> oneshot::Receiver<String> {
 
 /// Row 1c: Ctrl+G hands the parked edit waiter the draft — idle, mid-turn, and with the completion
 /// list up — and touches nothing else: the draft, the scopes, the waiter for input all stay.
+#[cfg(unix)]
 #[test]
 fn ctrl_g_hands_the_draft_to_the_edit_waiter() {
     // Idle.
@@ -1496,6 +1495,7 @@ fn ctrl_g_hands_the_draft_to_the_edit_waiter() {
 
 /// Row 1c's limits: with no waiter parked (an edit under way) Ctrl+G does nothing; under an open
 /// surface the surface owns it; after a dump it is the key that comes back, and nothing else.
+#[cfg(unix)]
 #[test]
 fn ctrl_g_is_ignored_without_a_waiter_under_a_surface_and_after_a_dump() {
     let mut m = test_model();
@@ -1524,6 +1524,7 @@ fn ctrl_g_is_ignored_without_a_waiter_under_a_surface_and_after_a_dump() {
 
 /// The answer (`UiMsg::Draft`): a new draft replaces the one handed out with the cursor at its end
 /// and the history walk over; the notice is the status row's; a draft changed meanwhile is kept.
+#[cfg(unix)]
 #[test]
 fn the_editors_answer_replaces_the_draft_it_was_handed() {
     let mut m = test_model();
@@ -1582,6 +1583,9 @@ fn the_editors_answer_replaces_the_draft_it_was_handed() {
     );
 }
 
+/// Row 0: Ctrl+Z is the job-control stop — the loop hands the terminal back before it stops
+/// (`Term::suspend`).
+#[cfg(unix)]
 #[test]
 fn ctrl_z_suspends() {
     let mut m = test_model();

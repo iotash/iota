@@ -616,6 +616,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    #[cfg(unix)]
     use crate::ui::block::Block;
     use crate::ui::facade::{SelectSpec, Ui, UiError};
     use crate::ui::testutil::{ChannelEvents, SharedBuf};
