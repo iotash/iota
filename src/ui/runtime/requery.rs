@@ -20,7 +20,6 @@
 //! One risk is accepted: a reply cut right after its first byte reaches the loop as a lone `Esc`
 //! and then `]11;rgb:…` as typing. A lone `Esc` is never swallowed — it is the user's cancel key.
 
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -31,33 +30,6 @@ use super::osc;
 /// How long after a miss a late reply may still start; past it no reply is started again (one
 /// already started is followed to its end).
 const MISS_GRACE: Duration = Duration::from_secs(1);
-
-/// How long after the first frame the terminal is asked once more — opencode's `afterPaint`
-/// refresh: a multiplexer answers the startup question for itself (herdr-core: its own default),
-/// and only once the first frame is out is its viewer in the path. TEMPORARY: a tuning knob
-/// (`IOTA_THEME_AFTER_PAINT_MS`) for finding herdr-core's threshold, to be removed — back to a
-/// constant — once the number is known.
-fn after_paint() -> Duration {
-    static CELL: OnceLock<Duration> = OnceLock::new();
-    read_once(&CELL, || std::env::var(AFTER_PAINT_ENV).ok())
-}
-
-/// The variable [`after_paint`] reads (TEMPORARY, with it).
-const AFTER_PAINT_ENV: &str = "IOTA_THEME_AFTER_PAINT_MS";
-
-/// The delay without the variable, or with one that is empty or no `u64`.
-const AFTER_PAINT_DEFAULT: Duration = Duration::from_millis(50);
-
-/// `cell`'s value, `read` and parsed the first time only.
-fn read_once(cell: &OnceLock<Duration>, read: impl FnOnce() -> Option<String>) -> Duration {
-    *cell.get_or_init(|| parse_after_paint(read().as_deref()))
-}
-
-/// Milliseconds as a plain `u64`; anything else is [`AFTER_PAINT_DEFAULT`].
-fn parse_after_paint(v: Option<&str>) -> Duration {
-    v.and_then(|v| v.parse().ok())
-        .map_or(AFTER_PAINT_DEFAULT, Duration::from_millis)
-}
 
 /// How a reply begins, as bytes: `ESC ] 1 1 ;`.
 const PREFIX: &[u8] = b"\x1b]11;";
@@ -144,7 +116,7 @@ impl ReplyMatcher {
     }
 }
 
-/// When the terminal is asked (once just after the first frame, on focus, and when the REPL asks
+/// When the terminal is asked (once on the session's first key, on focus, and when the REPL asks
 /// between turns): one that does not answer is not asked again, one whose host answers for it
 /// never.
 #[derive(Debug, Default)]
@@ -158,10 +130,8 @@ pub(crate) struct Requery {
     wanted: bool,
     /// The REPL's call waiting for the answer (`run.rs` asks once per turn, in order).
     waiter: Option<oneshot::Sender<Option<bool>>>,
-    /// The first frame has been drawn: [`Self::first_frame`] arms nothing again.
-    painted: bool,
-    /// When the post-frame question is due, until it is written.
-    after_paint: Option<Instant>,
+    /// A key has come: [`Self::key_seen`] asks nothing again.
+    keyed: bool,
 }
 
 impl Requery {
@@ -175,13 +145,14 @@ impl Requery {
         self.wanted |= !self.off() && self.sent.is_none();
     }
 
-    /// The first frame is drawn: the terminal is asked once more [`AFTER_PAINT`] later — ONE ask for
-    /// the session, armed by the first call only and never when asking is off.
-    pub(crate) fn first_frame(&mut self, now: Instant) {
-        if !std::mem::replace(&mut self.painted, true) && !self.off() {
-            let delay = after_paint();
-            tracing::debug!(?delay, "theme requery: post-frame question armed");
-            self.after_paint = Some(now + delay);
+    /// A key the user typed: the first of the session asks the terminal this iteration — a
+    /// multiplexer answers for itself until its viewer is in the path (herdr-core: its own dark
+    /// default), and a keystroke is the first evidence that someone is looking. ONE ask for the
+    /// session, never when asking is off; a question already out stands for it.
+    pub(crate) fn key_seen(&mut self) {
+        if !std::mem::replace(&mut self.keyed, true) && !self.off() {
+            tracing::debug!("theme requery: first-key question");
+            self.wanted |= self.sent.is_none();
         }
     }
 
@@ -214,13 +185,7 @@ impl Requery {
     }
 
     /// Whether the question is to be written now; the caller writes it.
-    /// The post-frame question is one of them once its instant has come (a question already out
-    /// stands for it).
     pub(crate) fn take_query(&mut self, now: Instant) -> bool {
-        if self.after_paint.is_some_and(|at| now >= at) {
-            self.after_paint = None;
-            self.wanted |= self.sent.is_none();
-        }
         if !std::mem::take(&mut self.wanted) {
             return false;
         }
@@ -263,19 +228,14 @@ impl Requery {
         self.missed = true;
         self.sent = None;
         self.wanted = false;
-        self.after_paint = None;
         if let Some(w) = self.waiter.take() {
             let _ = w.send(None);
         }
     }
 
-    /// How long until [`Self::tick`] or [`Self::take_query`] has something to do.
+    /// How long until [`Self::tick`] has something to do: the reply deadline.
     pub(crate) fn next_wake(&self, now: Instant) -> Option<Duration> {
-        let deadline = self.sent.map(|at| at + osc::REPLY_TIMEOUT);
-        let at = match (deadline, self.after_paint) {
-            (Some(a), Some(b)) => a.min(b),
-            (a, b) => a.or(b)?,
-        };
+        let at = self.sent? + osc::REPLY_TIMEOUT;
         Some(at.saturating_duration_since(now))
     }
 }
@@ -284,11 +244,11 @@ impl Requery {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::{AFTER_PAINT_DEFAULT as AFTER_PAINT, MISS_GRACE, Requery};
+    use super::{MISS_GRACE, Requery};
     use crate::ui::runtime::osc::REPLY_TIMEOUT;
     use crate::ui::testutil::reply_events;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
     use tokio::sync::oneshot;
 
     fn ch(c: char) -> Event {
@@ -444,52 +404,42 @@ mod tests {
         assert!(r.take_query(t0));
     }
 
-    /// The first frame arms ONE question, due [`AFTER_PAINT`] later: the loop is woken for that
-    /// instant, the question is written then and not before, its reply is taken like any other,
-    /// and neither a second frame nor a later instant asks again.
+    /// The session's first key asks ONE question, in the iteration it came: its reply is taken
+    /// like any other, and no later key asks again. A question already out stands for it.
     #[test]
-    fn the_post_frame_ask_fires_once() {
+    fn the_first_key_asks_once() {
         let t0 = Instant::now();
         let mut r = Requery::default();
-        assert_eq!(r.next_wake(t0), None);
-        r.first_frame(t0);
-        assert_eq!(r.next_wake(t0), Some(AFTER_PAINT));
-        assert!(!r.take_query(t0 + Duration::from_millis(49)));
-        let at = t0 + AFTER_PAINT;
-        assert!(r.take_query(at), "due at +50 ms");
-        assert_eq!(
-            r.next_wake(at),
-            Some(REPLY_TIMEOUT),
-            "the reply deadline only"
-        );
-        let got = feed(&mut r, reply_events("rgb:ffff/ffff/ffff", "\x07"), at);
+        assert!(!r.take_query(t0), "nothing before a key");
+        r.key_seen();
+        assert!(r.take_query(t0), "the first key's question");
+        assert_eq!(r.next_wake(t0), Some(REPLY_TIMEOUT));
+        let got = feed(&mut r, reply_events("rgb:ffff/ffff/ffff", "\x07"), t0);
         assert_eq!(got, (vec![], vec![false]), "applied like any reply");
-        assert_eq!(r.next_wake(at), None);
-        r.first_frame(at);
-        let later = at + Duration::from_secs(10);
-        assert!(!r.take_query(later), "one ask for the session");
-        assert_eq!(r.next_wake(later), None);
+        assert_eq!(r.next_wake(t0), None);
+        r.key_seen();
+        assert!(!r.take_query(t0), "one ask for the session");
 
-        // A question already out when it comes due stands for it.
         let mut r = asked(t0);
-        r.first_frame(t0);
-        assert!(!r.take_query(at));
-        feed(&mut r, reply_events("rgb:ffff/ffff/ffff", "\x07"), at);
-        assert!(!r.take_query(later));
+        r.key_seen();
+        assert!(!r.take_query(t0), "the question out stands for it");
+        feed(&mut r, reply_events("rgb:ffff/ffff/ffff", "\x07"), t0);
+        r.key_seen();
+        assert!(!r.take_query(t0));
     }
 
-    /// With the asking off — a host that answers, or a miss — the first frame arms nothing.
+    /// With the asking off — a host that answers, or a miss — the first key asks nothing.
     #[test]
-    fn the_post_frame_ask_is_not_armed_when_asking_is_off() {
+    fn the_first_key_asks_nothing_when_asking_is_off() {
         let t0 = Instant::now();
         let mut host = Requery::default();
         host.leave_to_host();
         let mut missed = asked(t0);
         missed.tick(t0 + REPLY_TIMEOUT);
         for mut r in [host, missed] {
-            r.first_frame(t0);
+            r.key_seen();
+            assert!(!r.take_query(t0));
             assert_eq!(r.next_wake(t0), None);
-            assert!(!r.take_query(t0 + AFTER_PAINT));
         }
     }
 
@@ -523,38 +473,5 @@ mod tests {
             (tail, vec![]),
             "not started"
         );
-    }
-
-    /// TEMPORARY, with the knob: no value, `"250"` and `"x"` are 50, 250 and 50 ms, an empty one
-    /// 50; and the variable is read the first time only.
-    #[test]
-    fn the_after_paint_knob_parses_and_is_read_once() {
-        use super::{OnceLock, parse_after_paint, read_once};
-        let ms = Duration::from_millis;
-        for (v, want) in [
-            (None, 50),
-            (Some("250"), 250),
-            (Some("x"), 50),
-            (Some(""), 50),
-        ] {
-            assert_eq!(parse_after_paint(v), ms(want), "{v:?}");
-        }
-        let cell = OnceLock::new();
-        let mut reads = 0;
-        assert_eq!(
-            read_once(&cell, || {
-                reads += 1;
-                Some("250".to_owned())
-            }),
-            ms(250)
-        );
-        assert_eq!(
-            read_once(&cell, || {
-                reads += 1;
-                Some("900".to_owned())
-            }),
-            ms(250)
-        );
-        assert_eq!(reads, 1);
     }
 }
