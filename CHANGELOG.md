@@ -3,6 +3,16 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## 0.14.1 - 2026-11-27
+
+### Fixed
+
+- **Ctrl+G on Windows says so instead of looping a list.** The editor mode is
+  not available there yet: pressing Ctrl+G used to open the editor list, fail
+  on every row and reopen it. It now answers in one line and leaves the draft
+  alone. The rest of this release is internal — a lint gate and a test that
+  could hang a CI job for its whole 45-minute budget.
+
 ## 0.14.0 - 2026-11-27
 
 ### Added
