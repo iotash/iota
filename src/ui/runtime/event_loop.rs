@@ -1481,6 +1481,9 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             m.vis_h = term.view_height();
             m.copy_pending = term.copy_pending();
             m.dirty = false;
+            // The terminal is asked once more just after the first frame (X-108): a multiplexer
+            // answered the startup question for itself. Only the first call arms it.
+            m.requery.first_frame(Instant::now());
         }
         if !resizing {
             term.end_batch()?;

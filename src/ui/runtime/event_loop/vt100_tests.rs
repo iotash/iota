@@ -2850,10 +2850,30 @@ mod asked_again {
     const DARK_ROW: u8 = 237;
     const LIGHT_ROW: u8 = 253;
 
-    /// The loop with a completion list open (`/` typed over two commands, `Down` onto the first):
-    /// the list's current row is what an idle frame shades by the background's tone.
-    fn start_listed() -> LoopHarness {
+    /// The loop's question just after its first frame, answered dark (the startup tone): what is
+    /// asked after it is the test's.
+    fn start_answered() -> LoopHarness {
         let h = start_loop();
+        assert!(
+            h.wait_until(LONG, |h| queries(h) == 1),
+            "the post-frame question"
+        );
+        reply(&h, "rgb:1e1e/1e1e/1e1e");
+        h.sync();
+        h
+    }
+
+    /// The loop with its post-frame question answered dark and a completion list open (`/` typed
+    /// over two commands, `Down` onto the first): the list's current row is what an idle frame
+    /// shades by the background's tone.
+    fn start_listed() -> LoopHarness {
+        let h = start_answered();
+        open_list(&h);
+        h
+    }
+
+    /// Opens the completion list (see [`start_listed`]) and waits for its dark current row.
+    fn open_list(h: &LoopHarness) {
         let command = |value: &str| crate::ui::facade::Suggestion {
             value: value.to_owned(),
             label: String::new(),
@@ -2870,7 +2890,28 @@ mod asked_again {
             "no list: {}",
             h.contents()
         );
-        h
+    }
+
+    /// The startup answer was a multiplexer's own (herdr-core answers dark for itself): the loop
+    /// asks once more just after its first frame, unprompted and inside a second, and the light
+    /// answer re-shades the list's current row. Nothing asks again afterwards.
+    #[test]
+    fn the_post_frame_answer_reshades_the_frame() {
+        let h = start_loop();
+        open_list(&h);
+        assert!(
+            h.wait_until(Duration::from_secs(1), |h| queries(h) == 1),
+            "no post-frame question"
+        );
+        reply(&h, "rgb:ffff/ffff/ffff");
+        assert!(
+            h.wait_until(LONG, |h| shaded(h, LIGHT_ROW) && !shaded(h, DARK_ROW)),
+            "the light row"
+        );
+        thread::sleep(Duration::from_millis(300));
+        h.sync();
+        assert_eq!(queries(&h), 1, "one post-frame question");
+        h.quit_and_join(LONG);
     }
 
     /// The window comes back and the OS has switched to light meanwhile: the loop asks once, and the
@@ -2883,10 +2924,10 @@ mod asked_again {
         h.sync();
         let before = cells(&h);
         assert!(!shaded(&h, LIGHT_ROW));
-        assert_eq!(queries(&h), 0, "nothing is asked unprompted");
+        assert_eq!(queries(&h), 1, "nothing but the post-frame question");
 
         h.etx.send(Event::FocusGained).unwrap();
-        assert!(h.wait_until(LONG, |h| queries(h) == 1), "the question");
+        assert!(h.wait_until(LONG, |h| queries(h) == 2), "the question");
         let mark = h.buf.bytes().len();
         reply(&h, "rgb:ffff/ffff/ffff");
         assert!(
@@ -2914,7 +2955,7 @@ mod asked_again {
             "a flip cleared the screen: {:?}",
             String::from_utf8_lossy(&written)
         );
-        assert_eq!(queries(&h), 1);
+        assert_eq!(queries(&h), 2);
         h.quit_and_join(LONG);
     }
 
@@ -2923,9 +2964,9 @@ mod asked_again {
     /// reaches the composer, in order, and not one character of the reply does.
     #[test]
     fn keys_and_a_paste_inside_the_reply_window_reach_the_composer() {
-        let h = start_loop();
+        let h = start_answered();
         h.etx.send(Event::FocusGained).unwrap();
-        assert!(h.wait_until(LONG, |h| queries(h) == 1), "the question");
+        assert!(h.wait_until(LONG, |h| queries(h) == 2), "the question");
 
         h.etx.send(ch('a')).unwrap();
         h.etx.send(Event::Paste("-pasted-".to_owned())).unwrap();
@@ -2947,13 +2988,18 @@ mod asked_again {
         h.quit_and_join(LONG);
     }
 
-    /// A terminal that never answers is asked ONE time. The miss ends it for the session: the
-    /// REPL's between-turns call — parked on the question — is told "no answer", the next one at
-    /// once, and another focus asks nothing. Keys go on working throughout. (What becomes of a
+    /// A terminal that never answers is asked ONE time — the post-frame question. The miss ends it
+    /// for the session: the REPL's between-turns call is told "no answer", the next one at once,
+    /// and another focus asks nothing. Keys go on working throughout. (What becomes of a
     /// reply that comes late is `requery::tests`' to say, on a clock of its own.)
     #[test]
     fn a_mute_terminal_is_asked_once() {
-        let h = start_listed();
+        let h = start_loop();
+        open_list(&h);
+        assert!(
+            h.wait_until(LONG, |h| queries(h) == 1),
+            "the post-frame question"
+        );
         let (tx, rx) = tokio::sync::oneshot::channel();
         h.tx.send(UiMsg::RequeryBackground(tx)).unwrap();
         assert_eq!(rx.blocking_recv().unwrap(), None, "the miss");
@@ -2996,8 +3042,8 @@ mod asked_again {
     fn the_repl_ask_is_answered_with_the_terminals_reply() {
         let h = start_listed();
         for (n, colour, dark, shade) in [
-            (1, "rgb:ffff/ffff/ffff", false, LIGHT_ROW),
-            (2, "rgb:1e1e/1e1e/1e1e", true, DARK_ROW),
+            (2, "rgb:ffff/ffff/ffff", false, LIGHT_ROW),
+            (3, "rgb:1e1e/1e1e/1e1e", true, DARK_ROW),
         ] {
             let (tx, rx) = tokio::sync::oneshot::channel();
             h.tx.send(UiMsg::RequeryBackground(tx)).unwrap();

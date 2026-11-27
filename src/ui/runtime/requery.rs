@@ -11,6 +11,12 @@
 //! anywhere but in crossterm, so no key is lost. The cost: a hand-typed `Alt+]` (no binding) and
 //! the keys right after it that could belong to a reply are dropped while a reply is expected.
 //!
+//! A run is only *started* inside the window a question opens; one that has got past `ESC ] 1 1 ;`
+//! is followed to its terminator even once the window has passed, so a reply straddling the
+//! window's end never has its `rgb:…` typed nor its `BEL` read as `Ctrl+G` (the editor key). The
+//! same accepted cost as inside the window: a hand-typed `Alt+] 1 1 ;` begun in the window has
+//! the keys after it that fit a reply swallowed past the window too, up to the first that cannot.
+//!
 //! One risk is accepted: a reply cut right after its first byte reaches the loop as a lone `Esc`
 //! and then `]11;rgb:…` as typing. A lone `Esc` is never swallowed — it is the user's cancel key.
 
@@ -21,8 +27,14 @@ use tokio::sync::oneshot;
 
 use super::osc;
 
-/// How long after a miss a late reply is still swallowed; past it nothing is matched again.
+/// How long after a miss a late reply may still start; past it no reply is started again (one
+/// already started is followed to its end).
 const MISS_GRACE: Duration = Duration::from_secs(1);
+
+/// How long after the first frame the terminal is asked once more — opencode's `afterPaint`
+/// refresh: a multiplexer answers the startup question for itself (herdr-core: its own default),
+/// and only once the first frame is out is its viewer in the path.
+const AFTER_PAINT: Duration = Duration::from_millis(50);
 
 /// How a reply begins, as bytes: `ESC ] 1 1 ;`.
 const PREFIX: &[u8] = b"\x1b]11;";
@@ -73,11 +85,17 @@ impl ReplyMatcher {
     /// One event: itself unless swallowed, and the reply's bytes when it ended one. An event that
     /// is no key passes and breaks no reply (a resize may land between two reads of one).
     fn feed(&mut self, ev: Event, now: Instant) -> (Option<Event>, Option<Vec<u8>>) {
-        if self.until.is_none_or(|at| now > at) || !matches!(ev, Event::Key(_)) {
+        if !matches!(ev, Event::Key(_)) {
+            return (Some(ev), None);
+        }
+        let open = self.until.is_some_and(|at| now <= at);
+        let body = self.bytes.len() >= PREFIX.len();
+        if !open && !body {
+            // Past the window only a run already started is followed (the module doc).
+            self.bytes.clear();
             return (Some(ev), None);
         }
         let b = bytes_of(&ev);
-        let body = self.bytes.len() >= PREFIX.len();
         if body && self.bytes.ends_with(&[0x1b]) {
             // The first half of an ST: a `\` ends the reply, any other key ends it and passes.
             return ((b != b"\\").then_some(ev), Some(self.complete()));
@@ -95,7 +113,7 @@ impl ReplyMatcher {
             // A key that cannot belong ends the run; it may begin another, or it is the user's.
             self.bytes.clear();
         }
-        if fits || starts(&b) {
+        if fits || (open && starts(&b)) {
             self.bytes.extend_from_slice(&b);
             return (None, None);
         }
@@ -103,8 +121,9 @@ impl ReplyMatcher {
     }
 }
 
-/// When the terminal is asked (on focus, and when the REPL asks between turns): one that does not
-/// answer is not asked again, one whose host answers for it never.
+/// When the terminal is asked (once just after the first frame, on focus, and when the REPL asks
+/// between turns): one that does not answer is not asked again, one whose host answers for it
+/// never.
 #[derive(Debug, Default)]
 pub(crate) struct Requery {
     matcher: ReplyMatcher,
@@ -116,6 +135,10 @@ pub(crate) struct Requery {
     wanted: bool,
     /// The REPL's call waiting for the answer (`run.rs` asks once per turn, in order).
     waiter: Option<oneshot::Sender<Option<bool>>>,
+    /// The first frame has been drawn: [`Self::first_frame`] arms nothing again.
+    painted: bool,
+    /// When the post-frame question is due, until it is written.
+    after_paint: Option<Instant>,
 }
 
 impl Requery {
@@ -127,6 +150,14 @@ impl Requery {
     /// The window regained focus: the terminal is asked this iteration, unless a question is out.
     pub(crate) fn focus_gained(&mut self) {
         self.wanted |= !self.off() && self.sent.is_none();
+    }
+
+    /// The first frame is drawn: the terminal is asked once more [`AFTER_PAINT`] later — ONE ask for
+    /// the session, armed by the first call only and never when asking is off.
+    pub(crate) fn first_frame(&mut self, now: Instant) {
+        if !std::mem::replace(&mut self.painted, true) && !self.off() {
+            self.after_paint = Some(now + AFTER_PAINT);
+        }
     }
 
     /// Whether a question is out and its answer not yet in: the terminal is not lent meanwhile.
@@ -158,7 +189,13 @@ impl Requery {
     }
 
     /// Whether the question is to be written now; the caller writes it.
+    /// The post-frame question is one of them once its instant has come (a question already out
+    /// stands for it).
     pub(crate) fn take_query(&mut self, now: Instant) -> bool {
+        if self.after_paint.is_some_and(|at| now >= at) {
+            self.after_paint = None;
+            self.wanted |= self.sent.is_none();
+        }
         if !std::mem::take(&mut self.wanted) {
             return false;
         }
@@ -190,15 +227,20 @@ impl Requery {
         self.missed = true;
         self.sent = None;
         self.wanted = false;
+        self.after_paint = None;
         if let Some(w) = self.waiter.take() {
             let _ = w.send(None);
         }
     }
 
-    /// How long until [`Self::tick`] has something to do.
+    /// How long until [`Self::tick`] or [`Self::take_query`] has something to do.
     pub(crate) fn next_wake(&self, now: Instant) -> Option<Duration> {
-        let deadline = self.sent? + osc::REPLY_TIMEOUT;
-        Some(deadline.saturating_duration_since(now))
+        let deadline = self.sent.map(|at| at + osc::REPLY_TIMEOUT);
+        let at = match (deadline, self.after_paint) {
+            (Some(a), Some(b)) => a.min(b),
+            (a, b) => a.or(b)?,
+        };
+        Some(at.saturating_duration_since(now))
     }
 }
 
@@ -206,11 +248,11 @@ impl Requery {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::{MISS_GRACE, Requery};
+    use super::{AFTER_PAINT, MISS_GRACE, Requery};
     use crate::ui::runtime::osc::REPLY_TIMEOUT;
     use crate::ui::testutil::reply_events;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
     use tokio::sync::oneshot;
 
     fn ch(c: char) -> Event {
@@ -364,5 +406,86 @@ mod tests {
         assert_eq!(r.next_wake(t0), None);
         r.focus_gained();
         assert!(r.take_query(t0));
+    }
+
+    /// The first frame arms ONE question, due [`AFTER_PAINT`] later: the loop is woken for that
+    /// instant, the question is written then and not before, its reply is taken like any other,
+    /// and neither a second frame nor a later instant asks again.
+    #[test]
+    fn the_post_frame_ask_fires_once() {
+        let t0 = Instant::now();
+        let mut r = Requery::default();
+        assert_eq!(r.next_wake(t0), None);
+        r.first_frame(t0);
+        assert_eq!(r.next_wake(t0), Some(AFTER_PAINT));
+        assert!(!r.take_query(t0 + Duration::from_millis(49)));
+        let at = t0 + AFTER_PAINT;
+        assert!(r.take_query(at), "due at +50 ms");
+        assert_eq!(
+            r.next_wake(at),
+            Some(REPLY_TIMEOUT),
+            "the reply deadline only"
+        );
+        let got = feed(&mut r, reply_events("rgb:ffff/ffff/ffff", "\x07"), at);
+        assert_eq!(got, (vec![], vec![false]), "applied like any reply");
+        assert_eq!(r.next_wake(at), None);
+        r.first_frame(at);
+        let later = at + Duration::from_secs(10);
+        assert!(!r.take_query(later), "one ask for the session");
+        assert_eq!(r.next_wake(later), None);
+
+        // A question already out when it comes due stands for it.
+        let mut r = asked(t0);
+        r.first_frame(t0);
+        assert!(!r.take_query(at));
+        feed(&mut r, reply_events("rgb:ffff/ffff/ffff", "\x07"), at);
+        assert!(!r.take_query(later));
+    }
+
+    /// With the asking off — a host that answers, or a miss — the first frame arms nothing.
+    #[test]
+    fn the_post_frame_ask_is_not_armed_when_asking_is_off() {
+        let t0 = Instant::now();
+        let mut host = Requery::default();
+        host.leave_to_host();
+        let mut missed = asked(t0);
+        missed.tick(t0 + REPLY_TIMEOUT);
+        for mut r in [host, missed] {
+            r.first_frame(t0);
+            assert_eq!(r.next_wake(t0), None);
+            assert!(!r.take_query(t0 + AFTER_PAINT));
+        }
+    }
+
+    /// A reply that started inside the window is followed to its terminator past it: none of its
+    /// keys — its `BEL`, `Ctrl+G`, least of all — reaches the user's, and it is ignored after a
+    /// miss. Past the window a lone `Esc` passes, and so does a start begun only by `Alt+]`.
+    #[test]
+    fn a_reply_started_in_the_window_is_swallowed_past_it() {
+        let t0 = Instant::now();
+        let grace = t0 + REPLY_TIMEOUT + MISS_GRACE;
+        let past = grace + REPLY_TIMEOUT;
+        for missed in [true, false] {
+            let mut r = asked(t0);
+            if missed {
+                r.tick(t0 + REPLY_TIMEOUT);
+            }
+            let mut late = reply_events("rgb:ffff/ffff/ffff", "\x07");
+            let tail = late.split_off(8); // `ESC ] 1 1 ; rgb:` in the window, the rest past it
+            assert_eq!(feed(&mut r, late, grace), (vec![], vec![]));
+            let want = if missed { vec![] } else { vec![false] };
+            assert_eq!(feed(&mut r, tail, past), (vec![], want), "missed {missed}");
+            assert_eq!(feed(&mut r, vec![esc()], past).0, [esc()], "a lone Esc");
+        }
+        let mut r = asked(t0);
+        r.tick(t0 + REPLY_TIMEOUT);
+        let mut late = reply_events("rgb:ffff/ffff/ffff", "\x07");
+        let tail = late.split_off(1);
+        assert_eq!(feed(&mut r, late, grace), (vec![], vec![]));
+        assert_eq!(
+            feed(&mut r, tail.clone(), past),
+            (tail, vec![]),
+            "not started"
+        );
     }
 }
