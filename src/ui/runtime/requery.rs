@@ -157,6 +157,10 @@ impl Requery {
     }
 
     /// Whether a question is out and its answer not yet in: the terminal is not lent meanwhile.
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "its only caller is the Unix terminal-lend path")
+    )]
     pub(crate) fn awaiting(&self) -> bool {
         self.sent.is_some()
     }

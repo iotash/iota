@@ -336,7 +336,15 @@ pub(crate) struct Model {
 
 /// A program waiting for the terminal (`UiMsg::Exec`).
 pub(crate) struct Exec {
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "read only by the Unix terminal-lend path")
+    )]
     argv: Vec<std::ffi::OsString>,
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "read only by the Unix terminal-lend path")
+    )]
     reply: oneshot::Sender<io::Result<std::process::ExitStatus>>,
 }
 

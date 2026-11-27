@@ -122,6 +122,13 @@ pub(crate) enum UiMsg {
     /// and takes the terminal back. Unix only; elsewhere the answer is `Unsupported`.
     Exec {
         /// The program and its arguments; no shell.
+        #[cfg_attr(
+            not(unix),
+            expect(
+                dead_code,
+                reason = "off unix the loop answers `Unsupported` without it"
+            )
+        )]
         argv: Vec<OsString>,
         /// Receives how it exited, or why it could not run.
         reply: oneshot::Sender<io::Result<ExitStatus>>,
