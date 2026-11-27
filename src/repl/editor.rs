@@ -27,6 +27,9 @@
 //! first that exits 0 is the editor from then on, written as `editor:` into the user's config file
 //! ([`EditorSetup::config`]) so the list is asked once. A write that fails keeps the choice for the
 //! session and says why in one line.
+//!
+//! Off unix the terminal cannot be lent yet (`runs_here`): Ctrl+G answers with `NOT_YET` in the
+//! conversation, the draft untouched — no list, no file, no `run_external`.
 
 use std::ffi::OsString;
 use std::io::{self, Write as _};
@@ -73,18 +76,46 @@ pub(crate) const KNOWN: [&str; 10] = [
 /// The list's title.
 const TITLE: &str = "Editor";
 
+/// The line Ctrl+G prints where [`runs_here`] says no: one answer, no list, no file, no terminal lent.
+pub(crate) const NOT_YET: &str = "the editor (Ctrl+G) is not available on Windows yet";
+
+/// Whether Ctrl+G can run an editor on this platform, `unix` being `cfg!(unix)`: only where the loop
+/// can lend the terminal. Off unix it cannot yet: the handoff is compiled on unix only, its input
+/// flush (`tcflush`), `Ctrl+Z` arm and the lent child's kill being Unix-shaped (X-120's known
+/// limits). A parameter, not a `cfg`, so both answers are tested on any host.
+pub(crate) const fn runs_here(unix: bool) -> bool {
+    unix
+}
+
 /// Serves Ctrl+G until the facade closes or `stop` fires: one edit at a time, the waiter parked again
 /// only once the last edit is answered. An editor chosen from the list is the command from then on.
 pub(crate) async fn serve(
     ui: Arc<dyn Ui>,
     tr: Arc<Transcript>,
-    mut setup: EditorSetup,
+    setup: EditorSetup,
     stop: CancellationToken,
 ) {
+    serve_on(ui, tr, setup, stop, cfg!(unix)).await;
+}
+
+/// [`serve`] on a platform that is unix or not: where [`runs_here`] says no, every Ctrl+G is answered
+/// with [`NOT_YET`] in the conversation and the draft untouched.
+async fn serve_on(
+    ui: Arc<dyn Ui>,
+    tr: Arc<Transcript>,
+    mut setup: EditorSetup,
+    stop: CancellationToken,
+    unix: bool,
+) {
     while let Ok(seed) = ui.next_edit(&stop).await {
-        let (text, notice) = match setup.command.clone() {
-            Some(argv) => edit(ui.as_ref(), &tr, &argv, &setup.dir, &seed).await,
-            None => pick(ui.as_ref(), &tr, &mut setup, &seed, &stop).await,
+        let (text, notice) = if runs_here(unix) {
+            match setup.command.clone() {
+                Some(argv) => edit(ui.as_ref(), &tr, &argv, &setup.dir, &seed).await,
+                None => pick(ui.as_ref(), &tr, &mut setup, &seed, &stop).await,
+            }
+        } else {
+            tr.notice(NOT_YET);
+            (None, None)
         };
         ui.edit_done(text, notice);
     }
@@ -331,3 +362,6 @@ impl Drop for DraftFile {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod not_yet_tests;

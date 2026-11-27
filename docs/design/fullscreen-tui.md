@@ -151,7 +151,7 @@ Status: **已实现并随 0.10.0 发布（2026-11-16；补全列表的浮层、�
 
 ## 编辑器（Ctrl+G，composer-editor，X-120）
 
-- **键**：`Ctrl+G`（codex、gemini-cli 同键），键表第 1c 行：在视图键之后、Ctrl+C/D 之前；空闲、turn 运行中、补全列表打开时都生效；打开的 surface 和写出后的"下一个键"优先。没有斜杠命令（敲 `/editor` 会替换草稿本身）。
+- **键**：`Ctrl+G`（codex、gemini-cli 同键），键表第 1c 行：在视图键之后、Ctrl+C/D 之前；空闲、turn 运行中、补全列表打开时都生效；打开的 surface 和写出后的"下一个键"优先。没有斜杠命令（敲 `/editor` 会替换草稿本身）。**Windows 上暂不可用（not yet）**：交接（下一条）目前只在 Unix 上编译，非 Unix 平台上 `Ctrl+G` 不打开列表、不写草稿文件、不出借终端，只在对话里打一行 `the editor (Ctrl+G) is not available on Windows yet`，草稿不动（`repl::editor::runs_here`）。这是"还没做"，不是做不到：交接里只有三处是 Unix 形状——`reclaim` 的输入清空（`tcflush`）、出借期间等待里的 `Suspend` 分支（`SIGSTOP`）、`restore_terminal` 对出借子进程的 kill（`nix::kill`），其余只是跟着 `suspend` 一起被 `cfg(unix)` 门住；移植已排期（X-120）。
 - **交接**：走挂起的路子，拆成两半——`Screen::lend` 离开 alt 屏但**不写出**对话（关鼠标、`?1049l`、关粘贴与焦点、cooked），`Screen::reclaim` 先 `tcflush(TCIFLUSH)` 丢掉编辑器迟到的终端应答，再开 raw/粘贴/焦点并取尺寸；下一帧进入 alt 屏并整屏重画。编辑器由 loop 自己的线程用 `std::process::Command` 跑（继承 stdio），等待时不读事件、不画任何东西；期间提交的行攒到下一帧，`Quit` 杀掉子进程，编辑器里的 `Ctrl+Z` 让 iota 跟着停（`SIGSTOP`），`fg` 一起回来。后台的明暗问题在等回复时不出借终端。
 - **临时文件**：`~/.iota/editor/draft-<pid>.md`（目录 0700，文件 0600、`create_new`；没有 home 时用临时目录），不在任何沙箱可写根之下——turn 可能正在跑。写入的是展开了粘贴标签的草稿加一个换行；读回经 `paste::normalize`（CRLF→LF，去掉末尾换行）；用完即删。
 - **结果**：

@@ -12,6 +12,7 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   with an error (`:cq` in vim) to keep it as it was. The first time, iota
   shows a list of the editors on your machine — your `$VISUAL` or `$EDITOR`
   first — and remembers the one you pick as `editor:` in `~/.iota.yaml`.
+  Not available on Windows yet.
 
 ### Fixed
 
