@@ -55,6 +55,12 @@ use crate::ui::render::theme::{FAINT, RESET, REV_ON, SELECTION_BG};
 /// (`Term::new`), cleared by [`Screen::leave`] and by `restore_terminal`, which reads it.
 pub(crate) static ALT_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// The pid of the program the terminal is lent to now (the Ctrl+G editor), 0 for none — kept beside
+/// [`ALT_ACTIVE`], so `restore_terminal` (a panic, a forced exit) ends it rather than leave it
+/// holding the terminal.
+#[cfg(unix)]
+pub(crate) static LENT_TO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// The bytes that hand the main screen back: the cursor shown, the alternate screen left.
 pub(crate) const LEAVE: &[u8] = b"\x1b[?25h\x1b[?1049l";
 

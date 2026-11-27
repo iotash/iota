@@ -421,6 +421,16 @@ pub(crate) async fn run_interactive(
         endpoints,
         agent,
         dark_background: dark,
+        // Ctrl+G's draft file lives under `~/.iota`, outside every sandbox write root; with no home, the
+        // temp directory.
+        editor: crate::repl::EditorSetup {
+            command: cfg.editor.clone(),
+            dir: ctx
+                .env
+                .dirs
+                .app_home()
+                .map_or_else(|| ctx.env.dirs.temp.clone(), |h| h.join("editor")),
+        },
         root_cancel: ctx.cancel.clone(),
         reqlog: Arc::clone(&ctx.reqlog),
         pres,

@@ -54,6 +54,7 @@ fn params(
         endpoints: None,
         agent: iota::headless::AgentOptions::default(),
         dark_background: true,
+        editor: iota::repl::EditorSetup::default(),
         root_cancel: CancellationToken::new(),
         reqlog: Arc::new(iota::llm::reqlog::RequestLog::new()),
         pres: Arc::new(iota::host::Presenter::with_hosts(Vec::new(), true)),

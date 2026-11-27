@@ -844,6 +844,7 @@ mod tests {
             endpoints: None,
             agent: crate::headless::AgentOptions::default(),
             dark_background: true,
+            editor: crate::repl::EditorSetup::default(),
             root_cancel: tokio_util::sync::CancellationToken::new(),
             reqlog: Arc::new(crate::llm::reqlog::RequestLog::new()),
             pres: Arc::new(crate::host::Presenter::with_hosts(Vec::new(), true)),

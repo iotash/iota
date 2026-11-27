@@ -121,6 +121,7 @@ impl Chat {
             endpoints: None,
             agent: iota::headless::AgentOptions::default(),
             dark_background: true,
+            editor: iota::repl::EditorSetup::default(),
             root_cancel: CancellationToken::new(),
             reqlog: Arc::new(iota::llm::reqlog::RequestLog::new()),
             pres: Arc::new(Presenter::with_hosts(vec![Box::new(host)], true)),

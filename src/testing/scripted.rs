@@ -96,6 +96,15 @@ pub enum UiEvent {
     ProgramStatus(String),
     /// [`Ui::set_dark_background`].
     DarkBackground(bool),
+    /// [`Ui::run_external`] with the program and its arguments (the double runs it, stdio closed).
+    Exec(Vec<String>),
+    /// [`Ui::edit_done`] with the new draft and the notice.
+    EditDone {
+        /// The draft that replaces the one handed out, if any.
+        text: Option<String>,
+        /// The status row's notice, if any.
+        notice: Option<String>,
+    },
     /// [`Ui::background_from_host`].
     BackgroundFromHost,
 }
@@ -269,6 +278,10 @@ pub struct ScriptedUi {
     claims: Mutex<Vec<Option<String>>>,
     /// What [`Ui::requery_background`] answers ([`ScriptedUi::set_terminal_background`]).
     terminal_dark: Mutex<Option<bool>>,
+    /// Drafts a Ctrl+G handed out ([`ScriptedUi::ctrl_g`]) that no [`Ui::next_edit`] took yet.
+    edits: Mutex<VecDeque<String>>,
+    /// Wakes a parked [`Ui::next_edit`].
+    edit_ready: tokio::sync::Notify,
 }
 
 impl ScriptedUi {
@@ -287,7 +300,17 @@ impl ScriptedUi {
             dialogs: Dialogs::default(),
             claims: Mutex::new(Vec::new()),
             terminal_dark: Mutex::new(None),
+            edits: Mutex::new(VecDeque::new()),
+            edit_ready: tokio::sync::Notify::new(),
         })
+    }
+
+    /// What Ctrl+G does to the live facade: `draft` (paste tags expanded) goes to the edit waiter — parked
+    /// now or the next one. Unlike the script, it is never consumed by anything else: a run with no Ctrl+G
+    /// leaves its waiter parked, recording nothing.
+    pub fn ctrl_g(&self, draft: &str) {
+        lock(&self.edits).push_back(draft.to_owned());
+        self.edit_ready.notify_one();
     }
 
     /// What the terminal says its background is when asked again (`Ui::requery_background`):
@@ -456,6 +479,57 @@ impl Ui for ScriptedUi {
 
     fn dialogs(&self) -> &Dialogs {
         &self.dialogs
+    }
+
+    fn next_edit<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<String, UiError>> {
+        // Not a scripted call: the edit waiter is parked for the whole run, so it neither pops the script
+        // nor counts toward `fail_after`, and it is recorded only through what it leads to.
+        Box::pin(async move {
+            loop {
+                if let Some(draft) = lock(&self.edits).pop_front() {
+                    return Ok(draft);
+                }
+                tokio::select! {
+                    biased;
+                    () = self.edit_ready.notified() => {}
+                    () = cancel.cancelled() => return Err(UiError::Cancelled),
+                    () = self.done.cancelled() => return Err(UiError::Closed),
+                }
+            }
+        })
+    }
+
+    fn run_external(
+        &self,
+        argv: Vec<std::ffi::OsString>,
+    ) -> BoxFuture<'_, std::io::Result<std::process::ExitStatus>> {
+        self.record(UiEvent::Exec(
+            argv.iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect(),
+        ));
+        Box::pin(async move {
+            let Some((program, rest)) = argv.split_first() else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "no program to run",
+                ));
+            };
+            tokio::process::Command::new(program)
+                .args(rest)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .await
+        })
+    }
+
+    fn edit_done(&self, text: Option<String>, notice: Option<String>) {
+        self.record(UiEvent::EditDone { text, notice });
     }
 
     fn take_queued_messages(&self) -> BoxFuture<'_, Vec<Input>> {

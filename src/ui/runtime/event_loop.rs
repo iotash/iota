@@ -325,6 +325,19 @@ pub(crate) struct Model {
     /// Whether a copy's programs are still running (the poll deadline stays short for their
     /// outcome).
     pub(crate) copy_pending: bool,
+    /// A program to lend the terminal to (`UiMsg::Exec`), run after this iteration's frame.
+    pub(crate) exec: Option<Exec>,
+    /// The parked edit waiter (`UiMsg::EditReq`): Ctrl+G hands it the draft.
+    pub(crate) edit_waiter: Option<oneshot::Sender<String>>,
+    /// The draft as Ctrl+G handed it out, paste tags kept, until `UiMsg::Draft` answers: the
+    /// editor's text replaces the draft only while it is still this.
+    pub(crate) editing: Option<String>,
+}
+
+/// A program waiting for the terminal (`UiMsg::Exec`).
+pub(crate) struct Exec {
+    argv: Vec<std::ffi::OsString>,
+    reply: oneshot::Sender<io::Result<std::process::ExitStatus>>,
 }
 
 /// One entry of the type-ahead queue.
@@ -426,6 +439,9 @@ impl Model {
             copied: None,
             native: "Shift",
             copy_pending: false,
+            exec: None,
+            edit_waiter: None,
+            editing: None,
         }
     }
 
@@ -510,6 +526,60 @@ impl Model {
         };
         self.copied = Some((text, Instant::now()));
         self.copy_pending = false;
+        self.dirty = true;
+    }
+
+    /// Puts `text` in the status row's notice slot for a moment — where a copy says what it did.
+    pub(crate) fn flash(&mut self, text: String) {
+        self.copied = Some((text, Instant::now()));
+        self.dirty = true;
+    }
+
+    /// Ctrl+G: the draft, paste tags expanded, to the parked edit waiter — nothing without one (an
+    /// edit already under way took it). The draft is remembered as it stands, tags kept.
+    pub(crate) fn open_editor(&mut self) {
+        let Some(waiter) = self.edit_waiter.take() else {
+            return;
+        };
+        let draft = self.composer.value().to_owned();
+        if waiter
+            .send(paste::expand_paste_tags(&draft, &self.pastes))
+            .is_ok()
+        {
+            self.editing = Some(draft);
+        }
+    }
+
+    /// The editor's answer (`UiMsg::Draft`): a new draft replaces the one handed out — the cursor at
+    /// its end, out of the history walk — unless the draft changed since; the notice goes on the
+    /// status row.
+    fn draft_edited(&mut self, text: Option<String>, notice: Option<String>) {
+        let handed_out = self.editing.take();
+        let mut notice = notice;
+        if let Some(text) = text {
+            if handed_out.as_deref() == Some(self.composer.value()) {
+                self.composer.set_value(&text);
+                self.composer.end_history_nav();
+            } else {
+                notice = Some("the draft changed meanwhile — the editor's text was dropped".into());
+            }
+        }
+        if let Some(n) = notice {
+            self.flash(n);
+        }
+        self.dirty = true;
+    }
+
+    /// The terminal is ours again after a stop or a program run in it: the size it has now is
+    /// taken at once (back-dated past `RESIZE_QUIET`), and the next frame paints every cell.
+    #[cfg(unix)]
+    fn taken_back(&mut self, size: Option<ratatui::layout::Size>) {
+        if let Some(size) = size {
+            self.pending_resize = Some((size.width, size.height));
+            self.resize_seen = Instant::now()
+                .checked_sub(RESIZE_QUIET)
+                .unwrap_or_else(Instant::now);
+        }
         self.dirty = true;
     }
 
@@ -762,6 +832,17 @@ impl Model {
                 cancelled: true,
                 ..TabbedResult::default()
             }),
+            #[cfg(unix)]
+            UiMsg::Exec { argv, reply } => self.exec = Some(Exec { argv, reply }),
+            #[cfg(not(unix))]
+            UiMsg::Exec { reply, .. } => {
+                let _ = reply.send(Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "running a program in the terminal needs a Unix terminal",
+                )));
+            }
+            UiMsg::EditReq(reply) => self.edit_waiter = Some(reply),
+            UiMsg::Draft { text, notice } => self.draft_edited(text, notice),
             UiMsg::Scrollback(_) | UiMsg::Quit => {}
         }
     }
@@ -1203,6 +1284,79 @@ fn drain_notify<W: Write>(m: &mut Model, term: &mut Term<W>) -> io::Result<()> {
     Ok(())
 }
 
+/// How often the wait for a program run in the terminal looks at the mailbox and the child.
+#[cfg(unix)]
+const EXEC_POLL: Duration = Duration::from_millis(50);
+
+/// Lends the terminal to `argv` and waits for it on this thread (`UiMsg::Exec`): no event is read
+/// and nothing is drawn meanwhile. The mailbox is served: committed rows collect for the next
+/// frame, `Quit` kills the program, a `Suspend` — the program's own job control, a vim `Ctrl+Z`
+/// stopping the whole process group — stops this process as it is, and every other message is a
+/// model change only. The outer error is the terminal's (the loop ends); the inner one is the
+/// program's, for the caller.
+#[cfg(unix)]
+fn lend_terminal<W: Write>(
+    m: &mut Model,
+    term: &mut Term<W>,
+    rx: &mpsc::Receiver<UiMsg>,
+    inserts: &mut Vec<Vec<Block>>,
+    argv: &[std::ffi::OsString],
+) -> io::Result<io::Result<std::process::ExitStatus>> {
+    let Some((program, rest)) = argv.split_first() else {
+        return Ok(Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no program to run",
+        )));
+    };
+    term.lend()?;
+    let status = std::process::Command::new(program)
+        .args(rest)
+        .spawn()
+        .and_then(|mut child| {
+            super::screen::LENT_TO.store(child.id(), Ordering::Relaxed);
+            let status = wait_lent(m, rx, inserts, &mut child);
+            super::screen::LENT_TO.store(0, Ordering::Relaxed);
+            status
+        });
+    let size = term.reclaim()?;
+    m.taken_back(size);
+    Ok(status)
+}
+
+/// The wait of [`lend_terminal`]: the child's exit, the mailbox in between.
+#[cfg(unix)]
+fn wait_lent(
+    m: &mut Model,
+    rx: &mpsc::Receiver<UiMsg>,
+    inserts: &mut Vec<Vec<Block>>,
+    child: &mut std::process::Child,
+) -> io::Result<std::process::ExitStatus> {
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        match rx.recv_timeout(EXEC_POLL) {
+            Ok(UiMsg::Scrollback(rows)) => {
+                inserts.push(rows);
+                m.dirty = true;
+            }
+            Ok(UiMsg::Quit) => {
+                m.quit = true;
+                let _ = child.kill();
+                return child.wait();
+            }
+            Ok(UiMsg::Suspend) => {
+                nix::sys::signal::raise(nix::sys::signal::Signal::SIGSTOP)
+                    .map_err(io::Error::from)?;
+            }
+            Ok(msg) => m.apply(msg),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            // The handle side is gone, which the loop itself does not read as a quit either.
+            Err(mpsc::RecvTimeoutError::Disconnected) => std::thread::sleep(EXEC_POLL),
+        }
+    }
+}
+
 /// The loop body (the tea.Program equivalent; `TUI_DESIGN` §4 "Loop iteration").
 /// Runs on the dedicated `"iota-tui"` OS thread WP45 spawns; returns when
 /// [`UiMsg::Quit`] lands or a terminal operation fails (WP45 stores the error and
@@ -1278,7 +1432,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         m.requery.tick(Instant::now());
         // The background question, when one is due: written here, read nowhere — its answer is an
         // event of a later iteration.
-        if !resizing && m.requery.take_query(Instant::now()) {
+        if !resizing && m.exec.is_none() && m.requery.take_query(Instant::now()) {
             term.write_raw(osc::OSC11_QUERY)?;
         }
         // A copy whose programs were running: their outcome is the status row's to say.
@@ -1336,13 +1490,19 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         // next frame re-enters the alternate screen and paints every cell.
         #[cfg(unix)]
         if std::mem::take(&mut m.suspend) && !m.quit {
-            if let Some(size) = term.suspend()? {
-                m.pending_resize = Some((size.width, size.height));
-                m.resize_seen = Instant::now()
-                    .checked_sub(RESIZE_QUIET)
-                    .unwrap_or_else(Instant::now);
-            }
-            m.dirty = true;
+            let size = term.suspend()?;
+            m.taken_back(size);
+        }
+        // A program run in the terminal (the Ctrl+G editor): lent once the frame is out and no
+        // background question waits for its answer — the reply would reach the program.
+        #[cfg(unix)]
+        if !m.quit
+            && !resizing
+            && !m.requery.awaiting()
+            && let Some(exec) = m.exec.take()
+        {
+            let status = lend_terminal(&mut m, &mut term, rx, &mut inserts, &exec.argv)?;
+            let _ = exec.reply.send(status);
         }
         if m.quit {
             break;

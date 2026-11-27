@@ -65,13 +65,23 @@ impl Drop for TermGuard {
     }
 }
 
-/// Bracketed paste off, cursor shown, raw mode off — when raw mode is on, and a no-op otherwise, so a
+/// A program the terminal is lent to told to end (`SIGTERM`); bracketed paste off, cursor shown, raw mode off — when raw mode is on, and a no-op otherwise, so a
 /// headless run's stdout never sees the sequences and a second call (the guard after [`Ui::close`]
 /// gave up on the loop, or a forced exit) writes nothing. Best-effort: restore errors are
 /// unreportable on an exit path. The alternate screen a run still holds (a panic, a second
 /// SIGTERM, a loop that died before its exit) is left first — once, like the rest; the
 /// conversation is not written out on these paths.
 pub(crate) fn restore_terminal() {
+    // A program the terminal is lent to would go on holding it: it is told to end.
+    #[cfg(unix)]
+    if let Ok(pid) = i32::try_from(super::screen::LENT_TO.swap(0, Ordering::Relaxed))
+        && pid > 0
+    {
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid),
+            nix::sys::signal::Signal::SIGTERM,
+        );
+    }
     let mouse = super::screen::MOUSE_ACTIVE.swap(false, Ordering::Relaxed);
     if super::screen::ALT_ACTIVE.swap(false, Ordering::Relaxed) {
         let mut out = io::stdout();
@@ -323,6 +333,54 @@ impl Ui for TuiHandle {
         &self.dialogs
     }
 
+    fn next_edit<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<String, UiError>> {
+        Box::pin(async move {
+            // A dropped receiver is the revoke: a Ctrl+G meeting it finds the send refused and does nothing.
+            let (reply_tx, reply_rx) = oneshot::channel();
+            if self.tx.send(UiMsg::EditReq(reply_tx)).is_err() {
+                return Err(UiError::Closed);
+            }
+            tokio::select! {
+                biased;
+                r = reply_rx => r.map_err(|_| UiError::Closed),
+                () = cancel.cancelled() => Err(UiError::Cancelled),
+                () = self.done.cancelled() => Err(UiError::Closed),
+            }
+        })
+    }
+
+    fn run_external(
+        &self,
+        argv: Vec<std::ffi::OsString>,
+    ) -> BoxFuture<'_, io::Result<std::process::ExitStatus>> {
+        Box::pin(async move {
+            let closed = || io::Error::other(UiError::Closed);
+            let (reply_tx, reply_rx) = oneshot::channel();
+            if self
+                .tx
+                .send(UiMsg::Exec {
+                    argv,
+                    reply: reply_tx,
+                })
+                .is_err()
+            {
+                return Err(closed());
+            }
+            tokio::select! {
+                biased;
+                r = reply_rx => r.unwrap_or_else(|_| Err(closed())),
+                () = self.done.cancelled() => Err(closed()),
+            }
+        })
+    }
+
+    fn edit_done(&self, text: Option<String>, notice: Option<String>) {
+        let _ = self.tx.send(UiMsg::Draft { text, notice });
+    }
+
     fn take_queued_messages(&self) -> BoxFuture<'_, Vec<Input>> {
         Box::pin(async move {
             let (reply_tx, reply_rx) = oneshot::channel();
@@ -558,6 +616,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use crate::ui::block::Block;
     use crate::ui::facade::{SelectSpec, Ui, UiError};
     use crate::ui::testutil::{ChannelEvents, SharedBuf};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -981,6 +1040,136 @@ mod tests {
             "done cancels when the loop exits"
         );
         h.ui.close().await.expect("second close is Ok(())");
+    }
+
+    /// Whether `hay` holds `needle`.
+    #[cfg(unix)]
+    fn has(hay: &[u8], needle: &[u8]) -> bool {
+        hay.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// Ctrl+G through the real loop: the parked edit waiter is handed the draft with its paste tag
+    /// expanded; a program runs with the terminal lent — the alternate screen left before it and
+    /// entered again after — and the answer replaces the draft, the cursor at its end, the status row
+    /// saying so.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ctrl_g_hands_out_the_draft_and_the_answer_replaces_it() {
+        let h = start_facade();
+        h.wait_frame();
+        let ui = Arc::clone(&h.ui);
+        let edit = tokio::spawn(async move { ui.next_edit(&CancellationToken::new()).await });
+        tokio::time::sleep(Duration::from_millis(100)).await; // let the waiter park
+        h.etx.send(Event::Paste("one\ntwo".to_owned())).unwrap();
+        h.type_text(" tail");
+        h.key(KeyCode::Char('g'), KeyModifiers::CONTROL);
+        let seed = edit
+            .await
+            .unwrap()
+            .expect("the waiter was handed the draft");
+        assert_eq!(seed, "one\ntwo tail", "paste tags expanded");
+        let before = h.buf.bytes().len();
+        let status =
+            h.ui.run_external(vec!["sh".into(), "-c".into(), "exit 3".into()])
+                .await
+                .expect("the program ran");
+        assert_eq!(status.code(), Some(3));
+        h.ui.edit_done(Some("edited".to_owned()), Some("draft updated".to_owned()));
+        // The loop reads keys before its mailbox: the answer lands first, then the key.
+        h.barrier().await;
+        h.type_text("!");
+        assert!(
+            h.wait_until(Duration::from_secs(2), |h| {
+                let c = h.contents();
+                c.contains("edited!") && c.contains("draft updated")
+            }),
+            "the draft was not replaced:\n{}",
+            h.contents()
+        );
+        let written = h.buf.bytes()[before..].to_vec();
+        let left = written.windows(8).position(|w| w == b"\x1b[?1049l");
+        let back = written.windows(8).rposition(|w| w == b"\x1b[?1049h");
+        assert!(
+            matches!((left, back), (Some(l), Some(b)) if l < b),
+            "the alternate screen was not left and entered again"
+        );
+        h.ui.close().await.expect("close");
+    }
+
+    /// Risk 6: the editor's text is applied only to the draft it was handed. One typed meanwhile wins,
+    /// and the status row says the editor's was dropped.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_draft_changed_while_editing_is_kept() {
+        let h = start_facade();
+        h.wait_frame();
+        let ui = Arc::clone(&h.ui);
+        let edit = tokio::spawn(async move { ui.next_edit(&CancellationToken::new()).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        h.type_text("ab");
+        h.key(KeyCode::Char('g'), KeyModifiers::CONTROL);
+        assert_eq!(edit.await.unwrap().unwrap(), "ab");
+        h.type_text("c");
+        h.barrier().await;
+        h.ui.edit_done(Some("zzz".to_owned()), Some("draft updated".to_owned()));
+        assert!(
+            h.wait_until(Duration::from_secs(2), |h| h
+                .contents()
+                .contains("the draft changed meanwhile")),
+            "no notice:\n{}",
+            h.contents()
+        );
+        let c = h.contents();
+        assert!(c.contains("abc") && !c.contains("zzz"), "{c}");
+        h.ui.close().await.expect("close");
+    }
+
+    /// While the terminal is lent nothing is drawn: rows committed meanwhile land once the program
+    /// has exited.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rows_committed_while_lent_land_after() {
+        let h = start_facade();
+        h.wait_frame();
+        let ui = Arc::clone(&h.ui);
+        let run =
+            tokio::spawn(async move { ui.run_external(vec!["sleep".into(), "0.6".into()]).await });
+        tokio::time::sleep(Duration::from_millis(200)).await; // lent by now
+        h.ui.print(Block::rows(["committed while lent"]));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !has(&h.buf.bytes(), b"committed while lent"),
+            "a row was drawn while the terminal was lent"
+        );
+        assert!(run.await.unwrap().expect("ran").success());
+        assert!(
+            h.wait_until(Duration::from_secs(2), |h| h
+                .contents()
+                .contains("committed while lent")),
+            "the row never landed:\n{}",
+            h.contents()
+        );
+        h.ui.close().await.expect("close");
+    }
+
+    /// `close` while the terminal is lent ends the program and the loop well inside `CLOSE_GRACE`.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn close_while_lent_kills_the_program() {
+        let h = start_facade();
+        h.wait_frame();
+        let ui = Arc::clone(&h.ui);
+        let run =
+            tokio::spawn(async move { ui.run_external(vec!["sleep".into(), "30".into()]).await });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let t0 = Instant::now();
+        h.ui.close().await.expect("close");
+        assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+        let ran = run.await.unwrap();
+        assert!(
+            ran.as_ref().map_or(true, |s| !s.success()),
+            "the program was not ended: {ran:?}"
+        );
     }
 
     /// The cross-thread reads: width/height atomics start 80×24 and `done` is live until

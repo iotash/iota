@@ -10,6 +10,9 @@
 //! the message; the loop's sends ignore the result (a dropped receiver IS a revoked
 //! waiter), and the explicit [`UiMsg::ReadCancel`] still clears a parked waiter eagerly.
 
+use std::ffi::OsString;
+use std::io;
+use std::process::ExitStatus;
 use std::sync::mpsc;
 
 use crate::ui::facade::{
@@ -114,6 +117,26 @@ pub(crate) enum UiMsg {
     /// A host answers for the background (`Ui::background_from_host`): the terminal is no longer
     /// asked, on focus or otherwise.
     BackgroundFromHost,
+    /// Runs a program in the terminal (`Ui::run_external`): the loop lends it the terminal — the main
+    /// screen, cooked mode — waits for it on its own thread, drawing nothing and reading no event,
+    /// and takes the terminal back. Unix only; elsewhere the answer is `Unsupported`.
+    Exec {
+        /// The program and its arguments; no shell.
+        argv: Vec<OsString>,
+        /// Receives how it exited, or why it could not run.
+        reply: oneshot::Sender<io::Result<ExitStatus>>,
+    },
+    /// Parks the edit waiter (`Ui::next_edit`): the next Ctrl+G answers it with the draft, paste tags
+    /// expanded. A newer request replaces it; a dropped receiver is a revoked one.
+    EditReq(oneshot::Sender<String>),
+    /// What became of the draft Ctrl+G handed out (`Ui::edit_done`): `text` replaces it — only while the
+    /// draft is still what was handed out — and `notice` goes on the status row.
+    Draft {
+        /// The new draft; `None` leaves it as it is.
+        text: Option<String>,
+        /// The status row's notice, if any.
+        notice: Option<String>,
+    },
     /// Job control from outside (SIGTSTP, the full screen only): hand the terminal back and stop
     /// until `fg` (tui-plan S4). Unix only: a Windows console has no job control.
     #[cfg(unix)]

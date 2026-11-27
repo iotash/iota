@@ -1457,6 +1457,131 @@ fn an_idle_ctrl_d_with_no_reader_answers_the_next_read_after_the_queue() {
 /// Row 0: Ctrl+Z is the job-control stop — the loop hands the terminal back before it stops
 /// (`Term::suspend`).
 #[cfg(unix)]
+/// Parks the edit waiter; the receiver sees the draft a Ctrl+G hands it.
+fn park_edit(m: &mut Model) -> oneshot::Receiver<String> {
+    let (tx, rx) = oneshot::channel();
+    m.apply(UiMsg::EditReq(tx));
+    rx
+}
+
+/// Row 1c: Ctrl+G hands the parked edit waiter the draft — idle, mid-turn, and with the completion
+/// list up — and touches nothing else: the draft, the scopes, the waiter for input all stay.
+#[test]
+fn ctrl_g_hands_the_draft_to_the_edit_waiter() {
+    // Idle.
+    let mut m = test_model();
+    let mut edit = park_edit(&mut m);
+    type_text(&mut m, "draft");
+    m.handle_key(ctrl('g'));
+    assert_eq!(edit.try_recv().unwrap(), "draft");
+    assert_eq!(m.composer.value(), "draft");
+    assert_eq!(m.editing.as_deref(), Some("draft"));
+    // Mid-turn: the turn is not cancelled.
+    let mut m = test_model();
+    let turn = CancellationToken::new();
+    m.apply(UiMsg::ScopePush(turn.clone()));
+    let mut edit = park_edit(&mut m);
+    type_text(&mut m, "steer");
+    m.handle_key(ctrl('g'));
+    assert_eq!(edit.try_recv().unwrap(), "steer");
+    assert!(!turn.is_cancelled());
+    // Under a `/cmd` list.
+    let mut m = test_model();
+    commands(&mut m, &["/model", "/mode"]);
+    let mut edit = park_edit(&mut m);
+    type_text(&mut m, "/mo");
+    m.handle_key(ctrl('g'));
+    assert_eq!(edit.try_recv().unwrap(), "/mo");
+}
+
+/// Row 1c's limits: with no waiter parked (an edit under way) Ctrl+G does nothing; under an open
+/// surface the surface owns it; after a dump it is the key that comes back, and nothing else.
+#[test]
+fn ctrl_g_is_ignored_without_a_waiter_under_a_surface_and_after_a_dump() {
+    let mut m = test_model();
+    type_text(&mut m, "x");
+    m.handle_key(ctrl('g'));
+    assert!(m.editing.is_none());
+    assert_eq!(m.composer.value(), "x");
+
+    let mut m = test_model();
+    let mut edit = park_edit(&mut m);
+    let _surface = open_surface(&mut m);
+    m.handle_key(ctrl('g'));
+    assert!(edit.try_recv().is_err(), "the surface owns the key");
+    assert!(m.surface.is_some());
+
+    let mut m = test_model();
+    let mut edit = park_edit(&mut m);
+    m.handle_key(ctrl('o'));
+    m.handle_key(ctrl('g'));
+    assert!(
+        edit.try_recv().is_err(),
+        "the key after a dump only comes back"
+    );
+    assert!(!m.dumped);
+}
+
+/// The answer (`UiMsg::Draft`): a new draft replaces the one handed out with the cursor at its end
+/// and the history walk over; the notice is the status row's; a draft changed meanwhile is kept.
+#[test]
+fn the_editors_answer_replaces_the_draft_it_was_handed() {
+    let mut m = test_model();
+    history(&mut m, &["old"]);
+    up(&mut m);
+    assert_eq!(m.composer.value(), "old");
+    let _edit = park_edit(&mut m);
+    m.handle_key(ctrl('g'));
+    m.apply(UiMsg::Draft {
+        text: Some("new\ntext".to_owned()),
+        notice: Some("draft updated".to_owned()),
+    });
+    assert_eq!(m.composer.value(), "new\ntext");
+    assert!(m.editing.is_none());
+    assert_eq!(
+        m.copied.as_ref().map(|(t, _)| t.as_str()),
+        Some("draft updated")
+    );
+    type_text(&mut m, "!");
+    assert_eq!(m.composer.value(), "new\ntext!", "the cursor is at the end");
+    down(&mut m);
+    assert_eq!(
+        m.composer.value(),
+        "new\ntext!",
+        "no history walk to step out of"
+    );
+
+    // No text: untouched, the notice alone.
+    let _edit = park_edit(&mut m);
+    m.handle_key(ctrl('g'));
+    m.apply(UiMsg::Draft {
+        text: None,
+        notice: Some("draft unchanged".to_owned()),
+    });
+    assert_eq!(m.composer.value(), "new\ntext!");
+    assert_eq!(
+        m.copied.as_ref().map(|(t, _)| t.as_str()),
+        Some("draft unchanged")
+    );
+
+    // Changed meanwhile: kept.
+    let mut m = test_model();
+    let _edit = park_edit(&mut m);
+    type_text(&mut m, "a");
+    m.handle_key(ctrl('g'));
+    type_text(&mut m, "b");
+    m.apply(UiMsg::Draft {
+        text: Some("zzz".to_owned()),
+        notice: Some("draft updated".to_owned()),
+    });
+    assert_eq!(m.composer.value(), "ab");
+    assert!(
+        m.copied
+            .as_ref()
+            .is_some_and(|(t, _)| t.contains("changed meanwhile"))
+    );
+}
+
 #[test]
 fn ctrl_z_suspends() {
     let mut m = test_model();

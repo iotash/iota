@@ -1,5 +1,5 @@
 //! Composer key routing — the 9-row precedence table (`TUI_CONTRACTS` §6;
-//! model.go updateKey, `KeyEventKind::Press` only): (full screen) the dump's return and Ctrl+O → surface → (full screen) the search → PgUp/PgDn/Ctrl+Home/Ctrl+End → Ctrl+C/D → the
+//! model.go updateKey, `KeyEventKind::Press` only): (full screen) the dump's return and Ctrl+O → surface → (full screen) the search → PgUp/PgDn/Ctrl+Home/Ctrl+End → Ctrl+G (the draft in an editor) → Ctrl+C/D → the
 //! completion list's ↑/↓/ESC → ESC → Tab completion → ↑ queue-pop → ↑/↓ history → newline (Ctrl+J, Alt+Enter, Shift+Enter) /
 //! Enter submit → the enumerated emacs edit set → text insert.
 //!
@@ -89,6 +89,14 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
     }
 
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    // Row 1c: Ctrl+G, the draft in the user's editor — idle, mid-turn and under the completion list
+    // alike. The loop only hands the draft to the REPL's edit waiter (`Model::open_editor`); with
+    // none parked — an edit under way — the key does nothing.
+    if ctrl && key.code == KeyCode::Char('g') {
+        m.open_editor();
+        return;
+    }
 
     // Row 2: Ctrl+C / Ctrl+D — scopes fire the TURN cancel; idle interrupts a
     // parked waiter (the caller's cue to exit — double-Ctrl+C-exits emerges).

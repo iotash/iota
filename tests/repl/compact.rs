@@ -127,6 +127,7 @@ impl Fixture {
             endpoints: None,
             agent: iota::headless::AgentOptions::default(),
             dark_background: true,
+            editor: iota::repl::EditorSetup::default(),
             root_cancel: CancellationToken::new(),
             reqlog: Arc::new(RequestLog::new()),
             pres: Arc::new(

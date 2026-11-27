@@ -204,6 +204,8 @@ pub struct RunParams {
     /// it. The detected background must reach the code theme and the diff shades, and the
     /// loop never probes the terminal itself.
     pub dark_background: bool,
+    /// What Ctrl+G runs and where it writes the draft (`repl::editor`).
+    pub editor: crate::repl::EditorSetup,
     /// The SIGTERM path (root cancellation).
     pub root_cancel: CancellationToken,
     /// The `/debug` request log shared with the title provider (root.go:128,410).
@@ -426,6 +428,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         endpoints,
         agent,
         dark_background,
+        editor,
         root_cancel,
         reqlog,
         pres,
@@ -779,6 +782,14 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             }
         })));
     }
+
+    // Ctrl+G's edit waiter: parked for the whole run, it ends with the facade.
+    tokio::spawn(crate::repl::editor::serve(
+        Arc::clone(&ui),
+        Arc::clone(&tr),
+        editor,
+        root_cancel.clone(),
+    ));
 
     if let Some(events) = repl.handles.mcp.events.take() {
         let rows = repl.allow_rows();

@@ -129,6 +129,11 @@ impl Requery {
         self.wanted |= !self.off() && self.sent.is_none();
     }
 
+    /// Whether a question is out and its answer not yet in: the terminal is not lent meanwhile.
+    pub(crate) fn awaiting(&self) -> bool {
+        self.sent.is_some()
+    }
+
     /// The REPL asks: `None` at once when asking is off, otherwise the reply — to the question
     /// already out, if there is one.
     pub(crate) fn ask(&mut self, reply: oneshot::Sender<Option<bool>>) {

@@ -2000,6 +2000,24 @@ impl Ui for OrderUi {
         self.inner.take_queued_messages()
     }
 
+    fn next_edit<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<String, UiError>> {
+        self.inner.next_edit(cancel)
+    }
+
+    fn run_external(
+        &self,
+        argv: Vec<std::ffi::OsString>,
+    ) -> BoxFuture<'_, std::io::Result<std::process::ExitStatus>> {
+        self.inner.run_external(argv)
+    }
+
+    fn edit_done(&self, text: Option<String>, notice: Option<String>) {
+        self.inner.edit_done(text, notice);
+    }
+
     fn close(&self) -> BoxFuture<'_, std::io::Result<()>> {
         self.inner.close()
     }

@@ -951,6 +951,22 @@ pub trait Ui: Send + Sync {
     /// (The contract's `<'a>(&'a self) -> BoxFuture<'a, _>` shape, lifetime-elided.)
     fn take_queued_messages(&self) -> BoxFuture<'_, Vec<Input>>;
 
+    /// Blocks until Ctrl+G asks for the draft in an editor: the draft, paste tags expanded. One waiter at
+    /// a time — a Ctrl+G with none parked does nothing — and the caller answers with [`Self::edit_done`]
+    /// before it parks again.
+    fn next_edit<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<String, UiError>>;
+
+    /// Runs `argv` (no shell) in the terminal and waits for it: the terminal is lent — the main screen,
+    /// cooked mode, nothing drawn — and taken back once it exits. An error is the program's (it could not
+    /// start), the facade's (closed), or `Unsupported` off Unix.
+    fn run_external(
+        &self,
+        argv: Vec<std::ffi::OsString>,
+    ) -> BoxFuture<'_, std::io::Result<std::process::ExitStatus>>;
+
     /// Quit → join the loop thread; returns its stored io error.
     /// (The contract's `<'a>(&'a self) -> BoxFuture<'a, _>` shape, lifetime-elided.)
     fn close(&self) -> BoxFuture<'_, std::io::Result<()>>;
@@ -1059,6 +1075,10 @@ pub trait Ui: Send + Sync {
     /// nothing is queued and the answer is [`Delivered::Full`]. The only call here a sender waits on: its
     /// answer is the receipt. A closed UI is `Err(Closed)`.
     fn deliver(&self, input: Input, cap: usize) -> BoxFuture<'_, Result<Delivered, UiError>>;
+
+    /// Answers the draft [`Self::next_edit`] handed out: `text` replaces it — the cursor at its end — unless
+    /// the user changed the draft since (`None` leaves it), and `notice` shows on the status row a moment.
+    fn edit_done(&self, text: Option<String>, notice: Option<String>);
 
     /// Commits blocks to the conversation (in order, batched): rows, and blocks laid out from
     /// their source at whatever width the screen has when they are drawn (`ui::block`).

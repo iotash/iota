@@ -10,6 +10,8 @@ pub mod catalog;
 pub(crate) mod commands;
 /// The context meter and the token counter behind it (WP53).
 pub(crate) mod context;
+/// Ctrl+G: the composer's draft in the user's editor, and back.
+pub mod editor;
 pub(crate) mod editpicker;
 pub(crate) mod errors;
 /// The grants' door-side service: the one path from a door to a grant that lasts (docs/design/grants.md §5).
@@ -33,6 +35,7 @@ pub(crate) mod title;
 pub(crate) mod turn;
 
 pub use catalog::ModelCatalog;
+pub use editor::EditorSetup;
 pub use grants::{Footing, ProjectFile};
 pub use inbound::Messaging;
 
