@@ -82,6 +82,21 @@ iota mcp add nb --url https://namebeta.com/api/mcp   # an MCP server; logs in if
 iota list agents                 # what is configured
 ```
 
+### Your editor (`editor:`)
+
+`Ctrl+G` opens what you are typing in your editor and brings it back when the
+editor exits. The first time, iota lists the editors it finds — `$VISUAL` or
+`$EDITOR` first — and writes the one you choose into `~/.iota.yaml` (or the
+`-c` file) once it has exited cleanly, so it asks only once. To set or change
+it by hand:
+
+```yaml
+editor: code --wait   # split as a shell would; the draft's file is added last
+```
+
+Only your own file (or `-c`) may set it; a repository's `.iota.yaml` cannot.
+When iota writes the key it replaces that one line, so a comment on it is lost.
+
 ### A repository's own `.iota.yaml`
 
 iota reads `~/.iota.yaml`, then the `.iota.yaml` (or `.iota.yml`) of the

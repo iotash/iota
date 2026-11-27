@@ -422,9 +422,14 @@ pub(crate) async fn run_interactive(
         agent,
         dark_background: dark,
         // Ctrl+G's draft file lives under `~/.iota`, outside every sandbox write root; with no home, the
-        // temp directory.
+        // temp directory. With no `editor:`, the list offers the environment's editor first and writes
+        // the choice into the user's own config file.
         editor: crate::repl::EditorSetup {
             command: cfg.editor.clone(),
+            env: ["VISUAL", "EDITOR"]
+                .into_iter()
+                .find_map(|var| ctx.env.var(var).map(|value| (var, value))),
+            config: crate::config::Config::user_file(inv.config.as_deref(), &ctx.env.dirs),
             dir: ctx
                 .env
                 .dirs

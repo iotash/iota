@@ -324,6 +324,20 @@ impl Config {
         out
     }
 
+    /// The user's own config file, the one a setting chosen in the TUI is written into: the `-c <file>`
+    /// when one was given, else the existing `~/.iota.yaml|yml`, else a new `~/.iota.yaml`; never the
+    /// project file. `None` without a home.
+    pub fn user_file(explicit: Option<&Path>, dirs: &HostDirs) -> Option<PathBuf> {
+        if let Some(path) = explicit {
+            return Some(path.to_path_buf());
+        }
+        let home = dirs.home.as_deref()?;
+        Some(
+            Self::find_config_file(home)
+                .unwrap_or_else(|| home.join(format!("{CONFIG_BASE}{}", CONFIG_EXTS[0]))),
+        )
+    }
+
     /// The project file of this invocation — the working directory's `.iota.yaml|yml` when it is not the home
     /// file — and `None` under `-c`, which reads no project file.
     pub fn project_file(explicit: Option<&Path>, dirs: &HostDirs) -> Option<PathBuf> {

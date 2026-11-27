@@ -5,6 +5,14 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ## Unreleased
 
+### Added
+
+- **Edit your message in your own editor.** Press `Ctrl+G` while typing and
+  the draft opens in your editor; save and quit to bring it back, or exit
+  with an error (`:cq` in vim) to keep it as it was. The first time, iota
+  shows a list of the editors on your machine — your `$VISUAL` or `$EDITOR`
+  first — and remembers the one you pick as `editor:` in `~/.iota.yaml`.
+
 ### Fixed
 
 - **Reconnecting a server in `/tools` no longer makes the dialog jump.**

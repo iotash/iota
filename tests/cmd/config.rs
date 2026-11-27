@@ -1914,3 +1914,30 @@ fn config_admit_gates_the_project_layer_alone() {
     .expect("loads");
     assert_eq!(cfg.providers.keys().collect::<Vec<_>>(), ["home_only"]);
 }
+
+/// The file a choice made in the TUI (Ctrl+G's editor) is written into: `-c <file>` when given, else
+/// the home's existing `.iota.yaml` or `.iota.yml`, else a new `~/.iota.yaml` — never the working
+/// directory's project file; nothing without a home.
+#[test]
+fn the_user_file_is_the_explicit_or_the_homes_never_the_projects() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (home, cwd) = (dir.path().join("home"), dir.path().join("repo"));
+    std::fs::create_dir_all(&home).expect("home");
+    std::fs::create_dir_all(&cwd).expect("cwd");
+    std::fs::write(cwd.join(".iota.yaml"), "{}\n").expect("project");
+    let dirs = iota::app::HostDirs {
+        home: Some(home.clone()),
+        cwd: Some(cwd),
+        ..iota::app::HostDirs::default()
+    };
+    assert_eq!(
+        Config::user_file(None, &dirs),
+        Some(home.join(".iota.yaml"))
+    );
+    std::fs::write(home.join(".iota.yml"), "{}\n").expect("yml");
+    assert_eq!(Config::user_file(None, &dirs), Some(home.join(".iota.yml")));
+    let explicit = dir.path().join("mine.yaml");
+    assert_eq!(Config::user_file(Some(&explicit), &dirs), Some(explicit));
+    let homeless = iota::app::HostDirs { home: None, ..dirs };
+    assert_eq!(Config::user_file(None, &homeless), None);
+}

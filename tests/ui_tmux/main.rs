@@ -88,6 +88,7 @@
 //! | `56-widget-scrolls.sh` | widget-in-frame-switch, X-119 | — (the running call's widget is the conversation's tail block: during a `sleep 4` call PgUp takes its rows off the screen while the status row says `Running tools`, Ctrl+End brings them back, and after the settle the call's committed form is there once and no widget row is left) |
 //! | `57-tools-reconnect.sh` | tools-page-reconnect, X-79 | — (a stdio server that fails two seconds into its start: Enter on its `/tools` page reconnects it in place — `Reconnecting…`, `connecting…` and `why (last attempt)` on the very rows the failed page had, and the same rows when the retry fails again; in a short pane scrolled to the page's foot, the foot stays on its row and the top stays off the screen through the retry) |
 //! | `58-composer-editor.sh` | composer-editor-flow | — (Ctrl+G with stub editors as `editor:`: one that appends a line — handed the draft and one newline, the draft back with the line under it, `draft updated`, the draft file gone; one that exits 1 — the draft as it was, `editor exited with status 1 — draft unchanged`; one that empties the file — the draft cleared, `draft cleared`; one that holds the terminal while the pane is resized — the main screen its meanwhile, the frame back at the new width with the edited draft, which submits; a command that is not there — a `⚠` line naming it, the draft kept, the alternate screen never left; an editor that stops its process group as vim's Ctrl+Z does — iota stopped with it, the shell's, and `fg` bringing the edited draft back) |
+//! | `59-composer-editor-picker.sh` | composer-editor-picker | — (no `editor:` in a fresh HOME, `$EDITOR` a stub: Ctrl+G opens the `Editor` list below the composer, the environment's row first and preselected, `Other…` last; `Other…` naming a missing command — a `⚠` line and the list back on `Other…`, nothing written; the environment's row — the draft edited and `~/.iota.yaml` holding `editor: stub-ed`, its other lines kept; the second Ctrl+G runs the editor with no list) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -800,6 +801,14 @@ fn tmux_tools_reconnect_in_place() {
 #[test]
 fn tmux_composer_editor() {
     run_scenario("58-composer-editor.sh");
+}
+
+/// composer-editor-picker: with no `editor:`, Ctrl+G asks which editor below the composer — the
+/// environment's first — retries a choice that fails, writes the one that works into `~/.iota.yaml`,
+/// and does not ask again.
+#[test]
+fn tmux_composer_editor_picker() {
+    run_scenario("59-composer-editor-picker.sh");
 }
 
 /// M2 (tui-plan §7) — a measurement, not a check: the bytes the tmux iota runs in sends to its own

@@ -9,9 +9,10 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
-use super::{EditorSetup, NO_EDITOR, serve};
+use super::{Choice, EditorSetup, choices, serve};
 use crate::repl::render::transcript::Transcript;
-use crate::testing::{ScriptedUi, UiEvent};
+use crate::testing::{Reply, ScriptedUi, UiEvent};
+use crate::ui::facade::{PanelResult, TabbedResult};
 
 /// A scratch directory with a stub editor `ed` whose body is `body` (`$1` is the draft's path,
 /// `$DIR` this directory).
@@ -41,6 +42,7 @@ impl Stub {
         EditorSetup {
             command: Some(vec![self.path("ed").display().to_string()]),
             dir: self.path("drafts"),
+            ..EditorSetup::default()
         }
     }
 }
@@ -48,7 +50,17 @@ impl Stub {
 /// Runs one Ctrl+G of `draft` through [`serve`]: what the flow answered (the new draft, the notice) and
 /// the rows it printed.
 async fn ctrl_g(setup: EditorSetup, draft: &str) -> (Option<String>, Option<String>, Vec<String>) {
-    let ui = ScriptedUi::new(Vec::new());
+    let (text, notice, events) = ctrl_g_with(setup, draft, Vec::new()).await;
+    (text, notice, printed(&events))
+}
+
+/// [`ctrl_g`] over a facade answering the list with `script`: the answer and every event recorded.
+async fn ctrl_g_with(
+    setup: EditorSetup,
+    draft: &str,
+    script: Vec<Reply>,
+) -> (Option<String>, Option<String>, Vec<UiEvent>) {
+    let ui = ScriptedUi::new(script);
     let tr = Arc::new(Transcript::new(ui.clone(), None));
     let stop = CancellationToken::new();
     let task = tokio::spawn(serve(ui.clone(), tr, setup, stop.clone()));
@@ -69,16 +81,19 @@ async fn ctrl_g(setup: EditorSetup, draft: &str) -> (Option<String>, Option<Stri
     .expect("the flow never answered");
     stop.cancel();
     task.await.unwrap();
-    let printed = ui
-        .events()
-        .into_iter()
+    (answer.0, answer.1, ui.events())
+}
+
+/// The rows printed among `events`.
+fn printed(events: &[UiEvent]) -> Vec<String> {
+    events
+        .iter()
         .filter_map(|e| match e {
-            UiEvent::Print(rows) => Some(rows),
+            UiEvent::Print(rows) => Some(rows.clone()),
             _ => None,
         })
         .flatten()
-        .collect();
-    (answer.0, answer.1, printed)
+        .collect()
 }
 
 fn drafts_left(dir: &Path) -> usize {
@@ -175,41 +190,22 @@ async fn a_missing_command_never_lends_the_terminal() {
     let setup = EditorSetup {
         command: Some(vec!["iota-no-such-editor".to_owned(), "--wait".to_owned()]),
         dir: dir.path().join("drafts"),
+        ..EditorSetup::default()
     };
-    let ui = ScriptedUi::new(Vec::new());
-    let tr = Arc::new(Transcript::new(ui.clone(), None));
-    let (text, notice) = super::edit(ui.as_ref(), &tr, &setup, "seed").await;
+    let (text, notice, events) = ctrl_g_with(setup, "seed", Vec::new()).await;
     assert_eq!((text, notice), (None, None));
     assert!(
-        !ui.events().iter().any(|e| matches!(e, UiEvent::Exec(_))),
+        !events.iter().any(|e| matches!(e, UiEvent::Exec(_))),
         "the terminal was lent"
     );
     assert!(!dir.path().join("drafts").exists());
-    let printed: Vec<String> = ui
-        .events()
-        .into_iter()
-        .filter_map(|e| match e {
-            UiEvent::Print(rows) => Some(rows),
-            _ => None,
-        })
-        .flatten()
-        .collect();
+    let printed = printed(&events);
     assert!(
         printed
             .iter()
             .any(|r| r.contains("⚠ editor iota-no-such-editor: command not found")),
         "{printed:?}"
     );
-}
-
-/// No `editor:` configured: one line naming the key, nothing run.
-#[tokio::test]
-async fn no_editor_configured_says_which_key_to_set() {
-    let (text, notice, printed) = ctrl_g(EditorSetup::default(), "seed").await;
-    assert_eq!((text, notice), (None, None));
-    assert_eq!(printed.len(), 1, "{printed:?}");
-    assert!(printed[0].contains(NO_EDITOR), "{printed:?}");
-    assert!(NO_EDITOR.contains("editor:"));
 }
 
 /// The configured words come first and the draft's path last; a leftover of this pid's is replaced,
@@ -233,4 +229,215 @@ async fn the_argv_ends_with_the_draft_and_a_leftover_is_replaced() {
         "fresh\n"
     );
     assert!(!leftover.exists());
+}
+
+/// A list commit choosing row `cursor` (past the rows: `Other…` with `custom` typed).
+fn chose(cursor: usize, custom: &str) -> Reply {
+    Reply::Tabbed(TabbedResult {
+        panels: vec![PanelResult {
+            cursor,
+            custom: custom.to_owned(),
+            ..PanelResult::default()
+        }],
+        ..TabbedResult::default()
+    })
+}
+
+/// The `Editor` lists opened among `events`: each one's rows and cursor.
+fn lists(events: &[UiEvent]) -> Vec<(Vec<String>, usize, bool)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Tabbed(t) => t
+                .panels
+                .first()
+                .filter(|p| p.title == "Editor")
+                .map(|p| (p.items.clone(), p.cursor, p.custom)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The rows: the environment's editor first, labelled with its variable and kept as typed; then the
+/// known editors this machine has, in their order, each as it is stored; the environment's command not
+/// listed twice; nothing found, nothing listed.
+#[test]
+fn the_rows_are_the_environment_then_what_is_installed() {
+    let installed = |name: &str| ["vim", "nano", "code", "emacs"].contains(&name);
+    let env = ("EDITOR", " vim ".to_owned());
+    let rows = choices(Some(&env), installed);
+    let commands: Vec<&str> = rows.iter().map(|c| c.command.as_str()).collect();
+    assert_eq!(commands, ["vim", "emacs -nw", "nano", "code --wait"]);
+    assert_eq!(
+        rows[0],
+        Choice {
+            command: "vim".into(),
+            label: "vim · from $EDITOR".into()
+        }
+    );
+    assert_eq!(rows[1].label, "emacs -nw");
+    let env = ("VISUAL", "code --wait -n".to_owned());
+    let rows = choices(Some(&env), |_| false);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].label, "code --wait -n · from $VISUAL");
+    // An environment value naming no program is no row.
+    assert!(choices(Some(&("EDITOR", "'unbalanced".to_owned())), |_| false).is_empty());
+    assert!(choices(None, |_| false).is_empty());
+}
+
+/// No `editor:`: the list, below the composer, with the environment's editor first and preselected
+/// and `Other…` last; choosing it edits the draft, makes it the editor from then on — the second
+/// Ctrl+G opens no list — and writes it as `editor:` into the user config.
+#[tokio::test]
+async fn the_list_chooses_runs_and_writes_the_editor() {
+    let stub = Stub::new(r#"echo more >> "$1""#);
+    let ed = stub.path("ed").display().to_string();
+    let config = stub.path("home.yaml");
+    std::fs::write(&config, "# mine\nmouse: false\n").unwrap();
+    let setup = EditorSetup {
+        command: None,
+        env: Some(("EDITOR", ed.clone())),
+        config: Some(config.clone()),
+        dir: stub.path("drafts"),
+    };
+    let ui = ScriptedUi::new(vec![chose(0, "")]);
+    let tr = Arc::new(Transcript::new(ui.clone(), None));
+    let stop = CancellationToken::new();
+    let task = tokio::spawn(serve(ui.clone(), tr, setup, stop.clone()));
+    for draft in ["one", "two"] {
+        ui.ctrl_g(draft);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while ui
+                .events()
+                .iter()
+                .filter(|e| matches!(e, UiEvent::EditDone { .. }))
+                .count()
+                < if draft == "one" { 1 } else { 2 }
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the flow never answered");
+    }
+    stop.cancel();
+    task.await.unwrap();
+    let events = ui.events();
+    let opened = lists(&events);
+    assert_eq!(opened.len(), 1, "the list is asked once: {opened:?}");
+    let (rows, cursor, custom) = &opened[0];
+    assert_eq!(rows[0], format!("{ed} · from $EDITOR"));
+    assert_eq!((*cursor, *custom), (0, true));
+    let done: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::EditDone { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        done,
+        [Some("one\nmore".to_owned()), Some("two\nmore".to_owned())]
+    );
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert_eq!(written, format!("# mine\nmouse: false\neditor: {ed}\n"));
+    let shown = printed(&events);
+    assert!(
+        shown
+            .iter()
+            .any(|r| r.contains(&format!("saved to {}", config.display()))),
+        "{shown:?}"
+    );
+}
+
+/// A choice that fails — a typed command that is not there, then one that exits non-zero — prints
+/// its `⚠` line and opens the list again on that row, writing nothing; the first exit 0 is written.
+#[tokio::test]
+async fn a_failed_choice_opens_the_list_again_on_its_row() {
+    let stub = Stub::new(
+        r#"[ -e "$DIR/once" ] && { echo ok >> "$1"; exit 0; }; touch "$DIR/once"; exit 4"#,
+    );
+    let ed = stub.path("ed").display().to_string();
+    let config = stub.path("home.yaml");
+    let setup = EditorSetup {
+        command: None,
+        env: Some(("VISUAL", ed.clone())),
+        config: Some(config.clone()),
+        dir: stub.path("drafts"),
+    };
+    let script = vec![
+        chose(usize::MAX, "iota-no-such-editor --wait"),
+        chose(0, ""),
+        chose(0, ""),
+    ];
+    let (text, notice, events) = ctrl_g_with(setup, "seed", script).await;
+    assert_eq!(text.as_deref(), Some("seed\nok"));
+    assert_eq!(notice.as_deref(), Some("draft updated"));
+    let opened = lists(&events);
+    let cursors: Vec<usize> = opened.iter().map(|(_, c, _)| *c).collect();
+    // The first list on the environment's row, the second on `Other…` (after the rows), the third on
+    // the environment's row again.
+    let other = opened[0].0.len();
+    assert_eq!(cursors, [0, other, 0]);
+    let shown = printed(&events);
+    assert!(
+        shown
+            .iter()
+            .any(|r| r.contains("⚠ editor iota-no-such-editor: command not found")),
+        "{shown:?}"
+    );
+    assert!(
+        shown
+            .iter()
+            .any(|r| r.contains("exited with status 4 — draft unchanged")),
+        "{shown:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        format!("editor: {ed}\n")
+    );
+}
+
+/// Closing the list leaves the draft and writes nothing; a write that fails keeps the choice for the
+/// session and says why.
+#[tokio::test]
+async fn a_closed_list_or_a_failed_write() {
+    let stub = Stub::new(r#"echo more >> "$1""#);
+    let ed = stub.path("ed").display().to_string();
+    let setup = |config: Option<PathBuf>| EditorSetup {
+        command: None,
+        env: Some(("EDITOR", ed.clone())),
+        config,
+        dir: stub.path("drafts"),
+    };
+    let closed = Reply::Tabbed(TabbedResult {
+        cancelled: true,
+        ..TabbedResult::default()
+    });
+    let config = stub.path("home.yaml");
+    let (text, notice, _) = ctrl_g_with(setup(Some(config.clone())), "seed", vec![closed]).await;
+    assert_eq!((text, notice), (None, None));
+    assert!(!config.exists());
+    // A file the next load would refuse is not written to.
+    std::fs::write(&config, "no_such_key: 1\n").unwrap();
+    let (text, _, events) =
+        ctrl_g_with(setup(Some(config.clone())), "seed", vec![chose(0, "")]).await;
+    assert_eq!(text.as_deref(), Some("seed\nmore"));
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "no_such_key: 1\n"
+    );
+    let shown = printed(&events);
+    assert!(
+        shown.iter().any(|r| r.contains(&format!(
+            "editor: {ed} for this session — not saved: config"
+        ))),
+        "{shown:?}"
+    );
+    let (_, _, events) = ctrl_g_with(setup(None), "seed", vec![chose(0, "")]).await;
+    assert!(
+        printed(&events)
+            .iter()
+            .any(|r| r.contains("not saved: no home directory")),
+    );
 }

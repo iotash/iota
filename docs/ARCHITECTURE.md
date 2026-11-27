@@ -396,7 +396,7 @@ rows (ANSI strings, T-05) or a source laid out again at every width, each width'
 demand and cached; an open block grows in place while it streams (X-103). 200 000 blocks at most, the
 oldest dropped whole behind one notice (the session log keeps everything). The view follows the tail or
 is anchored on a block, and stays on it through a resize. Keys: `PgUp`/`PgDn`, `Ctrl+Home`/`Ctrl+End`, the search (`Ctrl+R`, `/` scrolled back;
-never `Ctrl+F`, which is forward-char), the write-out (`Ctrl+O`, X-99), job control (`Ctrl+Z`, X-101).
+never `Ctrl+F`, which is forward-char), the write-out (`Ctrl+O`, X-99), job control (`Ctrl+Z`, X-101), the draft in your editor (`Ctrl+G`, X-120).
 
 **The mouse** (X-102; `input/mouse.rs`, `render/selection.rs`, `clipboard.rs`). Reporting (`?1000/1002/1006`)
 lives with the alternate screen — asked for on entering it, dropped on every way out — and is off
