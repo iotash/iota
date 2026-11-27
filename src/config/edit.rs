@@ -163,7 +163,7 @@ pub fn rewrite_mcp_servers(
 /// Writes `editor: <value>` into the config file at `path` ([`set_scalar`]) atomically — the file a
 /// symlink names, not the link (a rename over the link would turn it into a regular file); a missing
 /// file is created holding that one line. Nothing is written into a document the next load would
-/// refuse, nor a value it would refuse ([`crate::config::check_document`]).
+/// refuse, nor a value it would refuse (`config::check_document`).
 pub fn write_editor(path: &Path, value: &str) -> Result<(), EditError> {
     let path = crate::app::fs::physical(path).unwrap_or_else(|| path.to_path_buf());
     let display = path.display().to_string();

@@ -34,6 +34,7 @@ globset
 ignore
 walkdir
 jiff
+shlex
 # tui stack (TUI_CONTRACTS §1.1; justifications in docs/ARCHITECTURE.md §11)
 ratatui
 crossterm
