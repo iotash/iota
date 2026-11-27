@@ -20,6 +20,7 @@
 //! One risk is accepted: a reply cut right after its first byte reaches the loop as a lone `Esc`
 //! and then `]11;rgb:…` as typing. A lone `Esc` is never swallowed — it is the user's cancel key.
 
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -33,8 +34,30 @@ const MISS_GRACE: Duration = Duration::from_secs(1);
 
 /// How long after the first frame the terminal is asked once more — opencode's `afterPaint`
 /// refresh: a multiplexer answers the startup question for itself (herdr-core: its own default),
-/// and only once the first frame is out is its viewer in the path.
-const AFTER_PAINT: Duration = Duration::from_millis(50);
+/// and only once the first frame is out is its viewer in the path. TEMPORARY: a tuning knob
+/// (`IOTA_THEME_AFTER_PAINT_MS`) for finding herdr-core's threshold, to be removed — back to a
+/// constant — once the number is known.
+fn after_paint() -> Duration {
+    static CELL: OnceLock<Duration> = OnceLock::new();
+    read_once(&CELL, || std::env::var(AFTER_PAINT_ENV).ok())
+}
+
+/// The variable [`after_paint`] reads (TEMPORARY, with it).
+const AFTER_PAINT_ENV: &str = "IOTA_THEME_AFTER_PAINT_MS";
+
+/// The delay without the variable, or with one that is empty or no `u64`.
+const AFTER_PAINT_DEFAULT: Duration = Duration::from_millis(50);
+
+/// `cell`'s value, `read` and parsed the first time only.
+fn read_once(cell: &OnceLock<Duration>, read: impl FnOnce() -> Option<String>) -> Duration {
+    *cell.get_or_init(|| parse_after_paint(read().as_deref()))
+}
+
+/// Milliseconds as a plain `u64`; anything else is [`AFTER_PAINT_DEFAULT`].
+fn parse_after_paint(v: Option<&str>) -> Duration {
+    v.and_then(|v| v.parse().ok())
+        .map_or(AFTER_PAINT_DEFAULT, Duration::from_millis)
+}
 
 /// How a reply begins, as bytes: `ESC ] 1 1 ;`.
 const PREFIX: &[u8] = b"\x1b]11;";
@@ -156,7 +179,9 @@ impl Requery {
     /// the session, armed by the first call only and never when asking is off.
     pub(crate) fn first_frame(&mut self, now: Instant) {
         if !std::mem::replace(&mut self.painted, true) && !self.off() {
-            self.after_paint = Some(now + AFTER_PAINT);
+            let delay = after_paint();
+            tracing::debug!(?delay, "theme requery: post-frame question armed");
+            self.after_paint = Some(now + delay);
         }
     }
 
@@ -211,10 +236,18 @@ impl Requery {
         let Some(reply) = reply.filter(|_| !self.off()) else {
             return (pass, None);
         };
+        let after = self.sent.map(|at| at.elapsed());
         let Some(dark) = osc::parse_osc11_dark(&reply) else {
+            tracing::debug!(reply = %String::from_utf8_lossy(&reply).escape_debug(), ?after, "theme requery: unparsable reply, miss");
             self.miss();
             return (pass, None);
         };
+        tracing::debug!(
+            tone = if dark { "dark" } else { "light" },
+            reply = %String::from_utf8_lossy(&reply).escape_debug(),
+            ?after,
+            "theme requery: answer"
+        );
         self.sent = None;
         if let Some(w) = self.waiter.take() {
             let _ = w.send(Some(dark));
@@ -224,6 +257,9 @@ impl Requery {
 
     /// No answer: the waiter is told so, and nothing is asked again.
     fn miss(&mut self) {
+        if !self.missed {
+            tracing::debug!(after = ?self.sent.map(|at| at.elapsed()), "theme requery: miss");
+        }
         self.missed = true;
         self.sent = None;
         self.wanted = false;
@@ -248,7 +284,7 @@ impl Requery {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::{AFTER_PAINT, MISS_GRACE, Requery};
+    use super::{AFTER_PAINT_DEFAULT as AFTER_PAINT, MISS_GRACE, Requery};
     use crate::ui::runtime::osc::REPLY_TIMEOUT;
     use crate::ui::testutil::reply_events;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -487,5 +523,38 @@ mod tests {
             (tail, vec![]),
             "not started"
         );
+    }
+
+    /// TEMPORARY, with the knob: no value, `"250"` and `"x"` are 50, 250 and 50 ms, an empty one
+    /// 50; and the variable is read the first time only.
+    #[test]
+    fn the_after_paint_knob_parses_and_is_read_once() {
+        use super::{OnceLock, parse_after_paint, read_once};
+        let ms = Duration::from_millis;
+        for (v, want) in [
+            (None, 50),
+            (Some("250"), 250),
+            (Some("x"), 50),
+            (Some(""), 50),
+        ] {
+            assert_eq!(parse_after_paint(v), ms(want), "{v:?}");
+        }
+        let cell = OnceLock::new();
+        let mut reads = 0;
+        assert_eq!(
+            read_once(&cell, || {
+                reads += 1;
+                Some("250".to_owned())
+            }),
+            ms(250)
+        );
+        assert_eq!(
+            read_once(&cell, || {
+                reads += 1;
+                Some("900".to_owned())
+            }),
+            ms(250)
+        );
+        assert_eq!(reads, 1);
     }
 }
