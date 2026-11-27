@@ -193,6 +193,35 @@ fn enter_commits_every_tab_at_once() {
     assert_eq!(r.panels[2].value, Some(0.1));
 }
 
+/// A panel with an enter action (`Panel::with_enter`, the `/tools` page's reconnect): Enter runs it
+/// once per press and the surface stays open — the effect is `None`, never a `Close` — with the
+/// view's scroll where it was; Esc still closes.
+#[test]
+fn an_enter_action_runs_and_the_surface_stays_open() {
+    let n = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&n);
+    let mut s = Surf::open(vec![
+        Panel::view("Page".to_owned(), rows_of(40, |i| format!("line {i}"))).with_enter(
+            move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+            },
+        ),
+    ]);
+    s.rows();
+    s.tap(ch('G'));
+    s.rows();
+    let pos = s.ps(0).offset;
+    assert!(pos > 0, "the page scrolled");
+
+    assert!(matches!(s.press(key(KeyCode::Enter)), SurfaceEffect::None));
+    assert_eq!(n.load(Ordering::Relaxed), 1);
+    s.rows();
+    assert_eq!(s.ps(0).offset, pos, "the scroll stays");
+    assert!(matches!(s.press(key(KeyCode::Enter)), SurfaceEffect::None));
+    assert_eq!(n.load(Ordering::Relaxed), 2);
+    assert!(closed(s.press(key(KeyCode::Esc))).cancelled);
+}
+
 /// `enter_advances`: Enter on a non-last tab moves to the NEXT tab instead of
 /// committing — unvisited questions must not be silently submitted with defaults; only
 /// the last tab's Enter commits all.

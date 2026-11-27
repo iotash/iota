@@ -86,6 +86,7 @@
 //! | `54-allow-panel.sh` | allow-panel, X-111 | — (`/allow ../zz-out` grants a sibling directory and the transcript says it is writable, `/status` counting it; the bare `/allow` opens `Grants` and `Static` and no directory browser; the `Grants` tab lists the grant, Space and Enter revoke it, `/status`'s Grants row down to `1 static`; the next bare `/allow`'s Grants tab says `No grants.`, and the `Static` tab says what it is, lists the directory as `allow:   <path>`, and Enter there closes it changing nothing) |
 //! | `55-allow-completion.sh` | allow-rows-mcp, X-111 | — (the `/allow ` completion list walked key by key against a stdio MCP server `github`: level 1 lists the built-ins that ask and `github:` with its count once it connects, `g` leaves the server alone, Tab writes `/allow github:`, Enter on it submits nothing and shows `*` and the tool with its description, `e` Tab Space Tab Enter grants `github:echo` for the project, and the model's next call of it runs without a dialog) |
 //! | `56-widget-scrolls.sh` | widget-in-frame-switch, X-119 | — (the running call's widget is the conversation's tail block: during a `sleep 4` call PgUp takes its rows off the screen while the status row says `Running tools`, Ctrl+End brings them back, and after the settle the call's committed form is there once and no widget row is left) |
+//! | `57-tools-reconnect.sh` | tools-page-reconnect, X-79 | — (a stdio server that fails two seconds into its start: Enter on its `/tools` page reconnects it in place — `Reconnecting…`, `connecting…` and `why (last attempt)` on the very rows the failed page had, and the same rows when the retry fails again; in a short pane scrolled to the page's foot, the foot stays on its row and the top stays off the screen through the retry) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -781,6 +782,14 @@ fn tmux_allow_completion() {
 #[test]
 fn tmux_widget_scrolls_with_the_output() {
     run_scenario("56-widget-scrolls.sh");
+}
+
+/// tools-page-reconnect (X-79, docs/design/tools-command.md): Enter on a failed server's `/tools` page
+/// reconnects it in place — the prompt, the status row and the last attempt's `why` keep their pane rows
+/// through the retry, and a page scrolled to its foot keeps its scroll.
+#[test]
+fn tmux_tools_reconnect_in_place() {
+    run_scenario("57-tools-reconnect.sh");
 }
 
 /// M2 (tui-plan §7) — a measurement, not a check: the bytes the tmux iota runs in sends to its own

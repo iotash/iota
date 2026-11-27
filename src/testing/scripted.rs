@@ -128,6 +128,8 @@ pub struct PanelSummary {
     pub wrap: bool,
     /// Whether the panel carries a live-refresh closure.
     pub has_refresh: bool,
+    /// Whether the panel carries an enter action (Enter runs it, the surface stays open).
+    pub has_enter: bool,
     /// Prompt line above an Input panel.
     pub prompt: String,
     /// Input panel — or combo `List` — placeholder.
@@ -182,6 +184,7 @@ impl TabbedSummary {
                     search: p.search,
                     wrap: p.wrap(),
                     has_refresh: p.refresh.is_some(),
+                    has_enter: p.enter.is_some(),
                     prompt: p.prompt.clone(),
                     placeholder: p.placeholder().to_owned(),
                     text: p.as_input().map_or_else(String::new, |i| i.text.clone()),
@@ -212,6 +215,10 @@ pub enum Reply {
     Closed,
     /// `tabbed` (or its sugar) resolves `Ok(result)`.
     Tabbed(TabbedResult),
+    /// Enter on an open surface whose first panel has an enter action (`Panel::with_enter`): the action
+    /// runs and the surface stays open — the NEXT reply answers the same `tabbed` call. Panics on a panel
+    /// without one.
+    EnterAction,
     /// `take_queued_messages` resolves with these inputs.
     Queued(Vec<Input>),
     /// `read_input` resolves with the next input handed to [`Ui::enqueue`] — a finished job's notice —
@@ -399,7 +406,7 @@ impl Ui for ScriptedUi {
                         Err(UiError::Cancelled)
                     });
                 }
-                Reply::Tabbed(_) | Reply::Queued(_) | Reply::Pause(_) => {
+                Reply::Tabbed(_) | Reply::EnterAction | Reply::Queued(_) | Reply::Pause(_) => {
                     panic!("ScriptedUi: read_input got a non-input reply")
                 }
             }
@@ -410,14 +417,27 @@ impl Ui for ScriptedUi {
     fn open_surface<'a>(
         &'a self,
         _cancel: &'a CancellationToken,
-        spec: TabbedSpec,
+        mut spec: TabbedSpec,
     ) -> BoxFuture<'a, Result<TabbedResult, UiError>> {
         self.record(UiEvent::Tabbed(TabbedSummary::of(&spec)));
         let r = if self.shut() {
             Err(UiError::Closed)
         } else {
-            match self.pop("tabbed") {
+            let mut reply = self.pop("tabbed");
+            while matches!(reply, Reply::EnterAction) {
+                let enter = spec
+                    .panels
+                    .first_mut()
+                    .and_then(|p| p.enter.as_mut())
+                    .unwrap_or_else(|| {
+                        panic!("ScriptedUi: EnterAction on a panel without an enter action")
+                    });
+                enter();
+                reply = self.pop("tabbed");
+            }
+            match reply {
                 Reply::Tabbed(t) => Ok(t),
+                Reply::EnterAction => unreachable!("consumed above"),
                 Reply::Interrupted => Err(UiError::Interrupted),
                 Reply::Closed => Err(UiError::Closed),
                 Reply::Input(_)
@@ -454,6 +474,7 @@ impl Ui for ScriptedUi {
                 Reply::Input(_)
                 | Reply::Interrupted
                 | Reply::Tabbed(_)
+                | Reply::EnterAction
                 | Reply::Enqueued
                 | Reply::Feed(_)
                 | Reply::Pause(_)

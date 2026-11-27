@@ -6,8 +6,9 @@
 //! Ladder (strict precedence): (1) an open inline Custom editor owns the keyboard;
 //! (2) `searchTyping` owns the keyboard; (3) View+`searchApplied` hands n/p/q/Esc to the
 //! hit walker; (4) `PanelInput` owns letters; (5) Ctrl chords (c cancel, p/n ↑↓, b/f
-//! page); (6) Tab = next panel (wraps), Esc/q = cancel, Enter = commit path (Browser
-//! descend-vs-commit → Custom-open → `enter_advances` → commit-all); (7) per-kind keys.
+//! page); (6) Tab = next panel (wraps), Esc/q = cancel, Enter = commit path (an enter
+//! action runs and stays open → Browser descend-vs-commit → Custom-open → `enter_advances` →
+//! commit-all); (7) per-kind keys.
 //! ANY Tab press with the surface still open forces a full repaint (T-32 — the CJK
 //! cell-diff insurance, `terminal.clear()` on the loop side).
 
@@ -405,7 +406,8 @@ fn char_key(st: &mut SurfaceState, c: char) -> Option<TabbedResult> {
     None
 }
 
-/// The Enter commit path (model.go:711-734): Browser descends on a directory (no
+/// The Enter commit path (model.go:711-734): a panel with an enter action runs it and stays open;
+/// Browser descends on a directory (no
 /// commit) / records the chosen file; an empty "Other…" opens the editor instead;
 /// then `enter_advances` moves to the next tab; else commit-all.
 ///
@@ -415,6 +417,10 @@ fn enter_commit(st: &mut SurfaceState) -> Option<TabbedResult> {
     let focus = st.focus;
     let enter_advances = st.enter_advances;
     let n = st.slots.len();
+    if let Some(enter) = st.slots[focus].spec.enter.as_mut() {
+        enter();
+        return None;
+    }
     let (p, ps) = st.focused();
     if p.kind() == PanelKind::Browser {
         let entry = ps.entries.get(ps.cursor).cloned();

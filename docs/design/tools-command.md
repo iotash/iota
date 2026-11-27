@@ -31,7 +31,7 @@ Status: **已实现（2026-10-15，分支 `mcp-child-death`，已合并 `8535fd5
            二级 View 面板（标题 = 来源名） ──Esc──► 回到一级，光标停在原来那一行
               │ Enter
               ▼
-           服务器页：开始重连（后台），页面重新打开、继续刷新
+           服务器页：开始重连（后台），页面原地不动、继续刷新（§6）
            built in 页：等同 Esc
 ```
 
@@ -80,7 +80,7 @@ Status: **已实现（2026-10-15，分支 `mcp-child-death`，已合并 `8535fd5
 | `auth` | stdio 一律 `none`（与 `iota mcp list` 一致）；HTTP 是 `auto`/`oauth`/`none`，后面跟登录状态（`logged in`、`expired`、`not logged in`） | `ServerStatus::auth/login` |
 | `tool names` | `mcp__<segment>__<tool>`（只在已连接或 down 时显示） | `ServerStatus::wire_prefix` |
 | `call timeout` | 人话时长，如 `30 minutes`、`90 seconds`（X-78 的截止时间，`tool_timeout_sec` 覆盖默认值） | `Manager::detail` |
-| `why` | 失败或 down 时：**完整的**原因文本（细节行，含 stderr 尾部，最多 40 行） | X-77 的细节行 |
+| `why` | 失败或 down 时：**完整的**原因文本（细节行，含 stderr 尾部，最多 40 行）；重连进行中（`connecting…`/`reconnecting…`）时是上一次失败的原文，置灰，标题 `why (last attempt)`（§6） | X-77 的细节行 |
 | `stderr (last N lines)` | 已连接的 stdio 服务器：最近写到 stderr 的 10 行 | 会话的 stderr 捕获 |
 | `tools (N)` | 每个工具一行：工具的**原名**（服务器自己的叫法）、描述的前 100 个字符、延迟加载状态（未加载的整行置灰） | dispatcher + 状态 |
 
@@ -119,7 +119,7 @@ why
 
 - **在哪触发**：只在二级的服务器页，按 Enter。一级的 Enter 已经用来「进入」了；如果在一级也能重连，就得新增按键，而新增按键要动 `src/ui/`。
 - **形式**：按键触发，不做成「一行可选」。`View` 面板的行不可选，若改用 `List` 面板放一行「Reconnect」，详情和工具就都成了可选行，Enter 在它们上面没有意义。
-- **执行**：`Manager::reconnect(name)` 在后台任务里跑：先关掉旧 session（同一时刻只有一份服务器进程），再在同样的 30 秒截止时间下重新连接。页面立刻重新打开，靠刷新显示 `Reconnecting…` 和状态的变化。同一个服务器的重连正在进行时，再按 Enter 不会重复启动。
+- **执行**：`Manager::reconnect(name)` 在后台任务里跑：先关掉旧 session（同一时刻只有一份服务器进程），再在同样的 30 秒截止时间下重新连接。页面不关（2026-11-27 起，§6），靠刷新显示 `Reconnecting…` 和状态的变化。同一个服务器的重连正在进行时，再按 Enter 不会重复启动。
 - **终态**（2026-10-16 起，§5）：
 
   | 重连前 | 进行中 | 成功 | 失败 |
@@ -281,3 +281,38 @@ MCP flaky reconnected · 2 tools
 ### 5.5 没改的
 
 - 二级的提示行记的是「这次打开 `/tools` 以来最后一次重连的结果」：重连成功后服务器又死了，提示行仍是 `Reconnected · 2 tools`，状态行已经是 `down`（上面第二段抓屏）。两行不矛盾但读着别扭；要改就让提示行在状态变了以后回到 `Enter: reconnect`。
+
+## 6. 2026-11-27：重连时对话框不再跳
+
+报告：在 `/tools` 里打开一个失败的服务器页，按 Enter 重连，对话框会跳一下。两个原因，都在命令层和面板机制里。
+
+- **页面的行随过渡状态变**：`server_page` 只在 `srv.failure()` 有值时画 `why` 块。Enter 之后服务器进入 `Connecting`（之前没工具）或 `Reconnecting`（之前 down），两者都不带失败，整块——空行、`why`、原因链、stderr 尾部——消失。面板高度是 `min(行数, 上限)`，surface 在帧的底部，所以页面变短，对话框的**上沿**就往下掉；重连再失败，块回来，上沿又升上去。
+- **Enter 关掉再重开 surface**：页面的 Enter 走提交、关闭，`cmd_tools` 再给同一页开一个新的 `tabbed()`——至少画出一帧没有 surface 的画面，滚动位置也回到顶部。
+
+修法：
+
+- **原地重连**：`Panel` 新增可选的 enter 动作（`Panel::with_enter`，和 `with_refresh` 同一种做法）。`enter_commit` 先看它：有就执行，surface 不关（`SurfaceEffect::None`），也不提交——点击光标所在行走的是同一条路。服务器页把它设成 `start_reconnect`（重连任务交给 `cmd_tools` 记下的 tokio `Handle`：enter 动作跑在 UI 循环线程上，那里没有 runtime）。`cmd_tools` 的页面只开一次，Esc 回列表；`built in` 页和没有 manager 时没有 enter 动作，Enter 照旧等同 Esc。
+- **重连期间保留上一次的失败**：命令层按服务器序号记下页面最后画出的失败（`LastFailure`：状态词连同概要、`why` 的细节行），放在页面刷新闭包旁边，和 `Reconnects` 一样跨页面打开共享。状态是 `Connecting`/`Reconnecting` 时，页面画：
+
+  ```
+  status        connecting… · last: failed: "sh" exited during startup: boom two
+  …
+  why (last attempt)
+    connection closed: initialize response
+    stderr:
+      boom one
+      boom two
+  ```
+
+  整块置灰。落地的状态（connected、failed、down）接管：connected 清掉记忆，新的失败替换它。逻辑行数与被替换的 failed 页**完全相同**。
+- **高度规则不动**：重连成功、工具进来时页面变长，那是内容到了，不是跳。
+
+已知的边：状态行在重连中多了 `connecting… · last: ` 这段前缀（约 20 列）。窄到让 failed 页的状态行恰好在折行边上时，重连中的那一行可能多折一行——行数相同，视觉行数可能差一。真机 100 列下不差。
+
+测试：
+
+- `repl::commands::tools::tests::a_retried_server_keeps_its_last_failure_and_its_rows`：failed → connecting、down → reconnecting，两页行数相同，状态行带 `· last: <原状态>`，块标题 `why (last attempt)`、细节行原样；connected 清掉记忆、新的失败替换它；已落地的页不画记忆。
+- `ui::surface::tests::an_enter_action_runs_and_the_surface_stays_open`：每按一次 Enter 执行一次，效果是 `None` 不是 `Close`，`G` 滚到的位置不变，Esc 仍然关。
+- `tests/repl/commands.rs::tools_reconnects_a_server_from_its_page`：经 `ScriptedUi` 的新回复 `Reply::EnterAction`（执行面板的 enter 动作、surface 不关，下一条回复回答同一次调用），每个页面只开一次（共 5 个 surface，原来是 7 个）。
+- tmux 场景 57（`57-tools-reconnect.sh`）：一个启动 2 秒后失败的 stdio 服务器。100×40：Enter 之后，页面标题行、提示行、状态行、`why (last attempt)`、`tools (0)` 都在 Enter 之前的同一行；重连再失败，仍在同一行。100×16（页面要滚动）：`G` 到底，Enter 之后页脚 `(none)` 停在原行、顶部仍在屏外。红绿：`src/` 换回 `fe69768` 跑这个场景，8 条红——上沿下移 6 行（24 → 30），滚动回到顶部。
+

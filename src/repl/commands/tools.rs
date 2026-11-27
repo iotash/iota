@@ -298,20 +298,70 @@ fn auth_line(srv: &ServerStatus, stdio: bool) -> String {
     }
 }
 
+/// What a server's page last drew of a failure — its status word (X-77's summary with it) and the
+/// detail lines under `why` — kept by the page while the server is retried, so the page keeps its rows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct LastFailure {
+    /// The status word as [`status_word`] drew it (`failed: …`, `down: …`, `needs login: …`).
+    status: String,
+    /// The detail lines of why.
+    why: Vec<String>,
+}
+
+impl LastFailure {
+    /// What the page remembers of `srv`'s failure, when it has one.
+    pub(crate) fn of(srv: &ServerStatus) -> Option<Self> {
+        let (_, why) = srv.failure()?;
+        Some(Self {
+            status: status_word(srv),
+            why: why.iter().map(|l| (*l).to_owned()).collect(),
+        })
+    }
+
+    /// The memory carried into the next draw of `srv`'s page: a landed state (connected, failed, down)
+    /// takes over — its own failure or none — and a retry (connecting, reconnecting) keeps what was.
+    pub(crate) fn carry(last: Option<Self>, srv: &ServerStatus) -> Option<Self> {
+        match srv.state {
+            ServerState::Connecting | ServerState::Reconnecting { .. } => last,
+            _ => Self::of(srv),
+        }
+    }
+}
+
 /// A server's page: what it is and how it stands, then its tools. For a server that failed or is down,
 /// the WHOLE text of why — the summary, then its detail lines (the cause chain, the stderr tail); for a
-/// live stdio server, the last lines it wrote to stderr.
+/// live stdio server, the last lines it wrote to stderr. While a server with a `last` failure is being
+/// retried (connecting, reconnecting), that failure stays on the page, dimmed, under the current status —
+/// `why (last attempt)` — so the page has the rows it had until the attempt lands.
 pub(crate) fn server_page(
     dispatch: &dyn Dispatcher,
     servers: &[ServerStatus],
     i: usize,
     detail: Option<&ServerDetail>,
+    last: Option<&LastFailure>,
 ) -> Vec<String> {
     let Some(srv) = servers.get(i) else {
         return vec![dim("No such server.")];
     };
     let inv = Inventory::of(dispatch, servers);
-    let mut lines = vec![field("status", &status_word(srv))];
+    let retried = last.filter(|_| {
+        matches!(
+            srv.state,
+            ServerState::Connecting | ServerState::Reconnecting { .. }
+        )
+    });
+    let status = match retried {
+        Some(l) => format!(
+            "{}{}",
+            status_word(srv),
+            dim(&format!(
+                " · last: {}",
+                crate::text::ansi::strip_sgr(&l.status)
+            ))
+        ),
+        None => status_word(srv),
+    };
+    let mut lines = vec![field("status", &status)];
     lines.push(field("endpoint", &srv.endpoint));
     if let Some(d) = detail {
         lines.push(field("transport", if d.stdio { "stdio" } else { "http" }));
@@ -327,7 +377,13 @@ pub(crate) fn server_page(
     if let Some(d) = detail {
         lines.push(field("call timeout", &human_duration(d.call_timeout)));
     }
-    if let Some((_, why)) = srv.failure() {
+    if let Some(l) = retried {
+        if !l.why.is_empty() {
+            lines.push(String::new());
+            lines.push(dim("why (last attempt)"));
+            lines.extend(l.why.iter().map(|w| dim(&format!("  {w}"))));
+        }
+    } else if let Some((_, why)) = srv.failure() {
         if !why.is_empty() {
             lines.push(String::new());
             lines.push(bold("why"));
@@ -381,6 +437,9 @@ pub(crate) enum Reconnect {
 /// The reconnects of one `/tools`, by server index; the background task writes, the page's refresh reads.
 type Reconnects = Arc<Mutex<HashMap<usize, Reconnect>>>;
 
+/// The failure each server's page last drew, by server index ([`LastFailure`]); the page's refresh keeps it.
+type LastFailures = Arc<Mutex<HashMap<usize, LastFailure>>>;
+
 /// A server page's prompt line: the keys, and how the last reconnect from this `/tools` went.
 pub(crate) fn page_prompt(can_reconnect: bool, reconnect: Option<&Reconnect>) -> String {
     match (can_reconnect, reconnect) {
@@ -397,11 +456,13 @@ pub(crate) fn page_prompt(can_reconnect: bool, reconnect: Option<&Reconnect>) ->
     }
 }
 
-/// Reconnects server `i` in the background — the page stays open and shows it — and records the outcome,
+/// Reconnects server `i` in the background on `rt` — the page stays open and shows it (the page's Enter
+/// action runs on the UI loop thread, outside the runtime) — and records the outcome,
 /// in the transcript too: `MCP <name> reconnected · N tools`, or the startup notice's own line
 /// (`⚠ MCP <name>: <summary> · details in /tools`). A reconnect already running is left to finish. Its end is
 /// a server's status resolving: `rows` re-issues the `/allow` rows (docs/design/allow-completion.md §7).
 fn start_reconnect(
+    rt: &tokio::runtime::Handle,
     manager: &Arc<Manager>,
     servers: &[ServerStatus],
     i: usize,
@@ -422,7 +483,7 @@ fn start_reconnect(
     let manager = Arc::clone(manager);
     let reconnects = Arc::clone(reconnects);
     let tr = Arc::clone(tr);
-    tokio::spawn(async move {
+    rt.spawn(async move {
         let outcome = match manager.reconnect(&name).await {
             Some(st) if st.connected() => {
                 tr.notice(&format!(
@@ -457,14 +518,16 @@ enum Source {
     Server(usize),
 }
 
-/// `/tools`: the list, and Enter on a row opens its page until Esc closes the list. A facade failure ends
-/// the command.
+/// `/tools`: the list, and Enter on a row opens its page until Esc goes back to the list; Esc on the list
+/// closes it. A facade failure ends the command.
 pub(crate) async fn cmd_tools(repl: &Repl) {
     let hook = repl.handles.mcp.servers.clone();
     let snapshot = move || hook.as_ref().map(|f| f()).unwrap_or_default();
     let dispatch = Arc::clone(&repl.conv.dispatch);
     let manager = repl.handles.mcp.manager.clone();
     let reconnects: Reconnects = Arc::default();
+    let last_failures: LastFailures = Arc::default();
+    let rt = tokio::runtime::Handle::current();
     let mut cursor = 0;
     loop {
         let list = {
@@ -493,66 +556,84 @@ pub(crate) async fn cmd_tools(repl: &Repl) {
             0 => Source::BuiltIn,
             n => Source::Server(n - 1),
         };
-        // The page, until Esc: Enter reconnects a server (when there is a manager to do it) and reopens
-        // the page; on `built in` it goes back like Esc.
-        loop {
-            let page = {
-                let (dispatch, snapshot) = (Arc::clone(&dispatch), snapshot.clone());
-                let (manager, reconnects) = (manager.clone(), Arc::clone(&reconnects));
-                move || {
-                    let servers = snapshot();
-                    match source {
-                        Source::BuiltIn => Refreshed {
-                            rows: built_in_page(&*dispatch, &servers),
+        // The page, until Esc (or Enter on `built in`, which has nothing to reconnect): on a server, Enter
+        // reconnects it in place — the page stays up, its refresh shows the attempt.
+        let page = {
+            let (dispatch, snapshot) = (Arc::clone(&dispatch), snapshot.clone());
+            let (manager, reconnects) = (manager.clone(), Arc::clone(&reconnects));
+            let last_failures = Arc::clone(&last_failures);
+            move || {
+                let servers = snapshot();
+                match source {
+                    Source::BuiltIn => Refreshed {
+                        rows: built_in_page(&*dispatch, &servers),
+                        keys: Vec::new(),
+                        prompt: Some(page_prompt(false, None)),
+                    },
+                    Source::Server(i) => {
+                        let detail = manager.as_ref().and_then(|m| m.detail(i));
+                        let mut memory = lock(&last_failures);
+                        let kept = servers
+                            .get(i)
+                            .and_then(|srv| LastFailure::carry(memory.remove(&i), srv));
+                        let rows =
+                            server_page(&*dispatch, &servers, i, detail.as_ref(), kept.as_ref());
+                        if let Some(kept) = kept {
+                            memory.insert(i, kept);
+                        }
+                        drop(memory);
+                        Refreshed {
+                            rows,
                             keys: Vec::new(),
-                            prompt: Some(page_prompt(false, None)),
-                        },
-                        Source::Server(i) => {
-                            let detail = manager.as_ref().and_then(|m| m.detail(i));
-                            Refreshed {
-                                rows: server_page(&*dispatch, &servers, i, detail.as_ref()),
-                                keys: Vec::new(),
-                                prompt: Some(page_prompt(
-                                    manager.is_some(),
-                                    lock(&reconnects).get(&i),
-                                )),
-                            }
+                            prompt: Some(page_prompt(manager.is_some(), lock(&reconnects).get(&i))),
                         }
                     }
                 }
-            };
-            let first = page();
-            let title = match source {
-                Source::BuiltIn => BUILT_IN.to_owned(),
-                Source::Server(i) => snapshot()
-                    .get(i)
-                    .map_or_else(String::new, |s| s.name.clone()),
-            };
-            let panel = Panel::view(title, first.rows)
-                .with_wrap(true)
-                .with_prompt(first.prompt.unwrap_or_default())
-                .with_refresh(page);
-            let spec = TabbedSpec {
-                refresh_every_ms: REFRESH_EVERY_MS,
-                panels: vec![panel],
-                ..TabbedSpec::default()
-            };
-            let Ok(r) = repl.handles.ui.tabbed(&repl.handles.cancel, spec).await else {
-                return;
-            };
-            match (r.cancelled, source, &manager) {
-                (false, Source::Server(i), Some(manager)) => {
-                    start_reconnect(
-                        manager,
-                        &snapshot(),
-                        i,
-                        &reconnects,
-                        &repl.handles.tr,
-                        repl.allow_rows(),
-                    );
-                }
-                _ => break,
             }
+        };
+        let first = page();
+        let title = match source {
+            Source::BuiltIn => BUILT_IN.to_owned(),
+            Source::Server(i) => snapshot()
+                .get(i)
+                .map_or_else(String::new, |s| s.name.clone()),
+        };
+        let mut panel = Panel::view(title, first.rows)
+            .with_wrap(true)
+            .with_prompt(first.prompt.unwrap_or_default())
+            .with_refresh(page);
+        if let (Source::Server(i), Some(manager)) = (source, &manager) {
+            let (rt, manager, snapshot) = (rt.clone(), Arc::clone(manager), snapshot.clone());
+            let (reconnects, tr, rows) = (
+                Arc::clone(&reconnects),
+                Arc::clone(&repl.handles.tr),
+                repl.allow_rows(),
+            );
+            panel = panel.with_enter(move || {
+                start_reconnect(
+                    &rt,
+                    &manager,
+                    &snapshot(),
+                    i,
+                    &reconnects,
+                    &tr,
+                    rows.clone(),
+                );
+            });
+        }
+        let spec = TabbedSpec {
+            refresh_every_ms: REFRESH_EVERY_MS,
+            panels: vec![panel],
+            ..TabbedSpec::default()
+        };
+        if repl
+            .handles
+            .ui
+            .tabbed(&repl.handles.cancel, spec)
+            .await
+            .is_err()
+        {
+            return;
         }
     }
 }
@@ -746,7 +827,7 @@ pub(crate) mod tests {
                 "fs        1 tool  reconnecting…",
             ]
         );
-        let page = plain(&super::server_page(&d, &servers, 0, None));
+        let page = plain(&super::server_page(&d, &servers, 0, None, None));
         assert_eq!(page[0], "status        reconnecting…");
         assert!(
             page.contains(&"tool names    mcp__fs__<tool>".to_owned()),
@@ -777,7 +858,7 @@ pub(crate) mod tests {
             stderr: String::new(),
         };
         assert_eq!(
-            plain(&super::server_page(&d, &servers, 1, Some(&detail))),
+            plain(&super::server_page(&d, &servers, 1, Some(&detail), None)),
             vec![
                 "status        down: exited (its last stderr line: \"killed\") — its tools will fail until it is \
                  reconnected from /tools",
@@ -795,7 +876,7 @@ pub(crate) mod tests {
                 "  query  run SQL",
             ]
         );
-        let seo = plain(&super::server_page(&d, &servers, 0, None));
+        let seo = plain(&super::server_page(&d, &servers, 0, None, None));
         assert_eq!(
             seo[seo.len() - 3..],
             [
@@ -822,7 +903,7 @@ pub(crate) mod tests {
             call_timeout: Duration::from_secs(90),
             stderr,
         };
-        let page = plain(&super::server_page(&d, &[fs], 0, Some(&detail)));
+        let page = plain(&super::server_page(&d, &[fs], 0, Some(&detail), None));
         assert_eq!(
             page[1..6],
             [
@@ -891,6 +972,69 @@ pub(crate) mod tests {
                 ))
             ),
             "Reconnect failed: \"sh\" exited during startup: boom · Enter: try again · Esc: back"
+        );
+    }
+
+    // X-79: Enter on a failed server's page retries it, and the state it goes to (connecting for one that
+    // never had tools, reconnecting for one that was down) carries no failure. The page keeps the failure
+    // it drew, dimmed, as the last attempt's — the SAME rows, so the dialog does not move — until the
+    // attempt lands; a connected server's page remembers nothing.
+    #[test]
+    fn a_retried_server_keeps_its_last_failure_and_its_rows() {
+        use super::{LastFailure, server_page};
+        let (d, servers) = fleet();
+        let detail = ServerDetail {
+            stdio: false,
+            call_timeout: Duration::from_mins(30),
+            stderr: "a stale line".to_owned(),
+        };
+        for (i, retry) in [
+            (2, ServerState::Connecting),
+            (
+                1,
+                ServerState::Reconnecting {
+                    segment: "db".to_owned(),
+                },
+            ),
+        ] {
+            let failed = plain(&server_page(&d, &servers, i, Some(&detail), None));
+            let last = LastFailure::carry(None, &servers[i]);
+            assert!(last.is_some(), "a failure is remembered");
+            let mut retried = servers.clone();
+            retried[i].state = retry;
+            let last = LastFailure::carry(last, &retried[i]);
+            let page = plain(&server_page(&d, &retried, i, Some(&detail), last.as_ref()));
+            assert_eq!(page.len(), failed.len(), "{page:#?} vs {failed:#?}");
+            let summary = failed[0].trim_start_matches("status").trim_start();
+            assert!(
+                page[0].ends_with(&format!(" · last: {summary}")),
+                "{:?}",
+                page[0]
+            );
+            let at = failed.iter().position(|l| l == "why").expect("why");
+            assert_eq!(page[at], "why (last attempt)");
+            assert_eq!(page[at + 1..], failed[at + 1..]);
+            assert!(!page.contains(&"why".to_owned()));
+        }
+
+        // A landed attempt takes over: connected drops the memory, a new failure replaces it.
+        let last = LastFailure::carry(None, &servers[2]);
+        assert_eq!(LastFailure::carry(last.clone(), &servers[0]), None);
+        assert_eq!(
+            LastFailure::carry(last, &servers[3]),
+            LastFailure::of(&servers[3])
+        );
+        let seo = plain(&server_page(&d, &servers, 0, None, None));
+        assert!(
+            !seo.iter()
+                .any(|l| l.contains("last attempt") || l.contains("last:")),
+            "{seo:?}"
+        );
+        // A remembered failure is not drawn on a page whose server has landed.
+        let stale = LastFailure::of(&servers[2]);
+        assert_eq!(
+            plain(&server_page(&d, &servers, 0, None, stale.as_ref())),
+            seo
         );
     }
 }

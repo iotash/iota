@@ -2532,8 +2532,8 @@ while IFS= read -r line; do
 done
 "#;
 
-/// X-79: Enter on a server's page reconnects it (`Manager::reconnect`, in the background) and the outcome
-/// lands in the transcript — `MCP <name> reconnected · N tools`, or the startup notice's own line in X-77's
+/// X-79: Enter on a server's page reconnects it in place — the page's enter action starts
+/// `Manager::reconnect` in the background and the page stays open — and the outcome lands in the transcript — `MCP <name> reconnected · N tools`, or the startup notice's own line in X-77's
 /// words. `flaky` serves once and refuses every later start, as a server whose license server went away.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2578,11 +2578,11 @@ async fn tools_reconnects_a_server_from_its_page() {
     }));
     let f = Fixture::new(vec![
         input("/tools"),
-        enter(1), // good's page
-        enter(0), // reconnect
-        esc(),    // back to the list
-        enter(2), // flaky's page
-        enter(0), // reconnect: refused
+        enter(1),           // good's page
+        Reply::EnterAction, // reconnect, the page staying open
+        esc(),              // back to the list
+        enter(2),           // flaky's page
+        Reply::EnterAction, // reconnect: refused
         esc(),
         esc(), // close
         settle,
@@ -2602,7 +2602,10 @@ async fn tools_reconnects_a_server_from_its_page() {
     let page = &s[1].panels[0];
     assert_eq!((page.title.as_str(), page.kind), ("good", PanelKind::View));
     assert_eq!(page.prompt, "Enter: reconnect · Esc: back");
-    assert_eq!(s[3].panels[0].cursor, 1, "back on the row it came from");
+    assert!(page.has_enter, "the page reconnects in place");
+    // list, good's page (opened once), the list again, flaky's page, the list: Enter reopened nothing.
+    assert_eq!(s.len(), 5, "{s:?}");
+    assert_eq!(s[2].panels[0].cursor, 1, "back on the row it came from");
     let lines = printed(&f.ui);
     assert!(
         lines.contains(&"MCP good reconnected · 1 tool".to_owned()),

@@ -130,7 +130,9 @@ Facade shape decisions from the adversarial review:
   waiters. No unbuffered sends from inside Update (deadlock).
 - **SelectSpec** must express the verified surfaces: tabbed panels with kinds
   (single list, multi-select list, slider, boolean switch, one-line text input, directory browser, preview picker, view), Enter
-  commits ALL tabs (the /model questionnaire), per-panel `Refresh func()
+  commits ALL tabs (the /model questionnaire) — unless the focused panel
+  carries an enter action (`Panel::with_enter`), which Enter runs while the
+  surface stays open (the /tools page's reconnect) — per-panel `Refresh func()
   []string` + `RefreshEvery` (the /debug and /tools live views). Drill-down
   loops (debug detail) stay logic-side: Select → View → Select.
 - **BlockPreview returns an io.WriteCloser** (stream-shaped, not

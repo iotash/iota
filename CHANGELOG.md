@@ -3,6 +3,17 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Fixed
+
+- **Reconnecting a server in `/tools` no longer makes the dialog jump.**
+  Pressing Enter on a failed server's page used to close and reopen the page
+  and drop its `why` section while the retry ran, so the dialog's top edge
+  moved down and back up. Now the page stays open where you scrolled it, and
+  keeps the last failure — dimmed, as `why (last attempt)` — until the retry
+  lands.
+
 ## 0.13.2 - 2026-11-25
 
 ### Changed

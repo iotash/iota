@@ -136,6 +136,10 @@ pub enum PanelKind {
 /// any closure whose result converts into a [`Refreshed`] — plain rows included.
 pub(crate) type RefreshFn = Box<dyn FnMut() -> Refreshed + Send>;
 
+/// Enter action of a panel; runs on the UI loop thread when Enter is pressed on it, and the surface
+/// stays open. Built by [`Panel::with_enter`].
+pub(crate) type EnterFn = Box<dyn FnMut() + Send>;
+
 /// What one live refresh hands the surface: the panel's rows again, and — for a row panel whose rows
 /// come and go — one KEY per row, a stable identity (a job's id, say) the cursor and the checks follow
 /// across the refresh instead of the row's index. With no keys the cursor keeps its index, clamped to
@@ -216,6 +220,9 @@ pub struct Panel {
     pub height: usize,
     /// Live refresh of the rows; runs on the UI loop thread at tick time.
     pub refresh: Option<RefreshFn>,
+    /// What Enter does instead of committing: the surface runs it and stays open (a `/tools` page's
+    /// reconnect, which the live refresh then shows).
+    pub enter: Option<EnterFn>,
     /// One key per row of a row panel, the identity a keyed [`Refreshed`] carries on with; empty when the
     /// refresh (if any) goes by index.
     pub keys: Vec<String>,
@@ -467,6 +474,13 @@ impl Panel {
         mut refresh: impl FnMut() -> R + Send + 'static,
     ) -> Self {
         self.refresh = Some(Box::new(move || refresh().into()));
+        self
+    }
+
+    /// With an enter action: Enter runs `enter` and the surface stays open — no commit, no close.
+    #[must_use]
+    pub fn with_enter(mut self, enter: impl FnMut() + Send + 'static) -> Self {
+        self.enter = Some(Box::new(enter));
         self
     }
 
