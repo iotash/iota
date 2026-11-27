@@ -21,6 +21,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   moved down and back up. Now the page stays open where you scrolled it, and
   keeps the last failure — dimmed, as `why (last attempt)` — until the retry
   lands.
+- **A light terminal is recognised as you start typing.** Inside a
+  multiplexer that answers the terminal's background question for itself —
+  herdr-core does, until its viewer is attached — iota drew its dark shades
+  until the first turn. The first key you press now asks again, so the screen
+  is right while you type, not one message later.
 
 ## 0.13.2 - 2026-11-25
 
